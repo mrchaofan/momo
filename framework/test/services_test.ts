@@ -380,7 +380,12 @@ group("services › text editing", () => {
 group("services › keyboard", () => {
   test("key constants", () => {
     expect.equal(LogicalKeyboardKey.keyA.keyId, 0x61);
-    expect.equal(LogicalKeyboardKey.enter.keyId, 0x100070028);
+    // 特殊键 = 0x1_0000_0000 + HID usage(与引擎/嵌入层 KeyData 编码一致, 不含 HID page)。
+    expect.equal(LogicalKeyboardKey.enter.keyId, 0x100000028);
+    expect.equal(LogicalKeyboardKey.backspace.keyId, 0x10000002a);
+    expect.equal(LogicalKeyboardKey.delete.keyId, 0x10000004c);
+    expect.equal(LogicalKeyboardKey.arrowLeft.keyId, 0x100000050);
+    expect.equal(LogicalKeyboardKey.shiftLeft.keyId, 0x1000000e1);
     expect.equal(PhysicalKeyboardKey.keyA.keyId, 0x00070004);
     expect.equal(PhysicalKeyboardKey.enter.keyId, 0x00070028);
     expect.equal(LogicalKeyboardKey.findKeyByKeyId(0x61), LogicalKeyboardKey.keyA);

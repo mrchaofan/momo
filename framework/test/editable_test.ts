@@ -150,6 +150,18 @@ group("EditableText", () => {
     }
   });
 
+  testWidgets("editing keys work with the raw key codes the embedders send", async (t) => {
+    // macOS/Windows 嵌入层: 特殊键 logicalKey = 0x1_0000_0000 + HID usage, physicalKey = 0x0007_0000 | usage。
+    const raw = (usage: number) => ({ logical: 0x1_0000_0000 + usage, physical: 0x0007_0000 + usage });
+    const { c } = await focused(t, "abc", null);
+    expect.isTrue(await t.pressKey(raw(0x2a)), "Backspace handled");
+    expect.equal(c.text, "ab");
+    await t.pressKey(raw(0x50));  // ArrowLeft
+    expect.equal(c.selection.extentOffset, 1);
+    await t.pressKey(raw(0x4c));  // Delete(向前删除)
+    expect.equal(c.text, "a");
+  });
+
   testWidgets("multiline up/down and line start/end", async (t) => {
     const { c } = await focused(t, "abc\ndefgh\nij", null);
     c.selection = TextSelection.collapsed(6); // "de|fgh"
