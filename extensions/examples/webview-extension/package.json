@@ -1,0 +1,16 @@
+{
+  "name": "@momo-examples/ext-webview",
+  "version": "0.1.0",
+  "description": "Momo extension demo: the system WebView (WKWebView) embedded as a platform view",
+  "main": "js/index.ts",
+  "momo": {
+    "extension": {
+      "id": "momo.example.webview",
+      "native": {
+        "macos-arm64": "prebuilt/macos-arm64/libext_webview.dylib",
+        "macos-x64": "prebuilt/macos-x64/libext_webview.dylib"
+      },
+      "capabilities": ["platform-view", "network"]
+    }
+  }
+}

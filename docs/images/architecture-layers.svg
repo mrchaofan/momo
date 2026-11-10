@@ -1,0 +1,125 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="730" viewBox="0 0 1000 730">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .band { font-size: 14px; font-weight: 700; }
+    .sub { font-size: 12px; fill: #57606a; }
+    .n { font-size: 13px; font-weight: 700; }
+    .d { font-size: 11px; fill: #444c56; }
+    .fw { fill: #e8f1ff; stroke: #4c7bd9; }
+    .en { fill: #eaf7ee; stroke: #3e9a5b; }
+    .em { fill: #fff3e3; stroke: #d98a2b; }
+    .bs { fill: #f1eef8; stroke: #7a61b8; }
+    .os { fill: #eeeeee; stroke: #8c959f; }
+    .box { fill: #ffffff; stroke-width: 1.2; }
+    .contract { fill: #fff8c5; stroke: #bf8700; stroke-width: 1.5; }
+  </style>
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#bf8700"/>
+    </marker>
+  </defs>
+
+  <text x="500" y="30" text-anchor="middle" class="title">Momo 分层架构（macOS）</text>
+
+  <!-- App -->
+  <rect x="20" y="46" width="960" height="40" rx="8" fill="#ffffff" stroke="#57606a" stroke-dasharray="5 3"/>
+  <text x="500" y="71" text-anchor="middle" class="n">应用代码（TS/JS）：runApp(new MaterialApp(...)) · 三方扩展的 JS 门面（import "@acme/ext-x"）</text>
+
+  <!-- Framework -->
+  <rect x="20" y="98" width="960" height="146" rx="10" class="fw" stroke-width="1.5"/>
+  <text x="36" y="120" class="band">Framework · TypeScript · framework/packages/momo/src</text>
+  <text x="964" y="120" text-anchor="end" class="sub">运行在 ui 线程的 V8 中，打包进 bundle.js</text>
+  <g>
+    <rect x="40" y="130" width="221" height="48" rx="6" class="box fw"/>
+    <text x="52" y="150" class="n">widgets</text><text x="52" y="168" class="d">Widget · Element · State · runApp</text>
+    <rect x="273" y="130" width="221" height="48" rx="6" class="box fw"/>
+    <text x="285" y="150" class="n">rendering</text><text x="285" y="168" class="d">RenderObject · PipelineOwner · Layer</text>
+    <rect x="506" y="130" width="221" height="48" rx="6" class="box fw"/>
+    <text x="518" y="150" class="n">gestures</text><text x="518" y="168" class="d">HitTest · PointerRouter · GestureArena</text>
+    <rect x="739" y="130" width="221" height="48" rx="6" class="box fw"/>
+    <text x="751" y="150" class="n">material</text><text x="751" y="168" class="d">Button · TextField · Scaffold · Theme</text>
+
+    <rect x="40" y="186" width="143" height="48" rx="6" class="box fw"/>
+    <text x="52" y="206" class="n">painting</text><text x="52" y="224" class="d">TextPainter · 装饰</text>
+    <rect x="193" y="186" width="143" height="48" rx="6" class="box fw"/>
+    <text x="205" y="206" class="n">animation</text><text x="205" y="224" class="d">Controller · Tween</text>
+    <rect x="346" y="186" width="143" height="48" rx="6" class="box fw"/>
+    <text x="358" y="206" class="n">scheduler</text><text x="358" y="224" class="d">帧阶段 · Ticker</text>
+    <rect x="499" y="186" width="143" height="48" rx="6" class="box fw"/>
+    <text x="511" y="206" class="n">services</text><text x="511" y="224" class="d">Channel · 键盘 · IME</text>
+    <rect x="652" y="186" width="143" height="48" rx="6" class="box fw"/>
+    <text x="664" y="206" class="n">foundation</text><text x="664" y="224" class="d">Key · Notifier</text>
+    <rect x="805" y="186" width="155" height="48" rx="6" class="box fw"/>
+    <text x="817" y="206" class="n">ui</text><text x="817" y="224" class="d">momo-ui.d.ts（契约）</text>
+  </g>
+
+  <!-- binding strip -->
+  <rect x="120" y="252" width="760" height="28" rx="14" fill="#ffffff" stroke="#57606a"/>
+  <text x="500" y="271" text-anchor="middle" class="n">JS ⇄ C++ 边界：import "momo:ui" · "momo:services" · "ext:*"（V8 synthetic module）</text>
+
+  <!-- Engine -->
+  <rect x="20" y="288" width="960" height="154" rx="10" class="en" stroke-width="1.5"/>
+  <text x="36" y="310" class="band">Engine · C++20 · engine/</text>
+  <text x="964" y="310" text-anchor="end" class="sub">不依赖 embedder；只认识 engine/platform 里的接口</text>
+  <g>
+    <rect x="40" y="320" width="221" height="52" rx="6" class="box en"/>
+    <text x="52" y="340" class="n">shell</text><text x="52" y="358" class="d">Shell · Engine · Animator · Rasterizer</text>
+    <rect x="273" y="320" width="221" height="52" rx="6" class="box en"/>
+    <text x="285" y="340" class="n">ui</text><text x="285" y="358" class="d">momo:* / ext:* 绑定 · AppDriver</text>
+    <rect x="506" y="320" width="221" height="52" rx="6" class="box en"/>
+    <text x="518" y="340" class="n">runtime</text><text x="518" y="358" class="d">V8 · ESM 模块 · Inspector</text>
+    <rect x="739" y="320" width="221" height="52" rx="6" class="box en"/>
+    <text x="751" y="340" class="n">extension</text><text x="751" y="358" class="d">ExtensionHost · dlopen · C ABI</text>
+
+    <rect x="40" y="380" width="174" height="52" rx="6" class="box en"/>
+    <text x="52" y="400" class="n">graphics</text><text x="52" y="418" class="d">DisplayList · LayerTree · Skia</text>
+    <rect x="226" y="380" width="174" height="52" rx="6" class="box en"/>
+    <text x="238" y="400" class="n">text</text><text x="238" y="418" class="d">字体集合 · SkParagraph</text>
+    <rect x="412" y="380" width="174" height="52" rx="6" class="box en"/>
+    <text x="424" y="400" class="n">assets</text><text x="424" y="418" class="d">AssetManager · 图片解码</text>
+    <rect x="598" y="380" width="174" height="52" rx="6" class="box en"/>
+    <text x="610" y="400" class="n">common</text><text x="610" y="418" class="d">MessageChannelHub · Codec</text>
+    <rect x="784" y="380" width="176" height="52" rx="6" class="contract"/>
+    <text x="796" y="400" class="n">platform（平台契约）</text><text x="796" y="418" class="d">Surface · Vsync · IME · 服务</text>
+  </g>
+
+  <!-- Embedder -->
+  <rect x="20" y="452" width="960" height="150" rx="10" class="em" stroke-width="1.5"/>
+  <text x="36" y="474" class="band">Embedder · C++ / ObjC++ · embedder/</text>
+  <g>
+    <rect x="40" y="484" width="300" height="108" rx="6" class="box em"/>
+    <text x="52" y="504" class="n">common（平台无关，可 mock 单测）</text>
+    <text x="52" y="524" class="d">Application：生命周期状态机 · 有序关闭</text>
+    <text x="52" y="541" class="d">WindowController：窗口 ⇄ Shell 粘合</text>
+    <text x="52" y="558" class="d">AppConfig · AssetResolver</text>
+    <text x="52" y="575" class="d">PlatformIntegration · PlatformWindow（接口）</text>
+
+    <rect x="352" y="484" width="460" height="108" rx="6" class="box em"/>
+    <text x="364" y="504" class="n">macos（Cocoa 实现，产物 Momo.app）</text>
+    <text x="364" y="524" class="d">main_mac.mm · MacAppDelegate · MacPlatformIntegration · MacServices</text>
+    <text x="364" y="541" class="d">MacNativeLoop：GCD 主队列 + [NSApp run]/[NSApp stop:]</text>
+    <text x="364" y="558" class="d">MacWindow + MomoContentView（NSView，事件归一化 / NSTextInputClient）</text>
+    <text x="364" y="575" class="d">MacMetalSurface · MacSoftwareSurface · MacVsyncDisplayLink · MacTextInput</text>
+
+    <rect x="824" y="484" width="136" height="108" rx="6" class="box em"/>
+    <text x="836" y="504" class="n">headless</text>
+    <text x="836" y="524" class="d">momo_headless</text>
+    <text x="836" y="541" class="d">离屏软件 surface</text>
+    <text x="836" y="558" class="d">框架测试宿主</text>
+  </g>
+
+  <!-- implements arrow -->
+  <path d="M760,484 C760,462 860,462 870,436" fill="none" stroke="#bf8700" stroke-width="1.8" stroke-dasharray="6 4" marker-end="url(#arr)"/>
+  <text x="520" y="474" class="d" style="fill:#7d5a00;font-weight:700">macos 实现 engine/platform 契约（依赖倒置）→</text>
+
+  <!-- base -->
+  <rect x="20" y="612" width="960" height="40" rx="8" class="bs" stroke-width="1.5"/>
+  <text x="36" y="637" class="band">base/</text>
+  <text x="90" y="637" class="d" style="font-size:12px">所有 C++ 层的最底层：Object · ObjectPtr · WeakPtr · DeleteLater · EventLoop · MessagePump · NativeLoop · TaskRunner · Thread · Pipeline · Status</text>
+
+  <!-- OS -->
+  <rect x="20" y="664" width="960" height="44" rx="8" class="os" stroke-width="1.5"/>
+  <text x="36" y="691" class="band">macOS</text>
+  <text x="96" y="691" class="d" style="font-size:12px">AppKit（NSApplication / NSWindow / NSView / NSEvent）· Metal · CAMetalLayer · CoreVideo（CVDisplayLink）· IOSurface · GCD · Skia · V8</text>
+</svg>

@@ -1,0 +1,53 @@
+# ---- 构建产物 ----
+out/
+build/
+cmake-build-*/
+framework/out/
+examples/*/dist/
+compile_commands.json
+CMakeUserPresets.json
+*.tsbuildinfo
+
+# ---- 第三方依赖(由 tools/fetch_deps.py 拉取) ----
+third_party/.downloads/
+third_party/prebuilt/
+
+# ---- Node ----
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+coverage/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---- 编辑器 / IDE ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+xcuserdata/
+
+# ---- 系统文件 ----
+.DS_Store
+Thumbs.db
+
+# ---- 日志 / 本地环境 ----
+*.log
+.env
+.env.*
+!.env.example
+
+# ---- Claude Code 本地文件 ----
+.claude/.cc-writes/
+**/.claude/.cc-writes/
+.claude/settings.local.json
+**/.claude/settings.local.json

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "strict": true,
+    "noImplicitOverride": false,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": false,
+    "exactOptionalPropertyTypes": false,
+    "useUnknownInCatchVariables": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "paths": {
+      "@momo/framework": ["./packages/momo/src/index.ts"],
+      "@momo/framework/*": ["./packages/momo/src/*/index.ts"],
+      "@momo-examples/ext-webview": ["../extensions/examples/webview-extension/js/index.ts"]
+    }
+  },
+  "include": [
+    "packages/momo/src/**/*.ts",
+    "test/**/*.ts",
+    "../examples/counter/src/**/*.ts",
+    "../examples/todo/src/**/*.ts",
+    "../examples/webview/src/**/*.ts",
+    "../extensions/examples/webview-extension/js/**/*.ts"
+  ]
+}

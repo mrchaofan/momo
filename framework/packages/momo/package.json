@@ -1,0 +1,21 @@
+{
+  "name": "@momo/framework",
+  "version": "0.4.0",
+  "description": "Momo UI framework: widgets/rendering/painting/gestures/animation/services running in the Momo engine's V8.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./foundation": "./src/foundation/index.ts",
+    "./scheduler": "./src/scheduler/index.ts",
+    "./animation": "./src/animation/index.ts",
+    "./painting": "./src/painting/index.ts",
+    "./rendering": "./src/rendering/index.ts",
+    "./gestures": "./src/gestures/index.ts",
+    "./services": "./src/services/index.ts",
+    "./widgets": "./src/widgets/index.ts",
+    "./material": "./src/material/index.ts"
+  },
+  "sideEffects": false
+}

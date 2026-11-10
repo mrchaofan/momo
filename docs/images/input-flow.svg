@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="470" viewBox="0 0 1000 470">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .zone { font-size: 12.5px; font-weight: 700; fill: #57606a; }
+    .row { font-size: 13px; font-weight: 700; }
+    .n { font-size: 12px; font-weight: 700; }
+    .i { font-size: 11px; fill: #24292f; }
+    .arr { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .b { fill: #ffffff; stroke: #8c959f; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+  <text x="500" y="28" text-anchor="middle" class="title">输入事件：从 NSEvent 到 Widget</text>
+
+  <!-- thread zones -->
+  <rect x="10" y="42" width="388" height="420" rx="10" fill="#fff3e3" stroke="#d98a2b" stroke-opacity=".6"/>
+  <rect x="404" y="42" width="190" height="420" rx="10" fill="#e8f1ff" stroke="#4c7bd9" stroke-opacity=".6"/>
+  <rect x="600" y="42" width="390" height="420" rx="10" fill="#dbe9ff" stroke="#4c7bd9" stroke-opacity=".6"/>
+  <text x="20" y="60" class="zone">platform 线程（embedder/macos → common）</text>
+  <text x="414" y="60" class="zone">ui 线程 · C++</text>
+  <text x="610" y="60" class="zone">ui 线程 · JS 框架</text>
+
+  <!-- pointer row -->
+  <text x="20" y="84" class="row">指针</text>
+  <rect x="20" y="92" width="180" height="96" rx="7" class="b"/>
+  <text x="30" y="110" class="n">MomoContentView</text>
+  <text x="30" y="128" class="i">mouse* · scrollWheel</text>
+  <text x="30" y="144" class="i">点 → 物理像素，翻转为左上原点</text>
+  <text x="30" y="160" class="i">进入补 kAdd · 离开补 kRemove</text>
+  <text x="30" y="176" class="i">滚轮：行 → px，方向统一为视口</text>
+  <line x1="200" y1="140" x2="213" y2="140" class="arr" marker-end="url(#a)"/>
+  <rect x="215" y="92" width="175" height="96" rx="7" class="b"/>
+  <text x="225" y="110" class="n">WindowController</text>
+  <text x="225" y="128" class="i">OnPointerPacket(packet)</text>
+  <text x="225" y="144" class="i">→ Shell::OnPointerPacket</text>
+  <text x="225" y="160" class="i">→ PostToEngine（投递 ui）</text>
+  <line x1="390" y1="140" x2="410" y2="140" class="arr" marker-end="url(#a)"/>
+  <rect x="412" y="92" width="174" height="96" rx="7" class="b"/>
+  <text x="422" y="110" class="n">UiBindings::PointerPacket</text>
+  <text x="422" y="128" class="i">每个指针 10 个 double</text>
+  <text x="422" y="144" class="i">写入复用的 Float64Array</text>
+  <text x="422" y="160" class="i">window.onPointerPacket(</text>
+  <text x="422" y="176" class="i">  data, count)</text>
+  <line x1="586" y1="140" x2="606" y2="140" class="arr" marker-end="url(#a)"/>
+  <rect x="608" y="92" width="182" height="96" rx="7" class="b"/>
+  <text x="618" y="110" class="n">GestureBinding</text>
+  <text x="618" y="128" class="i">物理 → 逻辑坐标（÷ dpr）</text>
+  <text x="618" y="144" class="i">down 时 hitTest 并缓存结果</text>
+  <text x="618" y="160" class="i">move/up 复用同一结果</text>
+  <text x="618" y="176" class="i">MouseTracker：hover / 光标</text>
+  <line x1="790" y1="140" x2="802" y2="140" class="arr" marker-end="url(#a)"/>
+  <rect x="804" y="92" width="178" height="96" rx="7" class="b"/>
+  <text x="814" y="110" class="n">PointerRouter · Arena</text>
+  <text x="814" y="128" class="i">各 Recognizer 进竞技场</text>
+  <text x="814" y="144" class="i">tap / drag / 双击 消歧</text>
+  <text x="814" y="160" class="i">胜者回调 onTap / onPressed</text>
+  <text x="814" y="176" class="i">→ setState → scheduleFrame</text>
+
+  <!-- key row -->
+  <text x="20" y="218" class="row">键盘</text>
+  <rect x="20" y="226" width="180" height="96" rx="7" class="b"/>
+  <text x="30" y="244" class="n">MomoContentView</text>
+  <text x="30" y="262" class="i">keyDown/Up · flagsChanged</text>
+  <text x="30" y="278" class="i">keyCode → USB HID usage</text>
+  <text x="30" y="294" class="i">CapsLock 合成 down+up</text>
+  <text x="30" y="310" class="i">Cmd 按住时补发 keyUp</text>
+  <line x1="200" y1="274" x2="213" y2="274" class="arr" marker-end="url(#a)"/>
+  <rect x="215" y="226" width="175" height="96" rx="7" class="b"/>
+  <text x="225" y="244" class="n">KeyData</text>
+  <text x="225" y="262" class="i">type · physical_key</text>
+  <text x="225" y="278" class="i">logical_key · character</text>
+  <text x="225" y="294" class="i">modifiers 快照</text>
+  <text x="225" y="310" class="i">→ Shell::OnKeyData</text>
+  <line x1="390" y1="274" x2="410" y2="274" class="arr" marker-end="url(#a)"/>
+  <rect x="412" y="226" width="174" height="96" rx="7" class="b"/>
+  <text x="422" y="244" class="n">UiBindings::KeyData</text>
+  <text x="422" y="262" class="i">window.onKeyData(data)</text>
+  <text x="422" y="278" class="i">返回 true = 已消费</text>
+  <line x1="586" y1="274" x2="606" y2="274" class="arr" marker-end="url(#a)"/>
+  <rect x="608" y="226" width="182" height="96" rx="7" class="b"/>
+  <text x="618" y="244" class="n">HardwareKeyboard</text>
+  <text x="618" y="262" class="i">维护按下集合</text>
+  <text x="618" y="278" class="i">失焦时清空</text>
+  <text x="618" y="294" class="i">→ FocusManager 主焦点链</text>
+  <line x1="790" y1="274" x2="802" y2="274" class="arr" marker-end="url(#a)"/>
+  <rect x="804" y="226" width="178" height="96" rx="7" class="b"/>
+  <text x="814" y="244" class="n">Focus · Shortcuts</text>
+  <text x="814" y="262" class="i">从焦点节点向上冒泡</text>
+  <text x="814" y="278" class="i">SingleActivator → Intent</text>
+  <text x="814" y="294" class="i">Actions 调用 CallbackAction</text>
+
+  <!-- IME row -->
+  <text x="20" y="352" class="row">输入法（IME）</text>
+  <rect x="20" y="360" width="180" height="92" rx="7" class="b"/>
+  <text x="30" y="378" class="n">NSTextInputClient</text>
+  <text x="30" y="396" class="i">文本会话中 keyDown 再走</text>
+  <text x="30" y="412" class="i">interpretKeyEvents</text>
+  <text x="30" y="428" class="i">insertText / setMarkedText</text>
+  <line x1="200" y1="406" x2="213" y2="406" class="arr" marker-end="url(#a)"/>
+  <rect x="215" y="360" width="175" height="92" rx="7" class="b"/>
+  <text x="225" y="378" class="n">MacTextInput</text>
+  <text x="225" y="396" class="i">本地乐观应用预编辑</text>
+  <text x="225" y="412" class="i">→ TextInputEvent</text>
+  <text x="225" y="428" class="i">→ Shell::OnTextInput</text>
+  <line x1="390" y1="406" x2="410" y2="406" class="arr" marker-end="url(#a)"/>
+  <rect x="412" y="360" width="174" height="92" rx="7" class="b"/>
+  <text x="422" y="378" class="n">MessageChannelHub</text>
+  <text x="422" y="396" class="i">通道 momo/textinput</text>
+  <text x="422" y="412" class="i">StandardCodec 编码</text>
+  <text x="422" y="428" class="i">双向：JS → 平台 回写状态</text>
+  <line x1="586" y1="406" x2="606" y2="406" class="arr" marker-end="url(#a)"/>
+  <rect x="608" y="360" width="374" height="92" rx="7" class="b"/>
+  <text x="618" y="378" class="n">services/TextInput → EditableText</text>
+  <text x="618" y="396" class="i">JS 是编辑模型的权威：按 commit / composing 更新编辑状态；</text>
+  <text x="618" y="412" class="i">再经同一通道 setEditingState、上报光标矩形（候选窗定位，</text>
+  <text x="618" y="428" class="i">由 MacTextInput 的 firstRectForCharacterRange 使用）。</text>
+</svg>

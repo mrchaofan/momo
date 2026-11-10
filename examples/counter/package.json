@@ -1,0 +1,11 @@
+{
+  "name": "momo-example-counter",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@momo/framework": "file:../../framework/packages/momo"
+  },
+  "scripts": {
+    "build": "node ../../framework/scripts/build_example.mjs src/main.ts dist/main.js"
+  }
+}

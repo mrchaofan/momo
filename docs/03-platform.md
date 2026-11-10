@@ -1,0 +1,139 @@
+# 03 · 平台契约与平台实现
+
+本文回答"框架如何在这个操作系统上运行与显示":窗口、渲染表面、输入、IME、剪贴板、光标、菜单、对话框、VSync。
+它不是独立的一层,而是 engine 与 embedder 之间的边界,分三部分(对标 Flutter:engine 内的 `Surface`/`VsyncWaiter`/`PlatformView` 接口 + `shell/platform/<os>` 实现):
+
+1. **平台契约**(`engine/platform/`,命名空间 `momo::engine::platform`):engine 对宿主的全部要求,纯虚接口 + POD。
+   接口归使用方 engine 所有(依赖倒置),engine 只认识它们,因此可脱离真实平台做 headless 测试。
+2. **embedder 的平台抽象**(`embedder/common/`,命名空间 `momo::embedder`):窗口 `PlatformWindow`、工厂 `PlatformIntegration`、`DisplayInfo`。
+   只有 embedder 的装配逻辑(Application/WindowController)使用,engine 不可见;它让 `embedder/common` 平台无关、可 mock 单测。
+3. **平台实现**(`embedder/macos/`、`embedder/windows/`):实现上述两组接口,与各自的进程入口放在一起。
+
+移植新平台 = 在 `embedder/<os>/` 实现这两组接口 + 写入口。
+
+## 1. 目录结构
+
+```
+engine/platform/                   # 平台契约(engine 可见的全部;零平台 include、零三方依赖, 只依赖 base)
+├── render_surface.h               # 渲染表面接口(GPU/软件)、SurfaceFrame、GpuContextInfo
+├── vsync_source.h                 # VSync 信号源(momo::Object, 归属 platform 线程)
+├── input_types.h                  # PointerData/KeyData 等平台无关事件类型
+├── text_input_connection.h        # IME 接入接口与 TextEditingState/TextInputEvent
+├── platform_services.h            # 剪贴板/打开 URL(低频服务, 经消息通道暴露给 JS)
+├── system_cursor.h                # 系统光标形状
+└── viewport_metrics.h             # ViewportMetrics(物理尺寸 + DPR)
+
+embedder/common/                   # embedder 的平台抽象(engine 不可见)
+├── platform_integration.h         # 工厂与根入口(创建窗口/VsyncSource、服务、显示器、原生循环)
+├── platform_window.h              # 窗口接口 + WindowDelegate 回调 + WindowSpec
+├── display.h                      # 显示器信息(DPR、刷新率、工作区)
+└── (menu.h)                       # 应用菜单与右键菜单接口(规划)
+(原生消息循环接口 NativeLoop 定义在 base/native_loop.h, 见 docs/12)
+
+embedder/windows/                  # Win32 实现(与 main_win.cc 同目录)
+├── win_platform_integration.h/.cc
+├── win_native_loop.h/.cc          # NativeLoop: 隐藏消息窗口 PostMessage + GetMessage 泵
+├── win_window.h/.cc               # HWND 封装、WndProc、DPI per-monitor v2
+├── win_surface_software.h/.cc     # GDI 软件 surface(ANGLE surface 规划中)
+├── win_vsync_dwm.h/.cc            # DwmFlush vblank 等待
+├── win_text_input.h/.cc           # IMM32
+├── win_services.h/.cc             # 剪贴板、OpenUrl
+└── win_key_mapping / win_util
+
+embedder/macos/                    # Cocoa 实现(Objective-C++, 与 main_mac.mm 同目录)
+├── mac_platform_integration.h/.mm
+├── mac_native_loop.h/.mm          # NativeLoop: GCD 主队列 + NSApp run/stop
+├── mac_window.h/.mm               # NSWindow + 自定义 NSView(firstResponder)
+├── mac_surface_metal.h/.mm        # CAMetalLayer surface
+├── mac_surface_software.h/.mm     # IOSurface 软件 surface(Metal 失败时回退)
+├── mac_vsync_displaylink.h/.mm    # CVDisplayLink
+├── mac_text_input.h/.mm           # NSTextInputClient
+└── mac_key_mapping.h/.mm
+```
+
+规则:`engine/platform/` 头文件零平台 include、零三方依赖(可含 `base/` 的几何、Status、`momo::Object` 等);
+平台对象若有线程归属(如 `VsyncSource`)继承 `momo::Object`,以 `ObjectPtr` 交出所有权(docs/08 §3)。
+embedder 内以 `platform::X` 指代契约类型(`embedder/common/engine_platform.h` 的命名空间别名)。
+
+## 2. 核心接口草案
+
+```cpp
+// embedder/common/platform_integration.h
+class PlatformIntegration {
+ public:
+  virtual ~PlatformIntegration() = default;
+  virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec&, WindowDelegate*) = 0;
+  virtual StatusOr<ObjectPtr<VsyncSource>> CreateVsyncSource(const PlatformWindow&) = 0;  // momo::Object, 归属 platform 线程
+  virtual PlatformServices& services() = 0;
+  virtual std::vector<DisplayInfo> displays() const = 0;
+  virtual NativeLoop& native_loop() = 0;  // OS 主线程原生消息循环(embedder 在其上跑 EventLoop)
+};
+
+// base/native_loop.h(接口在 base, 实现在平台层)
+class NativeLoop {
+ public:
+  virtual void PostTask(Closure task) = 0;                       // 任意线程
+  virtual void PostDelayedTask(Closure task, TimeDelta delay) = 0;
+  virtual bool RunsTasksOnCurrentThread() const = 0;             // Run 之前也须正确
+  virtual void Run() = 0;                                        // 仅 OS 主线程, 阻塞至 Quit, 可嵌套
+  virtual void Quit() = 0;                                       // 结束最内层
+};
+
+// embedder/common/platform_window.h
+class PlatformWindow {
+ public:
+  virtual ~PlatformWindow() = default;
+  virtual void Show() = 0;
+  virtual void SetTitle(std::string_view) = 0;
+  virtual void SetMinSize(Size) = 0;
+  virtual Size physical_size() const = 0;
+  virtual double device_pixel_ratio() const = 0;
+  virtual RenderSurface& surface() = 0;
+  virtual void SetCursor(SystemCursor) = 0;
+  virtual TextInputConnection& text_input() = 0;
+  virtual void* native_handle() const = 0;   // HWND / NSView*, 供扩展使用(docs/07)
+};
+
+// 事件走回调(platform 线程调用, 由 embedder 的 WindowController 转投 ui 线程)
+class WindowDelegate {
+ public:
+  virtual void OnMetricsChanged(const ViewportMetrics&) = 0;
+  virtual void OnPointerPacket(PointerDataPacket) = 0;
+  virtual void OnKeyData(const KeyData&) = 0;
+  virtual bool OnCloseRequested() = 0;   // 返回 false 拦截关闭
+  virtual void OnFocusChanged(bool focused) = 0;
+  virtual void OnVisibilityChanged(bool visible) = 0;  // 最小化/还原 → 生命周期 Suspended
+ protected:
+  ~WindowDelegate() = default;
+};
+
+// engine/platform/render_surface.h — raster 线程使用
+class RenderSurface {
+ public:
+  virtual ~RenderSurface() = default;
+  virtual SurfaceKind kind() const = 0;            // kMetal | kAngleGl | kSoftware
+  virtual StatusOr<SurfaceFrame> AcquireFrame(Size physical_size) = 0;
+  // SurfaceFrame{kind, software: SoftwarePixels{pixels,row_bytes,width,height}(BGRA 预乘), gpu_target(M2), present}
+};
+```
+
+## 3. 输入事件归一化
+
+`input_types.h` 定义平台无关事件,在各实现内完成翻译:
+
+- 指针:坐标统一为**物理像素**、按钮位图、`PointerPhase{add,down,move,up,remove,hover,scroll}`;鼠标滚轮/触控板精细滚动统一为 scroll delta(px);Mac 的惯性滚动阶段保留 momentum 标记。
+- 键盘:三元组(physical key = USB HID usage,logical key,字符);修饰键状态快照。文本输入不走 KeyData,而走 IME 通道。
+- IME:`TextInputConnection` 实现双向协议——JS 侧 EditingState(文本、选区、composing 区间)同步给平台;平台回传 commit/composing 更新;候选窗位置由 JS 框架上报光标矩形。
+
+## 4. VSync 与显示
+
+`VsyncSource::RequestFrameCallback(cb)` 一次性请求,由 `Animator` 按需发起(无动画不请求,空闲零功耗)。`VsyncSource` 是 platform 线程归属的 `momo::Object`:请求经投递在 platform 线程调用,回调也在 platform 线程执行(回调一律在调用方线程执行;CVDisplayLink / DwmFlush 线程只投递, 不调用回调);由 `ObjectPtr` 持有,释放即 DeleteLater,析构可能晚于窗口销毁,实现不得依赖窗口对象存活(docs/08 §3)。Windows 用 DWM/DXGI 等待 vblank 的专用线程;macOS 用 CVDisplayLink。DPR 或刷新率变化(拖拽跨屏)通过 `OnMetricsChanged` 上报。
+
+## 5. 平台服务与消息通道
+
+剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露(通道名如 `momo/clipboard`、`momo/menu`),C++ 侧 handler 调用 `PlatformServices`。新增服务 = 新增通道 + JS 封装,不改 ui 绑定层,这与扩展机制使用同一套通路(docs/07)。
+
+## 6. 实现要点备忘
+
+- **Windows**:WndProc 中避免任何阻塞;WM_SIZE 期间的同步重绘用 raster 线程阻塞交换以消除拉伸闪烁;深色标题栏 DWMWA_USE_IMMERSIVE_DARK_MODE;高 DPI 混合显示器 WM_DPICHANGED。
+- **macOS**:NSView 开 layer-backed + CAMetalLayer;`drawableSize` 与窗口 resize 同步(contentsScale);全键盘访问与 performKeyEquivalent 处理快捷键;Space/全屏切换时 metrics 更新。

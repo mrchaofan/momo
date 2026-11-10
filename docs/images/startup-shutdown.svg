@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .sec { font-size: 14px; font-weight: 700; }
+    .lane { font-size: 12.5px; font-weight: 700; fill: #57606a; }
+    .n { font-size: 11.5px; font-weight: 700; }
+    .d { font-size: 11px; fill: #444c56; }
+    .pf { fill: #fff3e3; stroke: #d98a2b; }
+    .ui { fill: #e8f1ff; stroke: #4c7bd9; }
+    .rs { fill: #eaf7ee; stroke: #3e9a5b; }
+    .arr { stroke: #57606a; stroke-width: 1.4; fill: none; }
+    .sync { stroke: #cf222e; stroke-width: 1.4; fill: none; stroke-dasharray: 4 3; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#cf222e"/></marker>
+  </defs>
+  <text x="500" y="28" text-anchor="middle" class="title">启动与关闭时序（embedder/common/application.cc）</text>
+
+  <!-- ================= startup ================= -->
+  <text x="20" y="56" class="sec">启动</text>
+  <g fill="#f6f8fa" stroke="#d0d7de">
+    <rect x="20" y="66" width="960" height="58" rx="6"/>
+    <rect x="20" y="130" width="960" height="58" rx="6"/>
+    <rect x="20" y="194" width="960" height="58" rx="6"/>
+  </g>
+  <text x="30" y="100" class="lane">platform</text>
+  <text x="30" y="164" class="lane">ui</text>
+  <text x="30" y="228" class="lane">raster</text>
+
+  <rect x="100" y="73" width="125" height="44" rx="5" class="pf"/>
+  <text x="108" y="91" class="n">① main()</text><text x="108" y="108" class="d">解析参数 · 建 NSApp</text>
+  <rect x="235" y="73" width="135" height="44" rx="5" class="pf"/>
+  <text x="243" y="91" class="n">② Application::Create</text><text x="243" y="108" class="d">主线程 EventLoop</text>
+  <rect x="380" y="73" width="130" height="44" rx="5" class="pf"/>
+  <text x="388" y="91" class="n">③ Launch()</text><text x="388" y="108" class="d">建窗口并 Show</text>
+  <rect x="520" y="73" width="170" height="44" rx="5" class="pf"/>
+  <text x="528" y="91" class="n">④ Shell::Create</text><text x="528" y="108" class="d">投递两侧初始化 · Wait() 汇合</text>
+  <rect x="700" y="73" width="140" height="44" rx="5" class="pf"/>
+  <text x="708" y="91" class="n">⑤ AttachEngine</text><text x="708" y="108" class="d">AttachView(vsync)</text>
+  <rect x="850" y="73" width="122" height="44" rx="5" class="pf"/>
+  <text x="858" y="91" class="n">⑥ Run()</text><text x="858" y="108" class="d">[NSApp run]</text>
+
+  <rect x="520" y="137" width="150" height="44" rx="5" class="ui"/>
+  <text x="528" y="155" class="n">Engine::Create</text><text x="528" y="172" class="d">V8 → 绑定 → 执行 bundle</text>
+  <rect x="700" y="137" width="120" height="44" rx="5" class="ui"/>
+  <text x="708" y="155" class="n">SetVsyncWaiter</text><text x="708" y="172" class="d">定时器 → 平台 vsync</text>
+
+  <rect x="520" y="201" width="150" height="44" rx="5" class="rs"/>
+  <text x="528" y="219" class="n">new Rasterizer</text><text x="528" y="236" class="d">（尚无 surface）</text>
+  <rect x="700" y="201" width="140" height="44" rx="5" class="rs"/>
+  <text x="708" y="219" class="n">Setup(surface)</text><text x="708" y="236" class="d">建 Metal 后端 · 补画</text>
+
+  <g>
+    <line x1="600" y1="117" x2="600" y2="135" class="arr" marker-end="url(#a)"/>
+    <line x1="682" y1="117" x2="682" y2="223" class="arr"/>
+    <line x1="682" y1="223" x2="672" y2="223" class="arr" marker-end="url(#a)"/>
+    <line x1="760" y1="117" x2="760" y2="135" class="arr" marker-end="url(#a)"/>
+    <line x1="832" y1="117" x2="832" y2="199" class="arr" marker-end="url(#a)"/>
+  </g>
+  <text x="20" y="272" class="d">首帧：bundle 中的 runApp() 已调用 scheduleFrame；JS 早于 surface 交出的 LayerTree 由 Rasterizer::Setup 中的 DrawLastLayerTree 补画，替换闪屏底色。</text>
+
+  <!-- ================= shutdown ================= -->
+  <text x="20" y="310" class="sec">关闭（顺序错了就会在线程销毁时崩溃）</text>
+  <g fill="#f6f8fa" stroke="#d0d7de">
+    <rect x="20" y="320" width="960" height="58" rx="6"/>
+    <rect x="20" y="384" width="960" height="58" rx="6"/>
+    <rect x="20" y="448" width="960" height="58" rx="6"/>
+  </g>
+  <text x="30" y="354" class="lane">platform</text>
+  <text x="30" y="418" class="lane">ui</text>
+  <text x="30" y="482" class="lane">raster</text>
+
+  <rect x="100" y="327" width="130" height="44" rx="5" class="pf"/>
+  <text x="108" y="345" class="n">① Cmd+Q / 关窗</text><text x="108" y="362" class="d">RequestTerminate()</text>
+  <rect x="245" y="391" width="150" height="44" rx="5" class="ui"/>
+  <text x="253" y="409" class="n">② onCloseRequested()</text><text x="253" y="426" class="d">JS 返回 false 可取消</text>
+  <rect x="410" y="327" width="110" height="44" rx="5" class="pf"/>
+  <text x="418" y="345" class="n">③ Terminate()</text><text x="418" y="362" class="d">→ Terminating</text>
+
+  <rect x="535" y="327" width="120" height="44" rx="5" class="pf"/>
+  <text x="543" y="345" class="n">④ DetachEngine</text><text x="543" y="362" class="d">vsync DeleteLater</text>
+  <rect x="535" y="391" width="120" height="44" rx="5" class="ui"/>
+  <text x="543" y="409" class="n">切回定时器</text><text x="543" y="426" class="d">（异步）</text>
+  <rect x="535" y="455" width="120" height="44" rx="5" class="rs"/>
+  <text x="543" y="473" class="n">Teardown()</text><text x="543" y="490" class="d">停用 surface</text>
+
+  <rect x="670" y="327" width="125" height="44" rx="5" class="pf"/>
+  <text x="678" y="345" class="n">⑤ Shell::Shutdown</text><text x="678" y="362" class="d">扩展 on_detach</text>
+  <rect x="670" y="391" width="125" height="44" rx="5" class="ui"/>
+  <text x="678" y="409" class="n">engine_.reset()</text><text x="678" y="426" class="d">销毁 JS 运行时</text>
+  <rect x="670" y="455" width="125" height="44" rx="5" class="rs"/>
+  <text x="678" y="473" class="n">rasterizer_.reset()</text><text x="678" y="490" class="d">释放 GPU 资源</text>
+
+  <rect x="808" y="327" width="80" height="44" rx="5" class="pf"/>
+  <text x="815" y="345" class="n">⑥ 销毁窗口</text><text x="815" y="362" class="d">join 线程</text>
+  <rect x="896" y="327" width="78" height="44" rx="5" class="pf"/>
+  <text x="903" y="345" class="n">⑦ 退出循环</text><text x="903" y="362" class="d">NSApp stop</text>
+
+  <g>
+    <path d="M230,360 L245,398" class="arr" marker-end="url(#a)"/>
+    <path d="M395,400 L410,366" class="arr" marker-end="url(#a)"/>
+    <line x1="560" y1="371" x2="560" y2="389" class="arr" marker-end="url(#a)"/>
+    <path d="M645,371 L645,452" class="sync" marker-end="url(#r)"/>
+    <path d="M700,371 L700,389" class="sync" marker-end="url(#r)"/>
+    <path d="M782,371 L782,452" class="sync" marker-end="url(#r)"/>
+  </g>
+  <text x="20" y="526" class="d">红色虚线 = PostTaskAndWait 同步汇合（只在启动/关闭出现）。⑥ ThreadHost::Join 按 ui → raster → io 顺序 join。</text>
+  <text x="20" y="544" class="d">⑦ EventLoop::Terminate：当前任务返回后的安全点排空、析构 DeleteLater 对象，再 [NSApp stop:]。JS 超时不回复关闭请求时强制 _Exit(1)。</text>
+</svg>

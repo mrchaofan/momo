@@ -1,0 +1,18 @@
+{
+  "name": "@momo-examples/ext-hello",
+  "version": "0.1.0",
+  "description": "Minimal Momo extension: native functions, async Promise, message channel",
+  "main": "js/index.ts",
+  "momo": {
+    "extension": {
+      "id": "momo.example.hello",
+      "specifier": "ext:hello",
+      "native": {
+        "macos-arm64": "prebuilt/macos-arm64/libext_hello.dylib",
+        "macos-x64": "prebuilt/macos-x64/libext_hello.dylib",
+        "windows-x64": "prebuilt/windows-x64/ext_hello.dll"
+      },
+      "capabilities": []
+    }
+  }
+}

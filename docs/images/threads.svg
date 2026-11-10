@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="600" viewBox="0 0 1000 600">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .h { font-size: 15px; font-weight: 700; }
+    .p { font-size: 11px; fill: #57606a; }
+    .i { font-size: 12px; }
+    .l { font-size: 11.5px; fill: #24292f; paint-order: stroke; stroke: #ffffff; stroke-width: 4px; stroke-linejoin: round; }
+    .sec { font-size: 13px; font-weight: 700; fill: #57606a; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#57606a"/>
+    </marker>
+  </defs>
+  <text x="500" y="30" text-anchor="middle" class="title">四个 TaskRunner：谁住在哪个线程</text>
+
+  <!-- columns -->
+  <g>
+    <rect x="20" y="48" width="225" height="250" rx="10" fill="#fff3e3" stroke="#d98a2b" stroke-width="1.5"/>
+    <text x="34" y="72" class="h">platform（OS 主线程）</text>
+    <text x="34" y="90" class="p">EventLoop + NativeMessagePump</text>
+    <text x="34" y="104" class="p">↳ MacNativeLoop（GCD 主队列）</text>
+    <line x1="30" y1="114" x2="235" y2="114" stroke="#d98a2b" stroke-opacity=".4"/>
+    <text x="34" y="134" class="i">Application · WindowController</text>
+    <text x="34" y="154" class="i">MacWindow · MomoContentView</text>
+    <text x="34" y="174" class="i">Shell（归属对象）</text>
+    <text x="34" y="194" class="i">MacVsyncDisplayLink</text>
+    <text x="34" y="214" class="i">PlatformServices（剪贴板/URL）</text>
+    <text x="34" y="234" class="i">MacTextInput（IME）</text>
+    <text x="34" y="254" class="i">扩展 on_attach / on_detach</text>
+    <text x="34" y="284" class="p">禁止：长任务（会卡住窗口事件）</text>
+
+    <rect x="265" y="48" width="225" height="250" rx="10" fill="#e8f1ff" stroke="#4c7bd9" stroke-width="1.5"/>
+    <text x="279" y="72" class="h">ui（momo.ui）</text>
+    <text x="279" y="90" class="p">EventLoop + DefaultMessagePump</text>
+    <text x="279" y="104" class="p">8 MiB 栈（容纳 V8 栈上限）</text>
+    <line x1="275" y1="114" x2="480" y2="114" stroke="#4c7bd9" stroke-opacity=".4"/>
+    <text x="279" y="134" class="i">Engine · Animator</text>
+    <text x="279" y="154" class="i">VsyncWaiter（Timer / Platform）</text>
+    <text x="279" y="174" class="i">AppDriver → JsRuntime（V8）</text>
+    <text x="279" y="194" class="i">UiBindings（momo:ui …）</text>
+    <text x="279" y="214" class="i">全部 JS：框架 + 应用</text>
+    <text x="279" y="234" class="i">产出 LayerTree</text>
+    <text x="279" y="284" class="p">禁止：阻塞 IO、平台 API、GPU</text>
+
+    <rect x="510" y="48" width="225" height="250" rx="10" fill="#eaf7ee" stroke="#3e9a5b" stroke-width="1.5"/>
+    <text x="524" y="72" class="h">raster（momo.raster）</text>
+    <text x="524" y="90" class="p">EventLoop + DefaultMessagePump</text>
+    <text x="524" y="104" class="p">持有 GPU 上下文</text>
+    <line x1="520" y1="114" x2="725" y2="114" stroke="#3e9a5b" stroke-opacity=".4"/>
+    <text x="524" y="134" class="i">Rasterizer</text>
+    <text x="524" y="154" class="i">RenderBackend</text>
+    <text x="524" y="174" class="i">  ├ MetalRasterizer（Skia Metal）</text>
+    <text x="524" y="194" class="i">  └ SoftwareBackend（CPU 光栅）</text>
+    <text x="524" y="214" class="i">使用 RenderSurface（窗口拥有）</text>
+    <text x="524" y="234" class="i">Preroll → Paint → flush → present</text>
+    <text x="524" y="284" class="p">禁止：调用 JS、平台 API</text>
+
+    <rect x="755" y="48" width="225" height="250" rx="10" fill="#f1eef8" stroke="#7a61b8" stroke-width="1.5"/>
+    <text x="769" y="72" class="h">io（momo.io）</text>
+    <text x="769" y="90" class="p">EventLoop + DefaultMessagePump</text>
+    <text x="769" y="104" class="p">另有 WorkerPool（扩展可用）</text>
+    <line x1="765" y1="114" x2="970" y2="114" stroke="#7a61b8" stroke-opacity=".4"/>
+    <text x="769" y="134" class="i">图片解码（Codec）</text>
+    <text x="769" y="154" class="i">资源读取</text>
+    <text x="769" y="174" class="i">扩展 channel handler（可选）</text>
+    <text x="769" y="284" class="p">禁止：调用 JS</text>
+  </g>
+
+  <text x="20" y="330" class="sec">跨线程通信（全部为投递任务，帧路径上零阻塞等待）</text>
+
+  <g stroke="#8c959f" stroke-dasharray="2 4" stroke-width="1">
+    <line x1="132" y1="298" x2="132" y2="595"/><line x1="377" y1="298" x2="377" y2="595"/>
+    <line x1="622" y1="298" x2="622" y2="595"/><line x1="867" y1="298" x2="867" y2="595"/>
+  </g>
+  <!-- arrows: centers 132, 377, 622, 867 -->
+  <g stroke="#57606a" stroke-width="1.6" fill="none">
+    <line x1="132" y1="365" x2="377" y2="365" marker-end="url(#a)"/>
+    <line x1="377" y1="405" x2="132" y2="405" marker-end="url(#a)"/>
+    <line x1="132" y1="445" x2="377" y2="445" marker-end="url(#a)" stroke-dasharray="5 3"/>
+    <line x1="377" y1="485" x2="622" y2="485" marker-end="url(#a)"/>
+    <line x1="622" y1="525" x2="132" y2="525" marker-end="url(#a)"/>
+    <line x1="377" y1="568" x2="867" y2="568" marker-end="url(#a)" marker-start="url(#a)"/>
+    <line x1="132" y1="585" x2="622" y2="585" marker-end="url(#a)" stroke="#cf222e" stroke-dasharray="2 3"/>
+  </g>
+  <g fill="#57606a"><circle cx="132" cy="365" r="3"/><circle cx="377" cy="405" r="3"/><circle cx="132" cy="445" r="3"/><circle cx="377" cy="485" r="3"/><circle cx="622" cy="525" r="3"/><circle cx="132" cy="585" r="3" fill="#cf222e"/></g>
+
+  <text x="395" y="369" class="l">① 输入 / metrics / 焦点 / 生命周期：Shell::PostToEngine</text>
+  <text x="395" y="409" class="l">② 请求 vsync：PostToObject(WeakPtr&lt;VsyncSource&gt;) → RequestFrameCallback</text>
+  <text x="395" y="449" class="l">③ vsync 到达：CVDisplayLink 线程投递到 platform，回调在 platform 执行后再投递回 ui</text>
+  <text x="640" y="489" class="l">④ LayerTree 入 Pipeline（深度 2）+ PostTask(Draw)</text>
+  <text x="640" y="529" class="l">⑤ 软件 present：dispatch_async 设 layer.contents</text>
+  <text x="395" y="557" class="l">⑥ 图片解码：PostTaskAndReplyWithResult(io → ui)</text>
+  <text x="640" y="589" class="l" style="fill:#cf222e">⑦ 仅启动/关闭：AttachView/DetachView/Shutdown 同步汇合</text>
+</svg>

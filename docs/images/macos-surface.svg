@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="610" viewBox="0 0 1000 610">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .h { font-size: 14px; font-weight: 700; }
+    .n { font-size: 12px; font-weight: 700; }
+    .i { font-size: 11.5px; }
+    .d { font-size: 11px; fill: #57606a; }
+    .tag { font-size: 10.5px; font-weight: 700; }
+    .arr { stroke: #57606a; stroke-width: 1.5; fill: none; }
+    .rs { fill: #eaf7ee; stroke: #3e9a5b; }
+    .pf { fill: #fff3e3; stroke: #d98a2b; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+  <text x="500" y="28" text-anchor="middle" class="title">macOS 渲染表面：Metal 路径与 IOSurface 软件路径</text>
+
+  <!-- view hierarchy -->
+  <rect x="20" y="44" width="960" height="70" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+  <text x="34" y="66" class="n">视图层级</text>
+  <rect x="34" y="74" width="150" height="30" rx="5" class="pf"/><text x="109" y="94" text-anchor="middle" class="i">NSWindow</text>
+  <line x1="184" y1="89" x2="204" y2="89" class="arr" marker-end="url(#a)"/>
+  <rect x="206" y="74" width="370" height="30" rx="5" class="pf"/><text x="391" y="94" text-anchor="middle" class="i">MomoContentView（layer-backed，layer.contents = IOSurface）</text>
+  <line x1="576" y1="89" x2="598" y2="89" class="arr" marker-end="url(#a)"/>
+  <rect x="600" y="74" width="215" height="30" rx="5" class="pf"/><text x="707" y="94" text-anchor="middle" class="i">子层 CAMetalLayer（Metal 路径）</text>
+  <text x="826" y="86" class="d">BGRA8Unorm · sRGB</text><text x="826" y="102" class="d">maximumDrawableCount=3</text>
+
+  <!-- Metal column -->
+  <rect x="20" y="128" width="470" height="350" rx="10" fill="#ffffff" stroke="#3e9a5b" stroke-width="1.5"/>
+  <text x="34" y="152" class="h">Metal 路径（默认）· MacMetalSurface</text>
+  <g>
+    <rect x="34" y="164" width="442" height="44" rx="6" class="rs"/>
+    <text x="44" y="182" class="n">AcquireFrame(size)</text><text x="200" y="182" class="tag" fill="#3e9a5b">raster</text>
+    <text x="44" y="199" class="i">drawableSize 不一致 → 显式 CATransaction 修改；[layer nextDrawable]</text>
+    <line x1="255" y1="208" x2="255" y2="222" class="arr" marker-end="url(#a)"/>
+    <rect x="34" y="224" width="442" height="44" rx="6" class="rs"/>
+    <text x="44" y="242" class="n">SurfaceFrame{ kMetal, gpu_target = drawable }</text>
+    <text x="44" y="259" class="i">present 闭包强引用 drawable 与 MTLCommandQueue</text>
+    <line x1="255" y1="268" x2="255" y2="282" class="arr" marker-end="url(#a)"/>
+    <rect x="34" y="284" width="442" height="60" rx="6" class="rs"/>
+    <text x="44" y="302" class="n">MetalRasterizer::Draw</text><text x="200" y="302" class="tag" fill="#3e9a5b">raster</text>
+    <text x="44" y="319" class="i">drawable.texture → GrBackendRenderTarget → SkSurface</text>
+    <text x="44" y="336" class="i">clear → Preroll → Paint → flushAndSubmit（不等 GPU）</text>
+    <line x1="255" y1="344" x2="255" y2="358" class="arr" marker-end="url(#a)"/>
+    <rect x="34" y="360" width="442" height="44" rx="6" class="rs"/>
+    <text x="44" y="378" class="n">present()</text><text x="200" y="378" class="tag" fill="#3e9a5b">raster</text>
+    <text x="44" y="395" class="i">同一 queue 新建 commandBuffer：presentDrawable + commit</text>
+    <text x="44" y="426" class="d">• 尺寸以 raster 请求为准，resize 无需跨线程同步 drawableSize</text>
+    <text x="44" y="444" class="d">• 主线程只在 setFrameSize / backing 变化时更新 layer.frame 与 contentsScale</text>
+    <text x="44" y="462" class="d">• nextDrawable 返回 nil → 本帧丢弃（不阻塞）</text>
+  </g>
+
+  <!-- Software column -->
+  <rect x="510" y="128" width="470" height="350" rx="10" fill="#ffffff" stroke="#d98a2b" stroke-width="1.5"/>
+  <text x="524" y="152" class="h">软件路径（回退）· MacSoftwareSurface</text>
+  <g>
+    <rect x="524" y="164" width="442" height="44" rx="6" class="rs"/>
+    <text x="534" y="182" class="n">AcquireFrame(size)</text><text x="690" y="182" class="tag" fill="#3e9a5b">raster</text>
+    <text x="534" y="199" class="i">PickBuffer：≤3 个 IOSurface，跳过 pending/displayed/在用</text>
+    <line x1="745" y1="208" x2="745" y2="222" class="arr" marker-end="url(#a)"/>
+    <rect x="524" y="224" width="442" height="44" rx="6" class="rs"/>
+    <text x="534" y="242" class="n">IOSurfaceLock → SurfaceFrame{ kSoftware, pixels }</text>
+    <text x="534" y="259" class="i">全部缓冲忙 → Unavailable，本帧丢弃</text>
+    <line x1="745" y1="268" x2="745" y2="282" class="arr" marker-end="url(#a)"/>
+    <rect x="524" y="284" width="442" height="60" rx="6" class="rs"/>
+    <text x="534" y="302" class="n">SoftwareBackend</text><text x="690" y="302" class="tag" fill="#3e9a5b">raster</text>
+    <text x="534" y="319" class="i">graphics::RasterizeLayerTree 直接画进 IOSurface</text>
+    <text x="534" y="336" class="i">（BGRA 预乘，零拷贝）</text>
+    <line x1="745" y1="344" x2="745" y2="358" class="arr" marker-end="url(#a)"/>
+    <rect x="524" y="360" width="215" height="44" rx="6" class="rs"/>
+    <text x="534" y="378" class="n">present()</text><text x="600" y="378" class="tag" fill="#3e9a5b">raster</text>
+    <text x="534" y="395" class="i">Unlock；pending = 新帧</text>
+    <line x1="739" y1="382" x2="755" y2="382" class="arr" marker-end="url(#a)"/>
+    <rect x="757" y="360" width="209" height="44" rx="6" class="pf"/>
+    <text x="767" y="378" class="n">DisplayPending</text><text x="862" y="378" class="tag" fill="#b35900">main</text>
+    <text x="767" y="395" class="i">layer.contents = pending</text>
+    <text x="534" y="426" class="d">• pending 槽只有一个：主线程没来得及显示的旧帧被新帧覆盖</text>
+    <text x="534" y="444" class="d">• 槽从空变满才 dispatch_async 一次 → 主队列与内存有界</text>
+    <text x="534" y="462" class="d">• IOSurface 标记 sRGB，由 WindowServer 做色彩匹配</text>
+  </g>
+
+  <!-- fallback chain -->
+  <text x="20" y="506" class="h">选择与回退</text>
+  <g>
+    <rect x="20" y="518" width="215" height="74" rx="8" class="pf"/>
+    <text x="30" y="538" class="n">MacWindow 构造</text><text x="160" y="538" class="tag" fill="#b35900">main</text>
+    <text x="30" y="556" class="i">MOMO_SOFTWARE_RENDERING=1</text>
+    <text x="30" y="574" class="i">或无 MTLDevice → 直接软件</text>
+    <line x1="235" y1="555" x2="263" y2="555" class="arr" marker-end="url(#a)"/>
+    <rect x="265" y="518" width="225" height="74" rx="8" class="rs"/>
+    <text x="275" y="538" class="n">Rasterizer::Setup</text><text x="400" y="538" class="tag" fill="#3e9a5b">raster</text>
+    <text x="275" y="556" class="i">CreateRenderBackend(kind)</text>
+    <text x="275" y="574" class="i">GrDirectContext 建不出来？</text>
+    <line x1="490" y1="555" x2="518" y2="555" class="arr" marker-end="url(#a)"/>
+    <rect x="520" y="518" width="225" height="74" rx="8" class="rs"/>
+    <text x="530" y="538" class="n">surface.FallBackToSoftware()</text>
+    <text x="530" y="556" class="i">kind() 变为 kSoftware</text>
+    <text x="530" y="574" class="i">主线程移除 CAMetalLayer</text>
+    <line x1="745" y1="555" x2="773" y2="555" class="arr" marker-end="url(#a)"/>
+    <rect x="775" y="518" width="205" height="74" rx="8" class="rs"/>
+    <text x="785" y="538" class="n">重建 SoftwareBackend</text>
+    <text x="785" y="556" class="i">之后 AcquireFrame 委托</text>
+    <text x="785" y="574" class="i">内部的 MacSoftwareSurface</text>
+  </g>
+</svg>

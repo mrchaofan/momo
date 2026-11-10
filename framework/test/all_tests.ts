@@ -1,0 +1,15 @@
+// 全部测试文件(按依赖层次)。
+import "./foundation_test";
+import "./services_test";
+import "./animation_test";
+import "./smoke_test";
+import "./widgets_test";
+import "./layout_test";
+import "./gestures_test";
+import "./interaction_test";
+import "./editable_test";
+import "./painting_test";
+import "./material_test";
+import "./binding_test";
+import "./platform_view_test";
+import "./view_test";

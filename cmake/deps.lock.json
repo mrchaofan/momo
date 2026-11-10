@@ -1,0 +1,41 @@
+{
+  "comment": "预编译三方依赖锁定文件(docs/09 §2)。由 tools/fetch_deps.py 读取: 下载 → SHA256 校验 → 解压到 third_party/prebuilt/<name>/。",
+  "version": 1,
+  "deps": {
+    "skia": {
+      "version": "m144-e2e6623374-4",
+      "source": "JetBrains/skia-pack GitHub release (静态库, 含 skparagraph/skshaper/skunicode + ICU)",
+      "platforms": {
+        "macos-arm64": {
+          "url": "https://github.com/JetBrains/skia-pack/releases/download/m144-e2e6623374-4/Skia-m144-e2e6623374-4-macos-Release-arm64.zip",
+          "sha256": "5ec2f81f28bf79ce4b9fd744dd183b3f718cb72a742a8465ae44f395a7bfb411",
+          "size": 36214866,
+          "archive": "zip"
+        },
+        "windows-x64": {
+          "url": "https://github.com/JetBrains/skia-pack/releases/download/m144-e2e6623374-4/Skia-m144-e2e6623374-4-windows-Release-x64.zip",
+          "sha256": "50869b098a4f72f5843687093a1a8fdd94e5d61d98397024bb4e521227fedcba",
+          "size": 45933565,
+          "archive": "zip"
+        }
+      }
+    },
+    "v8": {
+      "version": "15.8.62.9",
+      "source": "Homebrew bottle (component build: use_custom_libcxx=false, v8_enable_sandbox=false, i18n + 内置 ICU)",
+      "platforms": {
+        "macos-arm64": {
+          "url": "https://ghcr.io/v2/homebrew/core/v8/blobs/sha256:7326c67e8a80c620ea611c4d7b0eecde97cc495bee7fcb175ab00fc08afbc3be",
+          "sha256": "7326c67e8a80c620ea611c4d7b0eecde97cc495bee7fcb175ab00fc08afbc3be",
+          "size": 22024266,
+          "archive": "tar.gz",
+          "http_headers": {
+            "Authorization": "Bearer QQ=="
+          },
+          "strip_prefix": "v8/15.8.62.9",
+          "post_extract": "homebrew_relocate"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@momo/framework-workspace",
+  "private": true,
+  "version": "0.4.0",
+  "description": "Momo UI framework (TypeScript) workspace root. The published package is packages/momo (@momo/framework).",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build_framework.mjs",
+    "build:counter": "node scripts/build_example.mjs ../examples/counter/src/main.ts ../examples/counter/dist/main.js",
+    "build:todo": "node scripts/build_example.mjs ../examples/todo/src/main.ts ../examples/todo/dist/main.js",
+    "build:examples": "npm run build:counter && npm run build:todo",
+    "build:tests": "node scripts/build_tests.mjs",
+    "test": "node scripts/build_tests.mjs && node out/test/node_main.mjs && node out/test/example_counter.mjs && node out/test/example_todo.mjs && node out/test/example_browser.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="740" viewBox="0 0 1000 740">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .hd { font-size: 12.5px; font-weight: 700; }
+    .m { font-size: 11.5px; paint-order: stroke; stroke: #ffffff; stroke-width: 4px; stroke-linejoin: round; }
+    .nt { font-size: 11.5px; }
+    .note { fill: #fffbea; stroke: #d4a72c; }
+    .life { stroke: #8c959f; stroke-dasharray: 4 4; }
+    .msg { stroke: #24292f; stroke-width: 1.5; fill: none; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#24292f"/>
+    </marker>
+  </defs>
+  <text x="500" y="28" text-anchor="middle" class="title">一帧的完整路径（Metal 后端）</text>
+
+  <!-- lifelines -->
+  <g>
+    <line x1="80" y1="80" x2="80" y2="720" class="life"/>
+    <line x1="230" y1="80" x2="230" y2="720" class="life"/>
+    <line x1="400" y1="80" x2="400" y2="720" class="life"/>
+    <line x1="590" y1="80" x2="590" y2="720" class="life"/>
+    <line x1="770" y1="80" x2="770" y2="720" class="life"/>
+    <line x1="920" y1="80" x2="920" y2="720" class="life"/>
+  </g>
+  <g>
+    <rect x="15" y="46" width="130" height="34" rx="6" fill="#eeeeee" stroke="#8c959f"/>
+    <text x="80" y="68" text-anchor="middle" class="hd">CVDisplayLink 线程</text>
+    <rect x="165" y="46" width="130" height="34" rx="6" fill="#fff3e3" stroke="#d98a2b"/>
+    <text x="230" y="68" text-anchor="middle" class="hd">platform（主线程）</text>
+    <rect x="320" y="46" width="160" height="34" rx="6" fill="#e8f1ff" stroke="#4c7bd9"/>
+    <text x="400" y="68" text-anchor="middle" class="hd">ui · C++ Engine/Animator</text>
+    <rect x="510" y="46" width="160" height="34" rx="6" fill="#dbe9ff" stroke="#4c7bd9"/>
+    <text x="590" y="68" text-anchor="middle" class="hd">ui · JS 框架</text>
+    <rect x="705" y="46" width="130" height="34" rx="6" fill="#eaf7ee" stroke="#3e9a5b"/>
+    <text x="770" y="68" text-anchor="middle" class="hd">raster</text>
+    <rect x="855" y="46" width="130" height="34" rx="6" fill="#eeeeee" stroke="#8c959f"/>
+    <text x="920" y="68" text-anchor="middle" class="hd">CAMetalLayer/GPU</text>
+  </g>
+
+  <!-- 1 scheduleFrame -->
+  <line x1="590" y1="112" x2="402" y2="112" class="msg" marker-end="url(#a)"/>
+  <text x="495" y="106" text-anchor="middle" class="m">① window.scheduleFrame()</text>
+  <!-- 2 note -->
+  <rect x="330" y="128" width="330" height="22" rx="4" class="note"/>
+  <text x="338" y="143" class="nt">② Animator::RequestFrame → VsyncWaiter::AwaitVsync</text>
+  <!-- 3 request -->
+  <line x1="400" y1="178" x2="232" y2="178" class="msg" marker-end="url(#a)"/>
+  <text x="315" y="172" text-anchor="middle" class="m">③ RequestFrameCallback(cb)</text>
+  <!-- 4 note -->
+  <rect x="160" y="194" width="200" height="22" rx="4" class="note"/>
+  <text x="168" y="209" class="nt">④ CVDisplayLinkStart（未运行时）</text>
+  <!-- 5 tick -->
+  <rect x="15" y="232" width="200" height="22" rx="4" class="note"/>
+  <text x="23" y="247" class="nt">⑤ vsync tick：只记帧时间并投递</text>
+  <!-- 6 -->
+  <line x1="80" y1="280" x2="228" y2="280" class="msg" marker-end="url(#a)"/>
+  <text x="155" y="274" text-anchor="middle" class="m">⑥ PostToObject(OnTick)</text>
+  <line x1="232" y1="280" x2="398" y2="280" class="msg" marker-end="url(#a)"/>
+  <text x="315" y="274" text-anchor="middle" class="m">cb 在 platform 执行 → 回 ui</text>
+  <!-- 7 BeginFrame -->
+  <rect x="300" y="296" width="455" height="22" rx="4" class="note"/>
+  <text x="308" y="311" class="nt">⑦ Animator::BeginFrame：pipeline.Produce()；无空槽 → 跳过本次 vsync（背压）</text>
+  <!-- 8 onBeginFrame -->
+  <line x1="400" y1="346" x2="588" y2="346" class="msg" marker-end="url(#a)"/>
+  <text x="495" y="340" text-anchor="middle" class="m">⑧ onBeginFrame(t)：动画</text>
+  <!-- 9 onDrawFrame -->
+  <line x1="400" y1="378" x2="588" y2="378" class="msg" marker-end="url(#a)"/>
+  <text x="495" y="372" text-anchor="middle" class="m">⑨ onDrawFrame()</text>
+  <!-- 10 note -->
+  <rect x="470" y="394" width="380" height="40" rx="4" class="note"/>
+  <text x="478" y="410" class="nt">⑩ buildScope → flushLayout → flushPaint → compositeFrame</text>
+  <text x="478" y="427" class="nt">    Canvas 录制 DisplayList · SceneBuilder 组装 LayerTree</text>
+  <!-- 11 render -->
+  <line x1="590" y1="462" x2="402" y2="462" class="msg" marker-end="url(#a)"/>
+  <text x="495" y="456" text-anchor="middle" class="m">⑪ window.render(scene)</text>
+  <!-- 12 note -->
+  <rect x="255" y="478" width="330" height="22" rx="4" class="note"/>
+  <text x="263" y="493" class="nt">⑫ Animator::Render → continuation.Complete(tree)</text>
+  <!-- 13 draw -->
+  <line x1="400" y1="530" x2="768" y2="530" class="msg" marker-end="url(#a)"/>
+  <text x="585" y="524" text-anchor="middle" class="m">⑬ Shell::OnEngineDraw → PostTask(Rasterizer::Draw)</text>
+  <!-- 14 note -->
+  <rect x="640" y="546" width="270" height="22" rx="4" class="note"/>
+  <text x="648" y="561" class="nt">⑭ pipeline.Consume → surface.AcquireFrame()</text>
+  <!-- 15 nextDrawable -->
+  <line x1="770" y1="594" x2="918" y2="594" class="msg" marker-end="url(#a)"/>
+  <text x="845" y="588" text-anchor="middle" class="m">⑮ nextDrawable</text>
+  <!-- 16 note -->
+  <rect x="600" y="610" width="310" height="22" rx="4" class="note"/>
+  <text x="608" y="625" class="nt">⑯ Preroll / Paint → SkCanvas → flushAndSubmit</text>
+  <!-- 17 present -->
+  <line x1="770" y1="660" x2="918" y2="660" class="msg" marker-end="url(#a)"/>
+  <text x="845" y="654" text-anchor="middle" class="m">⑰ presentDrawable</text>
+  <!-- 18 idle -->
+  <line x1="80" y1="700" x2="228" y2="700" class="msg" marker-end="url(#a)" stroke-dasharray="5 3"/>
+  <text x="240" y="704" class="m">⑱ 下一个 tick 投递到 platform，没有请求 → 停掉 CVDisplayLink（空闲零功耗）</text>
+</svg>

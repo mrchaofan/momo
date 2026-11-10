@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="560" viewBox="0 0 1000 560">
+  <style>
+    text { font-family: -apple-system, "PingFang SC", "Helvetica Neue", Arial, sans-serif; fill: #1f2328; }
+    .title { font-size: 18px; font-weight: 700; }
+    .h { font-size: 14px; font-weight: 700; }
+    .n { font-size: 12px; font-weight: 700; }
+    .i { font-size: 11.5px; }
+    .c { font-size: 11px; font-family: Menlo, Consolas, monospace; fill: #0550ae; }
+    .d { font-size: 11px; fill: #57606a; }
+    .arr { stroke: #57606a; stroke-width: 1.6; fill: none; }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#57606a"/></marker>
+  </defs>
+  <text x="500" y="28" text-anchor="middle" class="title">base：EventLoop + MessagePump，以及 Object 的延迟析构</text>
+
+  <!-- producers -->
+  <rect x="20" y="50" width="200" height="200" rx="10" fill="#f6f8fa" stroke="#8c959f"/>
+  <text x="34" y="74" class="h">任意线程</text>
+  <text x="34" y="100" class="c">runner-&gt;PostTask(fn)</text>
+  <text x="34" y="122" class="c">PostDelayedTask(fn, delay)</text>
+  <text x="34" y="144" class="c">obj-&gt;DeleteLater()</text>
+  <text x="34" y="166" class="c">PostToObject(weak, fn)</text>
+  <text x="34" y="194" class="d">TaskRunner 以 shared_ptr 共享，</text>
+  <text x="34" y="210" class="d">所有方法线程安全。</text>
+  <text x="34" y="234" class="d">循环结束后投递的任务被丢弃。</text>
+
+  <line x1="220" y1="140" x2="252" y2="140" class="arr" marker-end="url(#a)"/>
+
+  <!-- EventLoop -->
+  <rect x="255" y="50" width="345" height="200" rx="10" fill="#f1eef8" stroke="#7a61b8" stroke-width="1.5"/>
+  <text x="269" y="74" class="h">EventLoop（每个线程一个）</text>
+  <text x="269" y="96" class="c">queue_: map&lt;(到期时间, 序号), Closure&gt;</text>
+  <text x="269" y="114" class="c">deferred_deletes_: vector&lt;Object*&gt;</text>
+  <line x1="265" y1="124" x2="590" y2="124" stroke="#7a61b8" stroke-opacity=".4"/>
+  <text x="269" y="144" class="n">DoWork()（一轮迭代）</text>
+  <text x="269" y="164" class="i">1. 取"此刻已到期"任务的快照，按序执行</text>
+  <text x="269" y="182" class="i">   （执行中新投递的任务进入下一轮）</text>
+  <text x="269" y="200" class="i">2. task_depth()==0 → 安全点：析构 DeleteLater 对象</text>
+  <text x="269" y="218" class="i">   （嵌套循环中只执行任务，不析构）</text>
+  <text x="269" y="236" class="i">3. 返回下一次唤醒时刻，交给 pump 等待</text>
+
+  <line x1="600" y1="140" x2="632" y2="140" class="arr" marker-end="url(#a)"/>
+
+  <!-- pumps -->
+  <rect x="635" y="50" width="345" height="200" rx="10" fill="#ffffff" stroke="#8c959f"/>
+  <text x="649" y="74" class="h">MessagePump（等待 / 唤醒）</text>
+  <rect x="647" y="84" width="321" height="46" rx="6" fill="#e8f1ff" stroke="#4c7bd9"/>
+  <text x="657" y="102" class="n">DefaultMessagePump · ui / raster / io</text>
+  <text x="657" y="121" class="i">condition_variable 定时等待；ScheduleWork = notify</text>
+  <rect x="647" y="138" width="321" height="102" rx="6" fill="#fff3e3" stroke="#d98a2b"/>
+  <text x="657" y="156" class="n">NativeMessagePump · platform（OS 主线程）</text>
+  <text x="657" y="175" class="i">ScheduleWork → NativeLoop::PostTask(RunDoWork)</text>
+  <text x="657" y="193" class="i">MacNativeLoop → dispatch_async(主队列)</text>
+  <text x="657" y="211" class="i">Run = [NSApp run]，Quit = [NSApp stop:] + 空事件</text>
+  <text x="657" y="229" class="d">GCD 主队列在 live resize / 模态时同样被服务</text>
+
+  <!-- Object model -->
+  <text x="20" y="292" class="h">Object 模型：线程归属（affinity）+ 独占所有权 + 弱引用</text>
+  <g>
+    <rect x="20" y="306" width="180" height="56" rx="8" fill="#ffffff" stroke="#57606a"/>
+    <text x="32" y="328" class="n">ObjectPtr&lt;T&gt; 释放</text>
+    <text x="32" y="348" class="d">unique_ptr + 删除器</text>
+    <line x1="200" y1="334" x2="228" y2="334" class="arr" marker-end="url(#a)"/>
+    <rect x="230" y="306" width="180" height="56" rx="8" fill="#ffffff" stroke="#57606a"/>
+    <text x="242" y="328" class="n">obj-&gt;DeleteLater()</text>
+    <text x="242" y="348" class="d">任意线程、幂等</text>
+    <line x1="410" y1="334" x2="438" y2="334" class="arr" marker-end="url(#a)"/>
+    <rect x="440" y="306" width="250" height="56" rx="8" fill="#f1eef8" stroke="#7a61b8"/>
+    <text x="452" y="328" class="n">归属线程 EventLoop</text>
+    <text x="452" y="348" class="d">ScheduleDeleteLater → deferred_deletes_</text>
+    <line x1="690" y1="334" x2="718" y2="334" class="arr" marker-end="url(#a)"/>
+    <rect x="720" y="306" width="260" height="56" rx="8" fill="#eaf7ee" stroke="#3e9a5b"/>
+    <text x="732" y="328" class="n">安全点 delete obj</text>
+    <text x="732" y="348" class="d">一定在归属线程，栈上已无回调</text>
+  </g>
+  <g>
+    <rect x="20" y="380" width="180" height="56" rx="8" fill="#ffffff" stroke="#57606a"/>
+    <text x="32" y="402" class="n">WeakPtr&lt;T&gt;(obj)</text>
+    <text x="32" y="422" class="d">可随任务到任意线程</text>
+    <line x1="200" y1="408" x2="228" y2="408" class="arr" marker-end="url(#a)"/>
+    <rect x="230" y="380" width="180" height="56" rx="8" fill="#ffffff" stroke="#57606a"/>
+    <text x="242" y="402" class="n">PostToObject(weak, fn)</text>
+    <text x="242" y="422" class="d">投递到 obj 的归属 runner</text>
+    <line x1="410" y1="408" x2="438" y2="408" class="arr" marker-end="url(#a)"/>
+    <rect x="440" y="380" width="250" height="56" rx="8" fill="#f1eef8" stroke="#7a61b8"/>
+    <text x="452" y="402" class="n">归属线程上 weak.get()</text>
+    <text x="452" y="422" class="d">已析构 / InvalidateWeakPtrs → 丢弃</text>
+    <line x1="690" y1="408" x2="718" y2="408" class="arr" marker-end="url(#a)"/>
+    <rect x="720" y="380" width="260" height="56" rx="8" fill="#eaf7ee" stroke="#3e9a5b"/>
+    <text x="732" y="402" class="n">fn(*obj)</text>
+    <text x="732" y="422" class="d">判活与调用在同一线程，无竞态</text>
+  </g>
+  <rect x="20" y="456" width="960" height="84" rx="8" fill="#fffbea" stroke="#d4a72c"/>
+  <text x="34" y="478" class="n">典型用例：VsyncSource</text>
+  <text x="34" y="498" class="i">MacVsyncDisplayLink 归属 platform 线程，由 Shell 以 ObjectPtr 独占持有；ui 线程的 PlatformVsyncWaiter 只拿 WeakPtr，</text>
+  <text x="34" y="516" class="i">每次请求都 PostToObject 到 platform 判活后调用。解绑时 Shell 直接释放 ObjectPtr（DeleteLater），即使正处在它的回调栈里</text>
+  <text x="34" y="534" class="i">也安全；ui 侧在途的请求判活失败后自然作废，ui 与 platform 之间不需要同步汇合。</text>
+</svg>
