@@ -15,6 +15,7 @@ import {
 } from "../packages/momo/src/animation/index";
 import { Color } from "../packages/momo/src/painting/color";
 import { SchedulerBinding } from "../packages/momo/src/scheduler/index";
+import { State, type BuildContext, type Widget } from "../packages/momo/src/widgets/framework";
 import { expect, group, test as rawTest, type TestContext } from "./harness";
 
 let now = 100000;
@@ -156,6 +157,38 @@ group("animation", () => {
     await microtasks();
     expect.isFalse(resolved, "canceled future never completes");
     c.dispose();
+  });
+
+  test("State releases tickers disposed individually (no accumulation)", () => {
+    class VsyncState extends State {
+      build(_context: BuildContext): Widget {
+        throw new Error("not built");
+      }
+    }
+    const s = new VsyncState();
+    for (let i = 0; i < 100; i++) {
+      const c = new AnimationController({ duration: 50, vsync: s });
+      c.forward();
+      pump();
+      c.dispose();
+    }
+    expect.equal(s.debugTickerCount, 0);
+
+    // resync: 旧 provider 的 Ticker 被 absorb 后释放, 也应移出。
+    const s2 = new VsyncState();
+    const c = new AnimationController({ duration: 100, vsync: s });
+    c.forward();
+    pump();
+    c.resync(s2);
+    expect.equal(s.debugTickerCount, 0);
+    expect.equal(s2.debugTickerCount, 1);
+    expect.isTrue(c.isAnimating);
+    pump(30);
+    expect.isTrue(c.value > 0);
+    s2._disposeTickers();
+    expect.equal(s2.debugTickerCount, 0);
+    expect.isFalse(c.isAnimating);
+    c.dispose(); // 重复释放幂等
   });
 
   test("value setter stops animation and notifies", () => {

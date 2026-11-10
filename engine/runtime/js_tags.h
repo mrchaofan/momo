@@ -13,10 +13,10 @@ namespace momo::engine::runtime {
 inline constexpr v8::ExternalPointerTypeTag kCallbackTag = 1;  // ClassBuilder 方法/构造函数指针
 inline constexpr v8::ExternalPointerTypeTag kUiImplTag = 2;    // ui::UiBindings::Impl
 inline constexpr v8::ExternalPointerTypeTag kExtFnTag = 3;     // ui 扩展函数绑定(ExtFunction)
-inline constexpr v8::ExternalPointerTypeTag kUiViewTag = 4;    // ui::ViewBinding(momo:ui 视图对象)
 
 // internal field(Wrappable)
 inline constexpr v8::EmbedderDataTypeTag kWrappableTag = 1;
+inline constexpr v8::EmbedderDataTypeTag kUiViewFieldTag = 2;  // ui::ViewBinding(视图对象 internal field 0)
 
 // v8::Isolate::SetData 槽位(0 由 JsRuntimeImpl 占用)。
 inline constexpr uint32_t kIsolateSlotUi = 1;  // ui::UiBindings::Impl*

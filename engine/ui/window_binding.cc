@@ -32,7 +32,7 @@ using runtime::V8String;
 
 using runtime::kIsolateSlotUi;
 using runtime::kUiImplTag;
-using runtime::kUiViewTag;
+using runtime::kUiViewFieldTag;
 
 namespace {
 
@@ -42,8 +42,20 @@ UiBindings::Impl* ImplOf(const Args& a) {
   return static_cast<UiBindings::Impl*>(a.Data().As<v8::External>()->Value(kUiImplTag));
 }
 
+// 视图方法的 data 是视图对象本身(见 AddViewObject), 绑定指针在其 internal field 0。
 ViewBinding* ViewOf(const Args& a) {
-  return static_cast<ViewBinding*>(a.Data().As<v8::External>()->Value(kUiViewTag));
+  return static_cast<ViewBinding*>(
+      a.Data().As<v8::Object>()->GetAlignedPointerFromInternalField(0, kUiViewFieldTag));
+}
+
+constexpr const char* kViewHandlers[] = {"onMetricsChanged", "onFrameChanged", "onCloseRequested",
+                                         "onPointerPacket",  "onKeyData",      "onFocusChanged"};
+
+void OnDetachedViewWeak(const v8::WeakCallbackInfo<ViewBinding>& info) {
+  // 第一遍回调: 只 Reset 句柄并释放 C++ 对象。
+  ViewBinding* binding = info.GetParameter();
+  binding->object.Reset();
+  binding->impl->detached_views.erase(binding);
 }
 
 void ScheduleFrame(const Args& a) { ImplOf(a)->client->ScheduleFrame(); }
@@ -310,11 +322,18 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   if (ViewBinding* existing = FindView(id); existing != nullptr && !existing->removed) {
     return existing->object.Get(isolate);
   }
+  if (view_template.IsEmpty()) {
+    v8::Local<v8::ObjectTemplate> t = v8::ObjectTemplate::New(isolate);
+    t->SetInternalFieldCount(1);
+    view_template.Reset(isolate, t);
+  }
   auto binding = std::make_unique<ViewBinding>();
   binding->impl = this;
   binding->id = id;
-  v8::Local<v8::External> data = v8::External::New(isolate, binding.get(), kUiViewTag);
-  v8::Local<v8::Object> v = v8::Object::New(isolate);
+  v8::Local<v8::Object> v = view_template.Get(isolate)->NewInstance(context).ToLocalChecked();
+  v->SetAlignedPointerInInternalField(0, binding.get(), kUiViewFieldTag);
+  // 方法以视图对象为 data: 保存旧方法即保活对象与绑定, 不会悬空。
+  v8::Local<v8::Value> data = v;
   auto fn = [&](const char* name, v8::FunctionCallback cb) {
     v->Set(context, V8String(isolate, name),
            v8::Function::New(context, cb, data).ToLocalChecked())
@@ -332,8 +351,7 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   fn("setTitleBarStyle", &SetTitleBarStyle);
   fn("setDragRegions", &SetDragRegions);
   fn("setPosition", &SetPosition);
-  for (const char* handler : {"onMetricsChanged", "onFrameChanged", "onCloseRequested",
-                              "onPointerPacket", "onKeyData", "onFocusChanged"}) {
+  for (const char* handler : kViewHandlers) {
     v->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
   }
   // title: 只写访问器(读取返回 undefined)。
@@ -351,6 +369,28 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   SyncFocus(isolate, context, id);
   SyncFrame(isolate, context, id);
   return v;
+}
+
+void UiBindings::Impl::DetachView(v8::Isolate* isolate, v8::Local<v8::Context> context,
+                                  ViewId id) {
+  auto it = views.find(id);
+  if (it == views.end()) {
+    return;
+  }
+  std::unique_ptr<ViewBinding> binding = std::move(it->second);
+  views.erase(it);
+  binding->removed = true;
+  if (binding->object.IsEmpty()) {
+    return;  // 没有 JS 对象: 直接释放
+  }
+  // 清空事件回调, 释放 JS 侧闭包(即使 JS 仍持有旧 View 对象)。
+  v8::Local<v8::Object> v = binding->object.Get(isolate);
+  for (const char* handler : kViewHandlers) {
+    v->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
+  }
+  ViewBinding* raw = binding.get();
+  raw->object.SetWeak(raw, &OnDetachedViewWeak, v8::WeakCallbackType::kParameter);
+  detached_views[raw] = std::move(binding);
 }
 
 void UiBindings::Impl::InstallExports(v8::Isolate* isolate, v8::Local<v8::Context> context,
@@ -484,6 +524,8 @@ UiBindings::UiBindings(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 UiBindings::~UiBindings() = default;
 
 bool UiBindings::is_imported() const { return !impl_->window.IsEmpty(); }
+
+size_t UiBindings::detached_view_count_for_testing() const { return impl_->detached_view_count(); }
 
 void UiBindings::BeginFrame(TimePoint frame_time) {
   if (!is_imported()) {
@@ -650,10 +692,10 @@ void UiBindings::ViewRemoved(ViewId view) {
   v8::HandleScope scope(isolate);
   v8::Local<v8::Context> context = impl_->runtime->context();
   v8::Context::Scope context_scope(context);
-  // 对象保留(JS 可能仍持有引用), 之后的 render/title 等调用为空操作。
-  binding->removed = true;
+  // JS 可能仍持有对象或其方法: 之后的 render/title 等调用为空操作;引擎只弱持有, 不可达时回收。
   impl_->views_map.Get(isolate)->Delete(context, v8::Number::New(isolate, static_cast<double>(view)))
       .Check();
+  impl_->DetachView(isolate, context, view);
   impl_->CallHandler(impl_->window.Get(isolate), "onViewsChanged", 0, nullptr);
   impl_->runtime->DrainMicrotasks();
 }

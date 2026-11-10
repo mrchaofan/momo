@@ -129,6 +129,8 @@ export class WidgetsBinding {
       target.setCursor(cursor);
     });
     window.onViewsChanged = () => {
+      // 视图移除发生在帧之后, 之后不一定还有帧: 在这里就丢掉已关闭窗口的记录, 不等下一帧。
+      this.#pruneClosedViews();
       for (const l of [...this.#viewsListeners]) {
         try {
           l();
@@ -224,6 +226,14 @@ export class WidgetsBinding {
   get viewHosts(): ReadonlyMap<number, ViewRenderHost> {
     return this.#viewHosts;
   }
+  // 已关闭窗口的拖动区域记录要移除: 否则 Map 一直强引用旧 View(对已移除视图 setDragRegions 是空操作, 不会抛错)。
+  #pruneClosedViews(): void {
+    for (const v of this.#dragRegionsSent.keys()) if (v !== window && views.get(v.id) !== v) this.#dragRegionsSent.delete(v);
+  }
+  /** @internal 仍记录着拖动区域的视图数(调试/测试)。 */
+  get debugDragRegionViewCount(): number {
+    return this.#dragRegionsSent.size;
+  }
   /** 视图集合变化(createView 完成、窗口被关闭)的监听。 */
   addViewsListener(listener: () => void): void {
     this.#viewsListeners.add(listener);
@@ -283,6 +293,7 @@ export class WidgetsBinding {
       }
       this.#framesRendered++;
       this.buildOwner.finalizeTree();
+      this.#pruneClosedViews();
       flushDragRegions((root) => {
         if (root === this.renderView) return window;
         for (const host of this.#viewHosts.values()) if (host.renderView === root && views.has(host.view.id)) return host.view;

@@ -556,6 +556,46 @@ TEST_F(UiBindingsTest, ViewsCreateRenderAndClose) {
   EXPECT_TRUE(client_.rendered.empty());
 }
 
+// 关闭的视图: 引擎只弱持有, JS 不再引用时绑定被回收;JS 仍持有旧对象/旧方法时调用安全且为空操作。
+TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
+  ASSERT_TRUE(Run(R"JS(
+    import { views } from 'momo:ui';
+    globalThis.views = views;
+  )JS").ok());
+  v8::Isolate* isolate = runtime_->impl().isolate();
+  std::vector<ViewId> ids;
+  for (ViewId id = 10; id < 15; ++id) {
+    client_.view_ids.push_back(id);
+    bindings_->ViewAdded(id);
+    ids.push_back(id);
+  }
+  EXPECT_EQ(Eval("String(views.size)"), "6");
+  // 保留其中一个视图的旧方法与另一个视图对象, 并挂上事件回调。
+  Eval("globalThis.oldRender = views.get(10).render; globalThis.keep = views.get(11);"
+       "keep.onFocusChanged = () => {}; 'ok'");
+  client_.view_ids = {platform::kImplicitViewId};
+  for (ViewId id : ids) bindings_->ViewRemoved(id);
+  EXPECT_EQ(Eval("String(views.size)"), "1");
+  EXPECT_EQ(Eval("String(keep.onFocusChanged)"), "null") << "handlers are cleared on removal";
+  isolate->LowMemoryNotification();
+  EXPECT_EQ(bindings_->detached_view_count_for_testing(), 2u) << "only views still referenced by JS survive";
+
+  // 旧方法/旧对象仍可安全调用(空操作)。
+  client_.rendered.clear();
+  ASSERT_TRUE(Run(R"JS(
+    import { SceneBuilder } from 'momo:ui';
+    globalThis.oldRender(new SceneBuilder().build());
+    globalThis.keep.render(new SceneBuilder().build());
+    globalThis.keep.title = 'x';
+  )JS").ok());
+  EXPECT_TRUE(client_.rendered.empty());
+  bindings_->FocusChanged(11, true);  // 已移除视图: 忽略
+
+  Eval("globalThis.oldRender = null; globalThis.keep = null; 'ok'");
+  isolate->LowMemoryNotification();
+  EXPECT_EQ(bindings_->detached_view_count_for_testing(), 0u);
+}
+
 // createView 失败: Promise 被拒绝。
 TEST_F(UiBindingsTest, CreateViewFailureRejects) {
   ASSERT_TRUE(Run(R"JS(

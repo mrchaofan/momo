@@ -88,12 +88,14 @@ export class TickerFuture implements PromiseLike<void> {
  * 每帧调用一次回调的计时器(对标 Flutter Ticker)。基于 {@link SchedulerBinding.scheduleFrameCallback}。
  */
 export class Ticker {
-  #onTick: TickerCallback;
+  #onTick: TickerCallback | null;
   #future: TickerFuture | null = null;
   #startTime = -1;
   #callbackId = 0;
   #muted = false;
   #disposed = false;
+  /** @internal 释放时通知所属 TickerProvider(如 State)把自己移出集合。 */
+  _onDispose: ((ticker: Ticker) => void) | null = null;
 
   constructor(onTick: TickerCallback, readonly debugLabel?: string) {
     this.#onTick = onTick;
@@ -139,10 +141,20 @@ export class Ticker {
     else future.complete();
   }
 
-  /** 释放(会取消当前运行)。 */
+  /** 是否已释放。 */
+  get isDisposed(): boolean {
+    return this.#disposed;
+  }
+
+  /** 释放(会取消当前运行)。幂等;释放后断开回调, 并通知所属 provider 移除自身。 */
   dispose(): void {
+    if (this.#disposed) return;
     this.stop(true);
     this.#disposed = true;
+    this.#onTick = null;
+    const onDispose = this._onDispose;
+    this._onDispose = null;
+    onDispose?.(this);
   }
 
   /** 把另一个 Ticker 的运行状态(future 与起始时间)接管过来。 */
@@ -161,7 +173,7 @@ export class Ticker {
     this.#callbackId = 0;
     if (this.#future === null) return;
     if (this.#startTime < 0) this.#startTime = timeStampMs;
-    this.#onTick(timeStampMs - this.#startTime);
+    this.#onTick?.(timeStampMs - this.#startTime);
     if (this.#future !== null && !this.#muted && this.#callbackId === 0) this.#scheduleTick();
   };
 
