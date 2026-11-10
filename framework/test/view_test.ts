@@ -1,7 +1,7 @@
 // 多视图(多窗口): Window 声明式开关窗口、各窗口独立 MediaQuery/Overlay/渲染、共享状态、GlobalKey 跨窗口迁移。
 import {
   Builder, Center, ColoredBox, Colors, Focus, FocusManager, FocusNode, GlobalKey, MediaQuery, SizedBox, State,
-  StatefulWidget, Text, ViewAnchor, Window, WidgetsBinding, type BuildContext, type Widget,
+  StatefulWidget, Text, ViewAnchor, Window, WindowDragArea, WidgetsBinding, type BuildContext, type Widget,
 } from "../packages/momo/src/index";
 import { views } from "momo:ui";
 import { expect, group } from "./harness";
@@ -62,6 +62,30 @@ group("multi-view", () => {
     await t.pump();
     expect.deepEqual(mock.openViews(), []);
     expect.equal(WidgetsBinding.instance.viewHosts.size, 0);
+  }, { mockOnly: true });
+
+  testWidgets("closed windows are not retained by drag-region bookkeeping", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    const app = (open: boolean): Widget => new ViewAnchor({
+      child: new SizedBox({}),
+      views: open ? [new Window({
+        width: 200, height: 100,
+        child: new WindowDragArea({ child: new SizedBox({ width: 50, height: 20 }) }),
+      })] : [],
+    });
+    for (let round = 0; round < 3; round++) {
+      await t.pumpWidget(app(true));
+      await t.pump();
+      await t.pump();
+      expect.equal(mock.openViews().length, 1);
+      expect.equal(WidgetsBinding.instance.debugDragRegionViewCount, 1);
+      // 宿主在帧外关闭窗口(如点关闭按钮), 之后不再推进帧: 视图移除的通知本身就要清掉记录。
+      expect.isTrue(mock.requestCloseView(mock.openViews()[0]!));
+      for (let i = 0; i < 3; i++) await Promise.resolve();
+      expect.deepEqual(mock.openViews(), []);
+      expect.equal(WidgetsBinding.instance.debugDragRegionViewCount, 0, `round ${round}`);
+      await t.pumpWidget(app(false));
+    }
   }, { mockOnly: true });
 
   testWidgets("closing via the window's close button asks onCloseRequested and reports onClosed", async (t, ctx) => {

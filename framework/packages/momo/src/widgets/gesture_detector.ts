@@ -134,7 +134,7 @@ export class GestureDetector extends StatelessWidget {
     const devices = o.supportedDevices ?? null;
     const g = new Map<Type<GestureRecognizer>, GestureRecognizerFactory<GestureRecognizer>>();
     if (o.onTapDown || o.onTapUp || o.onTap || o.onTapCancel || o.onSecondaryTap || o.onSecondaryTapDown || o.onSecondaryTapUp) {
-      g.set(TapGestureRecognizer, gestureFactory(() => new TapGestureRecognizer({ debugOwner: this }), (r: TapGestureRecognizer) => {
+      g.set(TapGestureRecognizer, gestureFactory(() => new TapGestureRecognizer({ debugOwner: "GestureDetector" }), (r: TapGestureRecognizer) => {
         r.supportedDevices = devices;
         r.onTapDown = o.onTapDown ?? null;
         r.onTapUp = o.onTapUp ?? null;
@@ -146,13 +146,13 @@ export class GestureDetector extends StatelessWidget {
       }));
     }
     if (o.onDoubleTap) {
-      g.set(DoubleTapGestureRecognizer, gestureFactory(() => new DoubleTapGestureRecognizer({ debugOwner: this }), (r: DoubleTapGestureRecognizer) => {
+      g.set(DoubleTapGestureRecognizer, gestureFactory(() => new DoubleTapGestureRecognizer({ debugOwner: "GestureDetector" }), (r: DoubleTapGestureRecognizer) => {
         r.supportedDevices = devices;
         r.onDoubleTap = o.onDoubleTap ?? null;
       }));
     }
     if (o.onLongPress || o.onLongPressStart || o.onLongPressEnd) {
-      g.set(LongPressGestureRecognizer, gestureFactory(() => new LongPressGestureRecognizer({ debugOwner: this }), (r: LongPressGestureRecognizer) => {
+      g.set(LongPressGestureRecognizer, gestureFactory(() => new LongPressGestureRecognizer({ debugOwner: "GestureDetector" }), (r: LongPressGestureRecognizer) => {
         r.supportedDevices = devices;
         r.onLongPress = o.onLongPress ?? null;
         r.onLongPressStart = o.onLongPressStart ?? null;
@@ -160,7 +160,7 @@ export class GestureDetector extends StatelessWidget {
       }));
     }
     if (o.onVerticalDragDown || o.onVerticalDragStart || o.onVerticalDragUpdate || o.onVerticalDragEnd || o.onVerticalDragCancel) {
-      g.set(VerticalDragGestureRecognizer, gestureFactory(() => new VerticalDragGestureRecognizer({ debugOwner: this }), (r: VerticalDragGestureRecognizer) => {
+      g.set(VerticalDragGestureRecognizer, gestureFactory(() => new VerticalDragGestureRecognizer({ debugOwner: "GestureDetector" }), (r: VerticalDragGestureRecognizer) => {
         r.supportedDevices = devices;
         r.onDown = o.onVerticalDragDown ?? null;
         r.onStart = o.onVerticalDragStart ?? null;
@@ -170,7 +170,7 @@ export class GestureDetector extends StatelessWidget {
       }));
     }
     if (o.onHorizontalDragDown || o.onHorizontalDragStart || o.onHorizontalDragUpdate || o.onHorizontalDragEnd || o.onHorizontalDragCancel) {
-      g.set(HorizontalDragGestureRecognizer, gestureFactory(() => new HorizontalDragGestureRecognizer({ debugOwner: this }), (r: HorizontalDragGestureRecognizer) => {
+      g.set(HorizontalDragGestureRecognizer, gestureFactory(() => new HorizontalDragGestureRecognizer({ debugOwner: "GestureDetector" }), (r: HorizontalDragGestureRecognizer) => {
         r.supportedDevices = devices;
         r.onDown = o.onHorizontalDragDown ?? null;
         r.onStart = o.onHorizontalDragStart ?? null;
@@ -180,7 +180,7 @@ export class GestureDetector extends StatelessWidget {
       }));
     }
     if (o.onPanDown || o.onPanStart || o.onPanUpdate || o.onPanEnd || o.onPanCancel) {
-      g.set(PanGestureRecognizer, gestureFactory(() => new PanGestureRecognizer({ debugOwner: this }), (r: PanGestureRecognizer) => {
+      g.set(PanGestureRecognizer, gestureFactory(() => new PanGestureRecognizer({ debugOwner: "GestureDetector" }), (r: PanGestureRecognizer) => {
         r.supportedDevices = devices;
         r.onDown = o.onPanDown ?? null;
         r.onStart = o.onPanStart ?? null;

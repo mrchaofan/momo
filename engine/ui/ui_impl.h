@@ -28,7 +28,10 @@ struct ExtFunction {
   std::string qualified_name;  // "ext:hello.add"
 };
 
-// 一个视图(窗口)在 JS 中的对象;V8 函数的 data 指向它。随 Impl 存活(视图移除后标记 removed)。
+// 一个视图(窗口)在 JS 中的对象。对象 internal field 0 指向本绑定, 对象上的方法以该对象为
+// callback data(方法 → 对象 → 绑定), 因此只要 JS 还持有对象或其任一方法, 绑定就有效。
+// 生命周期: 视图存在时由 Impl::views 持有, object 为强句柄;视图移除后标记 removed、清空事件回调,
+// 移入 Impl::detached_views 并把 object 改为弱句柄, JS 不再可达时由弱回调释放。
 struct ViewBinding {
   UiBindings::Impl* impl;
   ViewId id;
@@ -51,6 +54,9 @@ struct UiBindings::Impl final : public Object {
   v8::Global<v8::Object> window;  // momo:ui 被导入后才存在(= 视图 0 的对象 + 帧回调)
   v8::Global<v8::Map> views_map;  // 导出的 views: Map<id, View>
   std::map<ViewId, std::unique_ptr<ViewBinding>> views;
+  // 已移除、等待 JS 侧对象被回收的视图绑定(object 为弱句柄)。
+  std::map<ViewBinding*, std::unique_ptr<ViewBinding>> detached_views;
+  v8::Global<v8::ObjectTemplate> view_template;  // 带 1 个 internal field 的视图对象模板
   v8::Global<v8::Float64Array> pointer_buffer;
   size_t pointer_capacity = 0;
 
@@ -80,6 +86,10 @@ struct UiBindings::Impl final : public Object {
   v8::Local<v8::Object> AddViewObject(v8::Isolate* isolate, v8::Local<v8::Context> context,
                                       ViewId id);
   ViewBinding* FindView(ViewId id);
+  // 视图已移除: 清空事件回调, 转为弱持有(JS 不再引用时释放)。
+  void DetachView(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
+  // 测试/诊断: 仍存活的已移除视图绑定数。
+  size_t detached_view_count() const { return detached_views.size(); }
   void SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
   void SyncFocus(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
   void SyncFrame(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);

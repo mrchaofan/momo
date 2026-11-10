@@ -59,6 +59,8 @@ class UiBindings {
 
   // 应用是否导入了 momo:ui(未导入时上述回调都是空操作)。
   bool is_imported() const;
+  // 测试/诊断: 已移除但 JS 侧对象尚未被回收的视图绑定数。
+  size_t detached_view_count_for_testing() const;
 
   struct Impl;
 

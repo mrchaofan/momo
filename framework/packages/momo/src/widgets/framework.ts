@@ -644,15 +644,27 @@ export abstract class State<W extends StatefulWidget = StatefulWidget> implement
   /** TickerProvider:创建与本 State 生命周期绑定的 Ticker。 */
   createTicker(onTick: TickerCallback): Ticker {
     const t = new Ticker(onTick, this.constructor.name);
-    (this.#tickers ??= new Set()).add(t);
+    const tickers = (this.#tickers ??= new Set());
+    tickers.add(t);
+    // 单个 Ticker 提前 dispose(如 AnimationController.dispose / resync)时立即移出,
+    // 否则长寿 State 会一直持有已释放的 Ticker 及其回调闭包(随使用次数线性增长)。
+    t._onDispose = (ticker) => {
+      this.#tickers?.delete(ticker);
+    };
     return t;
   }
 
   /** @internal */
   _disposeTickers(): void {
-    if (this.#tickers === null) return;
-    for (const t of this.#tickers) t.dispose();
+    const tickers = this.#tickers;
+    if (tickers === null) return;
     this.#tickers = null;
+    for (const t of tickers) t.dispose();
+  }
+
+  /** @internal 测试/诊断用:当前持有的 Ticker 数。 */
+  get debugTickerCount(): number {
+    return this.#tickers?.size ?? 0;
   }
 }
 
