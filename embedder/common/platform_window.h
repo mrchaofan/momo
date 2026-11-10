@@ -13,6 +13,7 @@
 #include "base/geometry.h"
 #include "embedder/common/engine_platform.h"
 #include "engine/platform/input_types.h"
+#include "engine/platform/platform_view.h"
 #include "engine/platform/render_surface.h"
 #include "engine/platform/system_cursor.h"
 #include "engine/platform/text_input_connection.h"
@@ -97,6 +98,14 @@ class PlatformWindow {
   virtual void RemovePlatformView(int64_t view_id) { (void)view_id; }
   // 把键盘焦点交给平台视图。
   virtual void FocusPlatformView(int64_t view_id) { (void)view_id; }
+  // 框架对原生指针事件的处置(docs/05 §9 "输入"): 投递原生事件给平台视图 / 指针进入 / 离开;
+  // view_id 为 0 的 kEvent: 该按下由 momo 内容消费(键盘焦点交还 momo)。
+  virtual void DispatchPlatformViewPointer(int64_t view_id, uint64_t native_event_id,
+                                           platform::PlatformViewPointerAction action) {
+    (void)view_id;
+    (void)native_event_id;
+    (void)action;
+  }
 
   platform::ViewportMetrics metrics() const { return {physical_size(), device_pixel_ratio()}; }
 };

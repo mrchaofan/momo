@@ -271,12 +271,17 @@ declare module "momo:ui" {
   // 输入(M2)。
 
   /**
-   * 指针包: 每个事件占 POINTER_DATA_STRIDE(= 12)个 Float64, 字段顺序:
+   * 指针包: 每个事件占 POINTER_DATA_STRIDE(= 17)个 Float64, 字段顺序:
    *   0 timeStampUs  1 kind(0 mouse, 1 trackpad, 2 touch, 3 stylus)
-   *   2 phase(0 add, 1 down, 2 move, 3 up, 4 remove, 5 hover, 6 scroll)
+   *   2 phase(0 add, 1 down, 2 move, 3 up, 4 remove, 5 hover, 6 scroll, 7 gesture)
    *   3 device  4 physicalX  5 physicalY(物理像素)  6 buttons(位图: 1 主键, 2 次键, 4 中键)
    *   7 scrollDeltaX  8 scrollDeltaY(物理像素)  9 momentum(1 = 惯性滚动阶段)
    *   10 screenX  11 screenY(屏幕位置, 逻辑点, 主屏左上原点;与 View.screenFrame 同一坐标系)
+   *   12 nativeEventId(宿主为原生事件分配的 id, 0 = 合成事件;见 View.dispatchPlatformViewPointer)
+   *   13 signalPhase(scroll / gesture 事件的触控板手势阶段: 0 none(无阶段, 如普通滚轮) 1 start 2 update 3 end)
+   *   14 gestureKind(gesture 事件: 1 magnify 2 rotate 3 smartMagnify 4 swipe 5 quickLook 6 pressure
+   *      7 tabletPoint 8 begin 9 end)  15 gestureValue(magnify: 缩放增量;rotate: 角度;pressure / tabletPoint:
+   *      压力 0..1)  16 gestureStage(pressure: Force Touch 阶段 0..2)。swipe 的方向在 7/8(scrollDelta)。
    * data 是复用的缓冲区, 仅在回调期间有效(需要保留时自行拷贝)。
    * (无运行期枚举导出: 框架层自行定义同值常量。)
    */
@@ -343,6 +348,16 @@ declare module "momo:ui" {
      * 框架层通常用 GestureBinding.transferPointerCapture, 它同时把被转交的序列交给调用方。
      */
     setCapture(): boolean;
+    /**
+     * 框架对一个原生指针事件的处置(docs/05 §9 "输入"), 宿主异步执行:
+     *   action 0(event): 把 nativeEventId 对应的原生事件投递给平台视图 platformViewId(按下时在原生视图内
+     *     捕获);platformViewId 为 0 表示该按下由 momo 内容消费(宿主把键盘焦点交还 momo)。
+     *   action 1(enter)/ 2(exit): 指针归属移到 / 离开平台视图 platformViewId;nativeEventId 为触发它的原生
+     *     事件(宿主取其位置与时间, 0 = 取当前指针位置)。与 action 0 按调用顺序执行: 原生视图看到的进入、
+     *     事件、离开与框架处理它们的顺序一致。
+     * 框架层通过 GestureBinding 使用, 一般不直接调用。
+     */
+    dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void;
     /**
      * "hidden": 无边框外观——隐藏系统标题栏, 内容铺满整个窗口, 保留红绿灯(窗口控制按钮);
      * trafficLightsCenterY: 红绿灯中心距窗口顶部的逻辑像素(缺省系统位置)。"default": 恢复系统标题栏。

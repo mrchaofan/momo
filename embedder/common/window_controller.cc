@@ -191,6 +191,14 @@ void WindowController::OnEngineCapturePointer() {
   }
 }
 
+void WindowController::OnEnginePlatformViewPointer(int64_t platform_view_id,
+                                                   uint64_t native_event_id,
+                                                   platform::PlatformViewPointerAction action) {
+  if (window_) {
+    window_->DispatchPlatformViewPointer(platform_view_id, native_event_id, action);
+  }
+}
+
 void WindowController::OnEngineSetCursor(platform::SystemCursor cursor) {
   if (window_) {
     window_->SetCursor(cursor);

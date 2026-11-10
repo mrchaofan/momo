@@ -34,7 +34,18 @@ class FakeWindowClient final : public WindowClient {
     create_requests.emplace_back(request, options);
   }
   void CloseView(ViewId view) override { closed.push_back(view); }
+  void DispatchPlatformViewPointer(ViewId view, int64_t platform_view_id, uint64_t native_event_id,
+                                   platform::PlatformViewPointerAction action) override {
+    platform_view_pointer.push_back({view, platform_view_id, native_event_id, action});
+  }
 
+  struct PlatformViewPointer {
+    ViewId view;
+    int64_t platform_view_id;
+    uint64_t native_event_id;
+    platform::PlatformViewPointerAction action;
+  };
+  std::vector<PlatformViewPointer> platform_view_pointer;
   std::vector<ViewId> view_ids{platform::kImplicitViewId};
   platform::ViewportMetrics extra_metrics{{300, 200}, 2.0};
   std::vector<std::pair<uint64_t, platform::ViewOptions>> create_requests;
@@ -286,6 +297,40 @@ TEST_F(UiBindingsTest, HostObjectsAreCollected) {
 
 namespace momo::engine::ui {
 namespace {
+
+// 平台视图输入(docs/05 §9): 指针包带原生事件 id 与滚动阶段;框架的处置经 dispatchPlatformViewPointer 回到宿主。
+TEST_F(UiBindingsTest, NativeEventIdsRoundTripToPlatformViews) {
+  ASSERT_TRUE(Run(R"JS(
+    import { window, POINTER_DATA_STRIDE } from 'momo:ui';
+    globalThis.window = window;
+    globalThis.log = [];
+    window.onPointerPacket = (data, count) => {
+      for (let i = 0; i < count; i++) {
+        const o = i * POINTER_DATA_STRIDE;
+        log.push(`${POINTER_DATA_STRIDE}:${data[o + 12]}:${data[o + 13]}:${data[o + 14]}:${data[o + 15]}:${data[o + 16]}`);
+        window.dispatchPlatformViewPointer(77, data[o + 12], 0);
+      }
+    };
+  )JS").ok());
+  platform::PointerDataPacket packet(1);
+  packet[0].phase = platform::PointerPhase::kScroll;
+  packet[0].native_event_id = 9007199254740991ull;  // 2^53 - 1: 以 double 精确往返
+  packet[0].signal_phase = platform::SignalPhase::kUpdate;
+  packet[0].phase = platform::PointerPhase::kGesture;
+  packet[0].gesture_kind = platform::PointerGestureKind::kPressure;
+  packet[0].gesture_value = 0.5;
+  packet[0].gesture_stage = 2;
+  bindings_->PointerPacket(packet);
+  EXPECT_EQ(Eval("log.join(' ')"), "17:9007199254740991:2:6:0.5:2");
+  ASSERT_EQ(client_.platform_view_pointer.size(), 1u);
+  EXPECT_EQ(client_.platform_view_pointer[0].view, platform::kImplicitViewId);
+  EXPECT_EQ(client_.platform_view_pointer[0].platform_view_id, 77);
+  EXPECT_EQ(client_.platform_view_pointer[0].native_event_id, 9007199254740991ull);
+  EXPECT_EQ(client_.platform_view_pointer[0].action, platform::PlatformViewPointerAction::kEvent);
+  Eval("window.dispatchPlatformViewPointer(5, 0, 2); window.dispatchPlatformViewPointer(5, 0, 9);");
+  ASSERT_EQ(client_.platform_view_pointer.size(), 2u) << "invalid actions are ignored";
+  EXPECT_EQ(client_.platform_view_pointer[1].action, platform::PlatformViewPointerAction::kExit);
+}
 
 TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
   ASSERT_TRUE(Run(R"JS(

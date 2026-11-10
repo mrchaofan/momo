@@ -52,6 +52,7 @@ const control: MockControl = {
   alwaysOnTop: new Map<number, boolean>(),
   activated: [],
   captures: [],
+  platformViewPointer: [],
   panelViews: new Set<number>(),
   titleBars: new Map<number, { style: string; center: number | null }>(),
   dragRegions: new Map<number, number[]>(),
@@ -479,7 +480,7 @@ export class SceneBuilder {
 
 // ---------------------------------------------------------------------------
 
-export const POINTER_DATA_STRIDE = 12;
+export const POINTER_DATA_STRIDE = 17;
 
 export interface KeyData {
   type: "down" | "up" | "repeat"; timeStampUs: number; physicalKey: number; logicalKey: number; character: string; modifiers: number;
@@ -505,6 +506,7 @@ interface MockView {
   setAlwaysOnTop(on: boolean): void;
   activate(): void;
   setCapture(): boolean;
+  dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void;
   setTitleBarStyle(style: "default" | "hidden", center?: number): void;
   setDragRegions(rects: readonly number[]): void;
   screenFrame: { x: number; y: number; width: number; height: number };
@@ -561,6 +563,9 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
     },
     activate(): void { control.activated.push(id); },
     setCapture(): boolean { control.captures.push(id); return true; },
+    dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void {
+      control.platformViewPointer.push({ view: id, platformViewId, nativeEventId, action });
+    },
     close(): void {
       if (id === 0) throw new Error("view.close: the main window (view 0) cannot be closed from JS");
       removeView(id);

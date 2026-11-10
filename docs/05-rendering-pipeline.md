@@ -117,28 +117,83 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
   `zPosition` 表达(不移除/重排子视图, 以免原生视图丢失第一响应者)。合成模式下所有 CAMetalLayer
   `presentsWithTransaction = YES`,raster 等命令被 GPU 调度后,把"几何 + present"投递到主线程同一事务,
   使原生视图与 momo 画面同帧生效;退出合成时,若主线程仍有待呈现帧,普通帧也经主线程呈现以保证顺序。
-- **输入与焦点**(`embedder/macos/mac_mouse_dispatcher.{h,mm}`):鼠标事件统一从 `MomoWindow -sendEvent:` 进入派发器,
-  参照 Chromium views(`OnMousePressed` 返回 bool 表示已处理、按下者捕获)与 Flutter(按下时命中一次,整个指针序列
-  路由给同一目标)。目标自上而下 = 可见平台视图(按 z 序)… → momo 内容视图(兜底);依次调用
-  `momoHandleMouseEvent:captured:`,**第一个返回 YES 的目标独占该事件**,不再交给其他目标。
-  平台视图容器在"可见区域内且不在上层 momo 内容(occluders)内"时认领,事件由 AppKit 投递给原生视图——投递期间宿主
-  视图的 `hitTest:` 只返回被选中的原生视图;momo 内容视图在派发器里直接处理,按钮事件仍经 AppKit(窗口激活、
-  第一响应者),移动/滚动则不经 AppKit,原生视图收不到。按下即捕获(含多按钮),全部按钮抬起后释放;触控板滚动手势
-  锁定首个消费者直到惯性结束;悬停目标变化时旧目标收到 `momoMouseLeft:`(momo 据此发指针 remove),新目标收到
-  `momoMouseEntered:`。旁路全部堵住:内容视图的 AppKit 鼠标响应者方法为空实现,容器与宿主吞掉原生视图冒泡上来的事件。
-  **指针归属**(悬停 + 捕获)是唯一依据,跟踪区事件(进入/离开/光标更新)按所属分三类:
-  - 原生视图自己的跟踪区(`MomoPlatformViews routeTrackingEvent:`):原生视图"认为指针在它里面"必须与归属一致,
-    而不是 AppKit 的几何状态——被上层 momo 内容盖住时不投递进入与光标更新;失去归属时补发离开(网页清除 :hover),
-    归属恢复时补发暂存的进入;真实离开只发给收到过进入的跟踪区。同 Chromium `RenderWidgetHostViewCocoa`
-    (`shouldIgnoreMouseEvent` + `mouseEventWasIgnored` 合成 leave/enter);按下即捕获期间归属不变,原生视图收到真实的进出。
-  - momo 内容视图的:交给派发器。
-  - 窗口装饰(主题框架、标题栏、红绿灯)的:交给 AppKit;且由 momo 消费、未交给 AppKit 的移动也转给装饰自己的跟踪区
-    (不经 AppKit 全局投递,原生视图收不到)。装饰据此维护窗口级状态——典型是边缘缩放光标:收不到移动时窗口服务器
-    会一直显示缩放光标并忽略应用设置的光标。光标归属:装饰在处理中设置了光标(缩放区)则归装饰,否则重新应用 momo 的光标
-    (Flutter `FlutterCursorCoordinator` 同样在覆盖区恢复框架光标)。
-  光标在未被遮挡的平台视图上时交给原生视图。点击 momo 区域时内容视图取回第一响应者;
-  原生视图获得焦点时经 `momo/platform_views` 通道发 `focused`,框架把 momo 焦点移到对应 `PlatformView`(输入框随之失焦)。
-  限制:是否"消费"按区域同步判定(momo 的命中结果在 ui 线程异步产生,无法同步询问),momo 区域内的透明处也算 momo。
+- **输入与焦点**:**谁接收指针事件由框架决定**,embedder 只提供投递能力(同 Chromium Aura:`aura::Window` 不是系统窗口,
+  `CaptureClient::SetCapture` 的参数是它,`RenderWidgetHostViewAura` 负责把事件交给渲染器)。
+  ```
+  NSEvent ─► MomoWindow -sendEvent: ─► MomoContentView: 指针包 + native_event_id(原始 NSEvent 暂存于环形缓冲)
+                                          │ ui 线程
+                                          ▼
+             GestureBinding 命中测试 / 按下序列沿按下时的命中路径(隐式捕获)/ 触控板手势锁定(scroll_phase)
+                                          │ 落到 RenderPlatformView
+                                          ▼
+             view.dispatchPlatformViewPointer(platformViewId, nativeEventId, action) ─► Shell ─► PlatformWindow
+                                          │ platform 线程
+                                          ▼
+             按 id 取回原始 NSEvent ─► MomoPlatformViewContainer(原生视图的宿主)直接调用原生视图的响应者方法
+  ```
+  - **framework**(`rendering/platform_view.ts`、`gestures/binding.ts`):`RenderPlatformView` 参与命中测试,命中路径上的
+    按下/移动/抬起/悬停经 `GestureBinding.forwardToPlatformView` 回送;滚动先于外层 Scrollable 在 `PointerSignalResolver`
+    登记(滚动只归原生视图);作为 `MouseTrackerAnnotation`,进入/离开即指针归属(`setPlatformViewHover`),光标 `defer`。
+    盖在平台视图上且可命中的 momo 内容自然先命中——命中测试即遮挡判断。原生按下若没有任何平台视图接收,
+    回送"平台视图 0"(由 momo 消费),宿主据此把键盘焦点交还内容视图。
+  - **全部位置型输入走同一条路线**(同 Chromium Aura 与 Flutter Android:原生 → 框架 → 原生):鼠标按钮/移动/滚动之外,
+    触控板捏合/旋转/轻扫/智能缩放、查询(Quick Look)、Force Touch 压力、手写板点、手势开始/结束也先交给框架
+    (`kGesture` 指针事件 → `PointerGestureEvent` / `PointerPressureEvent`),由框架命中测试(触控板手势按阶段锁定;
+    压力沿按下时的命中路径)后再回送给原生视图。宿主不再让 AppKit 按几何把任何位置型输入直接投递给原生视图;
+    仍直接交给 AppKit 的只有窗口装饰(红绿灯、拖动区域)的按下序列与非位置型事件(键盘等)。
+    原始事件不经 AppKit 投递给任何视图;原生视图只经框架回送的事件(按框架处理的顺序)收到输入。
+  - **engine**:`PointerData` 增加 `native_event_id`(窗口内递增,< 2^53)、`signal_phase`(none/start/update/end)、
+    `gesture_kind` / `gesture_value` / `gesture_stage`;指针包步长 17;`momo:ui View.dispatchPlatformViewPointer` → `Shell::Delegate::OnEnginePlatformViewPointer`
+    → `PlatformWindow::DispatchPlatformViewPointer`(异步投递到 platform 线程)。
+  - **macOS embedder**:分三块,职责与 Chromium / Flutter 对应——
+    | 组件 | 职责 | 对应 |
+    |---|---|---|
+    | `MomoWindow -sendEvent:`(`mac_window_body.inc`)+ `MomoContentView` | 原始输入只交给 momo(指针包 + 原生事件 id),不经 AppKit 投递;点击激活自己完成 | aura `WindowTreeHost` |
+    | `MomoPlatformViewInputRouter`(`mac_platform_view_input.{h,mm}`,窗口级,非视图) | 原生事件环形缓冲;按框架的回送投递给原生视图;first mouse;跟踪区进出的推导;指针归属 | `RenderWidgetHostInputEventRouter` / aura `WindowEventDispatcher` |
+    | `MomoPlatformViews` 的容器(`mac_platform_views.mm`) | 只管几何:裁剪、圆角、透明度、z 序;回答 AppKit 的几何命中 | Flutter `FlutterMutatorView` |
+
+    原始的鼠标与位置型输入只交给内容视图,**不经 AppKit 投递**;只有窗口装饰(红绿灯、拖动区域)的按下序列与它们
+    自己的跟踪区事件直接交给 AppKit。内容视图不在按下时抢第一响应者(否则点击已聚焦的网页会先失焦再聚焦),
+    按下由 momo 消费时由框架回送"平台视图 0"再取回。零位移的滚动阶段事件也上报(原生视图需要完整手势)。
+    框架回送后,输入路由按事件类型交给原生视图:
+    - 按钮/拖拽/抬起、滚动、触控板手势、压力、手写板点:经 AppKit 的正常投递(`MomoMouseRouting
+      momoDeliverEvent:toPlatformView:` 直接调用 `-[NSWindow sendEvent:]` 的父类实现),投递期间宿主的命中测试只落在
+      该平台视图的原生视图子树里。AppKit 完成其余的一切:按下视图的捕获(拖拽/抬起/压力发给收到按下的视图)、
+      第一响应者、`NSGestureRecognizer`(状态机、`delaysPrimaryMouseButtonEvents`、互斥;WKWebView 用力点按预览靠
+      `NSImmediateActionGestureRecognizer`)、滚动与手势锁定。哪个平台视图接收由框架决定,AppKit 只在该原生视图内部
+      按它自己的规则投递。
+    - first mouse:事件到达时窗口不是 key(窗口已在原始事件上被激活),由被点到的视图的 `acceptsFirstMouse:`
+      决定这次点击是否只用于激活窗口——不接受时整个按下序列都不投递。
+    - 移动:不经 AppKit(AppKit 把移动发给 first responder,未聚焦的原生视图收不到),按 AppKit 的跟踪区规则投递给
+      原生视图子树中包含指针、当前生效的 `NSTrackingMouseMoved` 跟踪区的 owner(WKWebView 不实现 `mouseMoved:`,
+      悬停全靠其跟踪区 owner `WKMouseTrackingObserver`);没有这样的跟踪区时交给命中视图。
+    - **AppKit 的几何命中**(不经框架投递时"指针下是哪个视图"的查询:光标归属、拖放目标):momo 掌握指针位置时
+      以框架的指针归属为准——指针不归某个平台视图,它的容器就不可命中。**光标因此只有一个裁决者**:WebKit 在
+      `[NSCursor set]` 之前用内容视图的 `hitTest:` 确认指针下是它自己的子树(`PageClientImpl::setCursor`,注释说明
+      用于防止迟到的 IPC 覆盖兄弟视图的光标),指针离开或被 momo 内容盖住后,网页迟到的光标设置被它自己丢弃。
+      拖放会话等期间框架收不到鼠标事件,退回按画面上的遮挡(occluders)近似。
+    环形缓冲 128 项,溢出的事件不再投递(VERBOSE 日志)。
+  - **指针归属与跟踪区**:原生视图的跟踪区状态(进入/离开/光标更新)只由一条**有序输入流**推导——框架回送的事件与
+    框架的指针归属(`MouseTracker` 进入/离开,带触发它的原生事件 id),二者经同一通道按框架处理的顺序到达。
+    框架先更新悬停再分发(同 Flutter `RendererBinding.dispatchEvent`),原生视图因此先"进入"再收到该位置的事件。
+    容器在流中的每个事件上按 AppKit 的规则重算子树中各跟踪区:指针归本视图、位于跟踪区内、跟踪区生效 → 在内;
+    先离开后进入,进入时带 `NSTrackingCursorUpdate` 的补一次光标更新;拖动期间不带 `NSTrackingEnabledDuringMouseDrag`
+    的跟踪区推迟到抬起;已移除的跟踪区不再投递。失去归属 = 全部离开(在触发事件的位置,如窗口外)。
+    **AppKit 为这些跟踪区生成的事件一律不投递**:它们同步产生,而转发的移动经 ui 线程往返,两者没有先后关系——
+    指针从网页直接移出窗口时,AppKit 的离开先到、之前的移动后到,原生视图会在离开之后又被带回悬停状态。
+    同 Chromium:渲染器看到的 MouseLeave 与移动在同一个有序输入队列里(`RenderWidgetHostViewCocoa` 把
+    `mouseExited` 转为输入事件,而不是让渲染器自己观察系统的进出)。
+    其他跟踪区:momo 内容视图的交给内容视图(离开窗口 → 指针 remove,带离开事件的 id);窗口装饰(主题框架、标题栏、
+    红绿灯)的交给 AppKit,未交给 AppKit 的移动也转给装饰自己的跟踪区,装饰据此维护窗口级状态(边缘缩放光标)。
+    光标归属:装饰在处理中设置了光标(缩放区)则归装饰;指针归平台视图时归原生视图(momo 不设置);否则 momo 的光标
+    (原生视图迟到的设置被它自己的命中检查丢弃,见上)。
+  - 嵌套事件循环(原生右键菜单)吞掉抬起时,下一次移动/按下发现按键已松开,补发抬起复位框架侧状态。
+  - 焦点:原生视图获得焦点时经 `momo/platform_views` 通道发 `focused`,框架把 momo 焦点移到对应 `PlatformView`。
+  - 代价与限制:原生视图的输入多一次 platform → ui → platform 的往返(ui 线程繁忙时网页输入随之延迟);重放的是原始
+    `NSEvent`,但已不在其同步处理中(`NSApp.currentEvent` 可能是更新的事件)——WKWebView 本身异步处理输入,不受影响;
+    在 `mouseDown:` 里跑嵌套跟踪循环的普通 `NSView`(如 `NSButton`)可能等不到已被处理的抬起。跨窗口捕获
+    (`view.setCapture()`)期间的事件不重放给平台视图。经 AppKit 重放的是原始 `NSEvent`,但已不在其
+    同步处理中:`[NSEvent pressedMouseButtons]` / `mouseLocation` 反映的是当前状态而不是事件发生时。框架侧尚无手势竞技场参与(外层手势识别器与原生视图同时收到事件)。
 - **生命周期**:视图由 JS 经 `momo/platform_views`(create/dispose/focus)请求,Shell 在 platform 线程调用扩展工厂
   (`PlatformViewRegistry`);热重启与关闭时引擎销毁全部视图(先移出窗口再交给扩展释放,早于扩展 `on_detach`)。
   JS 侧视图 id 带每个运行时随机的高位标签,避免热重启前的在途消息误伤新视图。

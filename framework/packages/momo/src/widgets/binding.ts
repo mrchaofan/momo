@@ -140,6 +140,10 @@ export class WidgetsBinding {
       }
     };
     gestures.mouseTracker = this.mouseTracker;
+    gestures.platformViewPointerSink = (viewId, platformViewId, nativeEventId, action) => {
+      const target = views.get(viewId) ?? window;
+      target.dispatchPlatformViewPointer(platformViewId, nativeEventId, action);
+    };
 
     window.onMetricsChanged = () => this.handleMetricsChanged();
     window.onPointerPacket = (data: Float64Array, count: number) => {

@@ -12,7 +12,8 @@
 
 #include "base/logging.h"
 #include "embedder/macos/mac_key_mapping.h"
-#include "embedder/macos/mac_mouse_dispatcher.h"
+#include "embedder/macos/mac_mouse_events.h"
+#include "embedder/macos/mac_platform_view_input.h"
 #include "embedder/macos/mac_platform_views.h"
 #include "embedder/macos/mac_surface_metal.h"
 #include "embedder/macos/mac_surface_software.h"
@@ -23,7 +24,10 @@ using momo::engine::platform::KeyEventType;
 using momo::engine::platform::PointerData;
 using momo::engine::platform::PointerDataPacket;
 using momo::engine::platform::PointerDeviceKind;
+using momo::engine::platform::PlatformViewPointerAction;
 using momo::engine::platform::PointerPhase;
+using momo::engine::platform::PointerGestureKind;
+using momo::engine::platform::SignalPhase;
 using momo::embedder::macos::MacMetalSurface;
 using momo::embedder::macos::MacTextInput;
 using momo::embedder::macos::MacWindow;
@@ -142,17 +146,24 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 
 // MomoWindow(NSWindow)与 MomoPanel(NSPanel)共有的接口, 实现见下方。
 @protocol MomoWindowLike <NSObject>
-@property(nonatomic, strong) MomoMouseEventDispatcher* mouseDispatcher;
 @property(nonatomic, weak) NSView* momoContentView;
 // 可拖动窗口的区域(内容视图逻辑坐标, 左上原点;无边框窗口由应用声明)。
 @property(nonatomic) std::vector<NSRect> dragRegions;
 // 能否成为 main window。面板为 NO;始终可以成为 key window。
 @property(nonatomic) BOOL canBecomeMain;
-// 平台视图宿主: 原生视图自己跟踪区的进入/离开/光标更新按指针归属处理。
-@property(nonatomic, weak) MomoPlatformViews* platformViews;
+// 平台视图的输入路由: 回送事件的投递, 原生视图跟踪区事件的认领。
+@property(nonatomic, weak) MomoPlatformViewInputRouter* inputRouter;
 @end
 
-@interface MomoContentView : NSView <NSTextInputClient, MomoMouseEventTarget>
+@interface MomoContentView : NSView <NSTextInputClient>
+// 窗口内全部鼠标事件的入口(MomoWindow -sendEvent:): 归一化为指针包交给 momo, 附带原生事件 id。
+- (void)handleMouseEvent:(NSEvent*)event;
+// 框架对原生事件的处置(view.dispatchPlatformViewPointer, docs/05 §9 "输入")。
+- (void)platformViewPointer:(int64_t)viewId
+              nativeEventId:(uint64_t)eventId
+                     action:(PlatformViewPointerAction)action;
+// 当前是否有按钮按下(本窗口的按下序列进行中)。
+@property(nonatomic, readonly) BOOL hasPressedButtons;
 - (void)attachOwner:(MacWindow*)owner;
 - (void)detachOwner;
 - (void)setMomoCursor:(NSCursor*)cursor hidden:(BOOL)hidden;
@@ -178,6 +189,7 @@ constexpr CGFloat kResizeEdgeZone = 5;
   NSCursor* _cursor;
   BOOL _wantCursorHidden;
   BOOL _cursorHideApplied;
+  uint64_t _currentNativeEventId;  // 正在归一化的原生事件(0 = 合成事件)
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -291,6 +303,31 @@ constexpr CGFloat kResizeEdgeZone = 5;
   return [self pointerAtViewPoint:p screen:ScreenLocation(event) timestamp:TimestampUs(event) phase:phase];
 }
 
+// 与 pointerFromEvent 相同, 并带上正在处理的原生事件 id(框架据此把原始事件交给平台视图)。
+// 只用于直接对应该原生事件的那个指针事件, 合成的 add/remove/补发抬起不带 id。
+- (PointerData)nativePointerFromEvent:(NSEvent*)event phase:(PointerPhase)phase {
+  PointerData data = [self pointerFromEvent:event phase:phase];
+  data.native_event_id = _currentNativeEventId;
+  return data;
+}
+
+// 交给 momo 的原生事件由平台视图的输入路由暂存并分配 id(框架回送时据此投递原始事件)。
+- (uint64_t)recordNativeEvent:(NSEvent*)event {
+  return _owner != nullptr ? [_owner->input_router() recordEvent:event] : 0;
+}
+
+- (void)platformViewPointer:(int64_t)viewId
+              nativeEventId:(uint64_t)eventId
+                     action:(PlatformViewPointerAction)action {
+  if (_owner == nullptr) {
+    return;
+  }
+  [_owner->input_router() dispatchToPlatformView:viewId nativeEventId:eventId action:action];
+  if (action != PlatformViewPointerAction::kEvent) {
+    [self refreshCursor];  // 指针归属变化: 光标归原生视图或回到 momo
+  }
+}
+
 // screen: 主屏左上原点、y 向下的逻辑点(Quartz 全局坐标)→ 本视图坐标(点, 左下原点)。
 - (NSPoint)viewPointFromScreen:(NSPoint)screen {
   return [self convertPoint:[self.window convertPointFromScreen:FlipScreenY(screen)] fromView:nil];
@@ -325,6 +362,7 @@ constexpr CGFloat kResizeEdgeZone = 5;
       return;
     }
     _pointerAdded = NO;
+    [_owner->input_router() setPointerTracked:NO];
   } else if (!_pointerAdded) {
     // 首次出现(进入视图或首个事件): 先补一个 kAdd。
     PointerData add = data;
@@ -335,6 +373,7 @@ constexpr CGFloat kResizeEdgeZone = 5;
     add.momentum = false;
     packet.push_back(add);
     _pointerAdded = YES;
+    [_owner->input_router() setPointerTracked:YES];
   }
   packet.push_back(data);
   _owner->delegate()->OnPointerPacket(std::move(packet));
@@ -433,10 +472,8 @@ constexpr CGFloat kResizeEdgeZone = 5;
 }
 
 - (void)handleButtonDown:(NSEvent*)event {
-  // 点击 momo 区域: 若键盘焦点在某个平台视图里, 取回(否则键盘事件仍发往原生视图)。
-  if (self.window != nil && self.window.firstResponder != self) {
-    [self.window makeFirstResponder:self];
-  }
+  // 键盘焦点: 按下落在 momo 内容上时由框架回送(platformViewPointer: 平台视图 0), 这里取回;
+  // 落在平台视图上时由原生视图自己成为第一响应者。这里不能先取回: 点击已聚焦的网页会让它失焦再聚焦。
   // 之前的按下没有收到抬起(被原生菜单等嵌套事件循环吞掉): 先补一个抬起, 复位框架侧的指针状态。
   if (_buttons != 0 && ([NSEvent pressedMouseButtons] & ~(NSUInteger)ButtonBit(event)) == 0) {
     _buttons = 0;
@@ -448,8 +485,8 @@ constexpr CGFloat kResizeEdgeZone = 5;
   }
   const BOOL first = _buttons == 0;
   _buttons |= [self logicalButtonBit:event];
-  [self dispatchPointer:[self pointerFromEvent:event
-                                         phase:first ? PointerPhase::kDown : PointerPhase::kMove]];
+  [self dispatchPointer:[self nativePointerFromEvent:event
+                                               phase:first ? PointerPhase::kDown : PointerPhase::kMove]];
 }
 
 - (void)handleButtonUp:(NSEvent*)event {
@@ -458,24 +495,106 @@ constexpr CGFloat kResizeEdgeZone = 5;
     _controlClick = NO;
   }
   const BOOL last = _buttons == 0;
-  [self dispatchPointer:[self pointerFromEvent:event
-                                         phase:last ? PointerPhase::kUp : PointerPhase::kMove]];
+  [self dispatchPointer:[self nativePointerFromEvent:event
+                                               phase:last ? PointerPhase::kUp : PointerPhase::kMove]];
   if (last && ![self mouseIsInside]) {
-    // 拖出视图后松开: 补发离开。
+    // 拖出视图后松开: 补发离开(带该抬起事件的 id: 平台视图在松开的位置离开)。
     _inside = NO;
-    [self dispatchPointer:[self pointerFromEvent:event phase:PointerPhase::kRemove]];
+    [self dispatchPointer:[self nativePointerFromEvent:event phase:PointerPhase::kRemove]];
   }
 }
 
 - (void)handleMove:(NSEvent*)event {
   _inside = YES;
-  [self dispatchPointer:[self pointerFromEvent:event
-                                         phase:_buttons == 0 ? PointerPhase::kHover
-                                                             : PointerPhase::kMove]];
+  if (_buttons != 0 && event.type == NSEventTypeMouseMoved && [NSEvent pressedMouseButtons] == 0) {
+    // 按下序列的抬起被嵌套事件循环(原生右键菜单等)吞掉: 补发抬起, 复位框架侧的指针状态。
+    _buttons = 0;
+    _controlClick = NO;
+    [self dispatchPointer:[self pointerFromEvent:event phase:PointerPhase::kUp]];
+  }
+  [self dispatchPointer:[self nativePointerFromEvent:event
+                                               phase:_buttons == 0 ? PointerPhase::kHover
+                                                                   : PointerPhase::kMove]];
+}
+
+// 触控板滚动手势阶段 → SignalPhase(框架据此在整个手势内锁定接收者)。惯性阶段属于同一手势。
+static SignalPhase ScrollPhaseOf(NSEvent* event) {
+  const NSEventPhase phase = event.phase;
+  const NSEventPhase momentum = event.momentumPhase;
+  if (phase == NSEventPhaseNone && momentum == NSEventPhaseNone) return SignalPhase::kNone;
+  if ((phase & (NSEventPhaseBegan | NSEventPhaseMayBegin)) != 0) return SignalPhase::kStart;
+  if ((momentum & (NSEventPhaseEnded | NSEventPhaseCancelled)) != 0 ||
+      (phase & NSEventPhaseCancelled) != 0) {
+    return SignalPhase::kEnd;
+  }
+  return SignalPhase::kUpdate;
+}
+
+// 捏合/旋转等手势的阶段(没有惯性阶段)。
+static SignalPhase GesturePhaseOf(NSEvent* event) {
+  const NSEventPhase phase = event.phase;
+  if (phase == NSEventPhaseNone) return SignalPhase::kNone;
+  if ((phase & (NSEventPhaseBegan | NSEventPhaseMayBegin)) != 0) return SignalPhase::kStart;
+  if ((phase & (NSEventPhaseEnded | NSEventPhaseCancelled)) != 0) return SignalPhase::kEnd;
+  return SignalPhase::kUpdate;
+}
+
+// 其他带位置的输入(MomoMouseEventKindGesture)→ kGesture 指针事件。momo 只据此命中测试与锁定,
+// 原始事件由框架回送后投递给原生视图(与鼠标事件同一条路线)。
+- (void)handleGesture:(NSEvent*)event {
+  PointerData data = [self nativePointerFromEvent:event phase:PointerPhase::kGesture];
+  data.kind = PointerDeviceKind::kTrackpad;
+  switch (event.type) {
+    case NSEventTypeMagnify:
+      data.gesture_kind = PointerGestureKind::kMagnify;
+      data.gesture_value = event.magnification;
+      data.signal_phase = GesturePhaseOf(event);
+      break;
+    case NSEventTypeRotate:
+      data.gesture_kind = PointerGestureKind::kRotate;
+      data.gesture_value = event.rotation;
+      data.signal_phase = GesturePhaseOf(event);
+      break;
+    case NSEventTypeSwipe:
+      data.gesture_kind = PointerGestureKind::kSwipe;
+      data.scroll_delta_x = -event.deltaX;  // 与滚动一致: 视口方向
+      data.scroll_delta_y = -event.deltaY;
+      break;
+    case NSEventTypeSmartMagnify:
+      data.gesture_kind = PointerGestureKind::kSmartMagnify;
+      break;
+    case NSEventTypeQuickLook:
+      data.gesture_kind = PointerGestureKind::kQuickLook;
+      break;
+    case NSEventTypePressure:
+      // 按下序列内的压力变化: 框架沿按下时的命中路径投递(与拖动相同)。
+      data.kind = PointerDeviceKind::kMouse;
+      data.gesture_kind = PointerGestureKind::kPressure;
+      data.gesture_value = event.pressure;
+      data.gesture_stage = static_cast<int32_t>(event.stage);
+      break;
+    case NSEventTypeTabletPoint:
+      data.kind = PointerDeviceKind::kStylus;
+      data.gesture_kind = PointerGestureKind::kTabletPoint;
+      data.gesture_value = event.pressure;
+      break;
+    case NSEventTypeBeginGesture:
+      data.gesture_kind = PointerGestureKind::kBegin;
+      data.signal_phase = SignalPhase::kStart;
+      break;
+    case NSEventTypeEndGesture:
+      data.gesture_kind = PointerGestureKind::kEnd;
+      data.signal_phase = SignalPhase::kEnd;
+      break;
+    default:
+      return;
+  }
+  [self dispatchPointer:data];
 }
 
 - (void)handleScroll:(NSEvent*)event {
-  PointerData data = [self pointerFromEvent:event phase:PointerPhase::kScroll];
+  PointerData data = [self nativePointerFromEvent:event phase:PointerPhase::kScroll];
+  data.signal_phase = ScrollPhaseOf(event);
   const double scale = [self scale];
   double dx = event.scrollingDeltaX;
   double dy = event.scrollingDeltaY;
@@ -493,26 +612,41 @@ constexpr CGFloat kResizeEdgeZone = 5;
   data.scroll_delta_x = -dx;
   data.scroll_delta_y = -dy;
   data.momentum = event.momentumPhase != NSEventPhaseNone;
-  if (data.scroll_delta_x == 0 && data.scroll_delta_y == 0) {
-    return;  // 手势开始/结束等零位移事件
-  }
+  // 零位移事件(手势开始/结束)也交给框架: 原生视图需要完整的手势阶段, 框架据此锁定接收者。
   [self dispatchPointer:data];
 }
 
-// ---- MomoMouseEventTarget(由 MomoWindow 的派发器调用, 位于全部平台视图之下)----
-// 内容视图是最底层目标: 指针在视图内即消费。AppKit 经响应者方法投递来的鼠标事件一律忽略
-// (见下方空实现), 保证 momo 只从派发器收到事件, 不会与平台视图重复接收。
-- (BOOL)momoHandleMouseEvent:(NSEvent*)event captured:(BOOL)captured {
+// ---- 鼠标入口(由 MomoWindow -sendEvent: 调用)----
+// 全部鼠标事件都交给 momo;落在平台视图上的由框架命中测试后经 platformViewPointer: 回送, 再投递给原生视图。
+// AppKit 经响应者方法投递来的鼠标事件一律忽略(见下方空实现), 保证 momo 只从这里收到事件。
+- (BOOL)hasPressedButtons {
+  return _buttons != 0;
+}
+
+- (void)handleMouseEvent:(NSEvent*)event {
   if (_owner == nullptr) {
-    return NO;
+    return;
   }
-  if (!captured) {
+  const MomoMouseEventKind kind = MomoClassifyMouseEvent(event);
+  if (kind == MomoMouseEventKindExit) {
+    // 离开窗口: 指针 remove 带上该事件的 id, 框架据此让平台视图在窗口外的位置离开。
+    if (_buttons == 0) {
+      _currentNativeEventId = [self recordNativeEvent:event];
+      [self momoMouseLeft:event];
+      _currentNativeEventId = 0;
+    }
+    return;
+  }
+  if (_buttons == 0 && kind != MomoMouseEventKindDown) {
+    // 没有按下序列时, 视图外的移动/滚动(如按下发生在标题栏后拖到这里之外)不属于 momo。
     const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
     if (!NSPointInRect(p, self.bounds)) {
-      return NO;
+      return;
     }
   }
-  switch (MomoClassifyMouseEvent(event)) {
+  const BOOL replayable = kind != MomoMouseEventKindEnter && kind != MomoMouseEventKindNone;
+  _currentNativeEventId = replayable ? [self recordNativeEvent:event] : 0;
+  switch (kind) {
     case MomoMouseEventKindDown:
       [self handleButtonDown:event];
       break;
@@ -528,18 +662,21 @@ constexpr CGFloat kResizeEdgeZone = 5;
     case MomoMouseEventKindScroll:
       [self handleScroll:event];
       break;
+    case MomoMouseEventKindGesture:
+      [self handleGesture:event];
+      break;
     case MomoMouseEventKindExit:
     case MomoMouseEventKindNone:
       break;
   }
-  return YES;
+  _currentNativeEventId = 0;
 }
 
-// 悬停移到平台视图上或离开窗口: 对 momo 而言指针离开(hover 复位);回来时 dispatchPointer 自动补 kAdd。
+// 指针离开窗口: 对 momo 而言指针离开(hover 复位);回来时 dispatchPointer 自动补 kAdd。
 - (void)momoMouseLeft:(NSEvent*)event {
   _inside = NO;
   if (_buttons == 0) {
-    [self dispatchPointer:[self pointerFromEvent:event phase:PointerPhase::kRemove]];
+    [self dispatchPointer:[self nativePointerFromEvent:event phase:PointerPhase::kRemove]];
   }
   [self refreshCursor];
 }
@@ -577,12 +714,9 @@ constexpr CGFloat kResizeEdgeZone = 5;
 
 - (void)refreshCursor {
   BOOL inside = [self mouseIsInside];
-  if (inside && _owner != nullptr && _owner->platform_views() != nil) {
-    // 鼠标在平台视图上: 光标归原生视图管理(如 WKWebView 的 I-beam / 手形)。
-    const NSPoint p = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
-    if ([_owner->platform_views() platformViewAtContentPoint:p]) {
-      inside = NO;
-    }
+  if (inside && _owner != nullptr && _owner->input_router().pointerOwned) {
+    // 指针归平台视图(框架的进入/离开): 光标归原生视图管理(如 WKWebView 的 I-beam / 手形)。
+    inside = NO;
   }
   const BOOL hide = _wantCursorHidden && inside && _owner != nullptr;
   if (hide != _cursorHideApplied) {
@@ -751,34 +885,33 @@ constexpr CGFloat kResizeEdgeZone = 5;
 
 // ---------------------------------------------------------------------------
 
-// MomoWindow: 鼠标事件的唯一入口(docs/05 §9 "输入")。所有鼠标事件先经 MomoMouseEventDispatcher
-// 按 z 序选出唯一的消费者, 再决定是否交给 AppKit 投递:
-//   - 消费者是平台视图(momoDeliversViaAppKit): 调 super, AppKit 命中测试期间宿主视图只返回该原生视图;
-//   - 消费者是 momo 内容视图: 已在派发器中处理。按钮事件仍调 super(窗口激活、第一响应者、AppKit 自身的
-//     按下跟踪), 此时命中落到内容视图, 其响应者方法为空实现;移动/滚动不调 super, 原生视图收不到;
-//   - 跟踪区事件(进入/离开/光标更新)按所属分流: 原生视图的按指针归属处理(MomoPlatformViews
-//     routeTrackingEvent:), 内容视图的交给派发器, 窗口装饰的交给 AppKit(见 sendEvent:)。
+// MomoWindow: 鼠标与其他位置型输入的唯一入口(docs/05 §9 "输入")。全部交给 momo 内容视图(指针包附带
+// 原生事件 id), 不经 AppKit 投递, 由框架命中测试决定接收者;落到平台视图上的事件由框架回送, 内容视图按 id
+// 取回原始 NSEvent 交给平台视图宿主(容器), 再经 momoDeliverEvent:routedTo: 交给 AppKit 投递——投递期间
+// 命中测试只落在该原生视图内, AppKit 完成按下捕获、第一响应者、手势识别器等。移动按跟踪区规则投递给 owner。
+// 跟踪区事件按所属分流: 原生视图的不投递(由有序输入流推导), 内容视图的交给内容视图, 窗口装饰的交给 AppKit。
+// 点击激活由窗口自己完成(按下不经 AppKit)。
 // MomoWindow(NSWindow)与 MomoPanel(NSPanel)共用同一份实现(mac_window_body.inc)。
 
-@interface MomoWindow : NSWindow <MomoWindowLike>
+@interface MomoWindow : NSWindow <MomoWindowLike, MomoMouseRouting>
 @end
 
 // 面板(WindowSpec::panel, 同 Electron 的 type: 'panel'): NSPanel + NSWindowStyleMaskNonactivatingPanel。
 // 可成为 key window 接收键盘, 但不成为 main window, 点击/聚焦它也不激活应用——其他窗口保持原状
 // (应用在后台时不被带到前台, 主窗口的 main 外观不变)。
-@interface MomoPanel : NSPanel <MomoWindowLike>
+@interface MomoPanel : NSPanel <MomoWindowLike, MomoMouseRouting>
 @end
 
 @implementation MomoWindow {
-  BOOL _systemTracking;  // 当前按下序列交给了 AppKit(红绿灯等窗口控件), 直到抬起
-  BOOL _momoOnly;        // 当前按下序列落在透明标题栏区域内的 momo 内容上: 不交给 AppKit(否则会拖动窗口)
+  BOOL _systemTracking;        // 当前按下序列交给了 AppKit(红绿灯等窗口控件), 直到抬起
+  int64_t _routedPlatformView;  // 正在经 AppKit 投递给的平台视图(MomoMouseRouting;0 = 无)
 }
 #include "embedder/macos/mac_window_body.inc"
 @end
 
 @implementation MomoPanel {
   BOOL _systemTracking;
-  BOOL _momoOnly;
+  int64_t _routedPlatformView;
 }
 #include "embedder/macos/mac_window_body.inc"
 @end
@@ -917,26 +1050,11 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate) : delegat
   if (metal_surface_ != nullptr) {
     metal_surface_->SetPlatformViews(platform_views_);
   }
-  // 鼠标派发: 目标自上而下 = 可见平台视图(按 z 序)… → momo 内容视图(最底层, 兜底)。
-  MomoMouseEventDispatcher* dispatcher = [[MomoMouseEventDispatcher alloc] init];
-  MomoPlatformViews* __weak weak_views = platform_views_;
-  MomoContentView* __weak weak_content = view_;
-  dispatcher.targetsProvider = ^NSArray<id<MomoMouseEventTarget>>* {
-    NSMutableArray<id<MomoMouseEventTarget>>* targets = [NSMutableArray array];
-    MomoPlatformViews* views = weak_views;
-    if (views != nil) {
-      [targets addObjectsFromArray:[views mouseTargetsTopDown]];
-    }
-    MomoContentView* content = weak_content;
-    if (content != nil) {
-      [targets addObject:content];
-    }
-    return targets;
-  };
-  platform_views_.dispatcher = dispatcher;
-  window.mouseDispatcher = dispatcher;
   window.momoContentView = view_;
-  window.platformViews = platform_views_;
+  input_router_ = [[MomoPlatformViewInputRouter alloc] initWithPlatformViews:platform_views_
+                                                                 contentView:view_];
+  window.inputRouter = input_router_;
+  platform_views_.inputRouter = input_router_;
 
   text_input_ = std::make_unique<MacTextInput>(view_, delegate_);
   [view_ attachOwner:this];
@@ -960,6 +1078,7 @@ MacWindow::~MacWindow() {
   surface_.reset();  // raster 已解绑(Shell::DetachView 先于窗口销毁)
   metal_surface_ = nullptr;
   platform_views_ = nil;  // 平台视图已由 Shell::DetachView 移出
+  input_router_ = nil;
   text_input_.reset();
   observer_ = nil;
   view_ = nil;
@@ -1101,6 +1220,11 @@ void MacWindow::Activate() {
   Show();
 }
 
+void MacWindow::DispatchPlatformViewPointer(int64_t view_id, uint64_t native_event_id,
+                                            PlatformViewPointerAction action) {
+  [view_ platformViewPointer:view_id nativeEventId:native_event_id action:action];
+}
+
 void MacWindow::CapturePointer() {
   [view_ beginPointerCapture];
 }
@@ -1114,7 +1238,10 @@ void MacWindow::AddPlatformView(int64_t view_id, void* native_view) {
   [platform_views_ addView:(NSView*)object viewId:view_id];
 }
 
-void MacWindow::RemovePlatformView(int64_t view_id) { [platform_views_ removeViewId:view_id]; }
+void MacWindow::RemovePlatformView(int64_t view_id) {
+  [platform_views_ removeViewId:view_id];
+  [input_router_ forgetPlatformView:view_id];
+}
 
 void MacWindow::FocusPlatformView(int64_t view_id) { [platform_views_ focusViewId:view_id]; }
 

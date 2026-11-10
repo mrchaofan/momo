@@ -18,7 +18,8 @@ if(APPLE)
   # ---- macOS 平台实现(原 platform/macos)----
   add_library(momo_embedder_macos STATIC
     macos/mac_key_mapping.mm
-    macos/mac_mouse_dispatcher.mm
+    macos/mac_mouse_events.mm
+    macos/mac_platform_view_input.mm
     macos/mac_native_loop.mm
     macos/mac_platform_integration.mm
     macos/mac_platform_views.mm
@@ -35,8 +36,8 @@ if(APPLE)
 
   if(MOMO_BUILD_TESTS)
     add_executable(momo_embedder_macos_unittests macos/mac_platform_unittests.mm
-                   macos/mac_mouse_dispatcher_unittests.mm
-                   macos/mac_platform_views_unittests.mm)
+                   macos/mac_mouse_events_unittests.mm
+                   macos/mac_platform_view_input_unittests.mm)
     target_link_libraries(momo_embedder_macos_unittests PRIVATE momo_embedder_macos
                           GTest::gtest_main "-framework Cocoa")
     gtest_discover_tests(momo_embedder_macos_unittests)

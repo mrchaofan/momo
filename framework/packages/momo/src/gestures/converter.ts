@@ -1,10 +1,11 @@
 import { Offset } from "../painting/geometry";
 import {
   PointerAddedEvent, PointerCancelEvent, PointerDownEvent, PointerHoverEvent, PointerMoveEvent, PointerRemovedEvent,
-  PointerScrollEvent, PointerUpEvent, kPrimaryButton, type PointerDeviceKind, type PointerEvent,
+  PointerGestureEvent, PointerPressureEvent, PointerScrollEvent, PointerUpEvent, kPrimaryButton, type PointerDeviceKind,
+  type PointerEvent, type PointerGestureKind, type ScrollPhase,
 } from "./events";
 
-/** 指针包字段下标(momo:ui POINTER_DATA_STRIDE = 12, 见 momo-ui.d.ts)。 */
+/** 指针包字段下标(momo:ui POINTER_DATA_STRIDE = 17, 见 momo-ui.d.ts)。 */
 export const PointerDataField = {
   timeStampUs: 0,
   kind: 1,
@@ -18,13 +19,22 @@ export const PointerDataField = {
   momentum: 9,
   screenX: 10,
   screenY: 11,
-  stride: 12,
+  nativeEventId: 12,
+  signalPhase: 13,
+  gestureKind: 14,
+  gestureValue: 15,
+  gestureStage: 16,
+  stride: 17,
 } as const;
 
 /** 指针包 phase 取值。 */
-export const PointerPhase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6 } as const;
+export const PointerPhase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6, gesture: 7 } as const;
 
 const KINDS: readonly PointerDeviceKind[] = ["mouse", "trackpad", "touch", "stylus"];
+const SCROLL_PHASES: readonly ScrollPhase[] = ["none", "start", "update", "end"];
+/** gestureKind 字段(下标)→ 手势种类;6(pressure)单独成为 PointerPressureEvent。 */
+const GESTURES: readonly (PointerGestureKind | "pressure" | null)[] =
+  [null, "magnify", "rotate", "smartMagnify", "swipe", "quickLook", "pressure", "tabletPoint", "begin", "end"];
 
 interface DeviceState {
   added: boolean;
@@ -61,14 +71,17 @@ export class PointerEventConverter {
       }
       const delta = position.minus(state.last);
       const base = { timeStamp, kind, device, position, momentum, screenPosition };
+      // 原生事件 id 给直接对应该原生事件的指针事件(含 add/remove: 它们引起的进入/离开取其位置);
+      // 补发的 cancel 不带(它不对应原生事件)。
+      const native = { ...base, nativeEventId: stride > PointerDataField.nativeEventId ? data[b + PointerDataField.nativeEventId]! : 0 };
       if (!state.added && phase !== PointerPhase.add && phase !== PointerPhase.remove) {
         state.added = true;
-        out.push(new PointerAddedEvent({ ...base, pointer: state.pointer }));
+        out.push(new PointerAddedEvent({ ...native, pointer: state.pointer }));
       }
       switch (phase) {
         case PointerPhase.add:
           state.added = true;
-          out.push(new PointerAddedEvent({ ...base, pointer: state.pointer }));
+          out.push(new PointerAddedEvent({ ...native, pointer: state.pointer }));
           break;
         case PointerPhase.down:
           if (state.down) {
@@ -77,21 +90,21 @@ export class PointerEventConverter {
           if (buttons === 0) buttons = kPrimaryButton;
           state.down = true;
           state.pointer = ++this.#nextPointer;
-          out.push(new PointerDownEvent({ ...base, pointer: state.pointer, buttons }));
+          out.push(new PointerDownEvent({ ...native, pointer: state.pointer, buttons }));
           break;
         case PointerPhase.move:
         case PointerPhase.hover:
           if (state.down) {
             if (buttons === 0) buttons = kPrimaryButton;
-            out.push(new PointerMoveEvent({ ...base, pointer: state.pointer, buttons, delta }));
+            out.push(new PointerMoveEvent({ ...native, pointer: state.pointer, buttons, delta }));
           } else {
-            out.push(new PointerHoverEvent({ ...base, pointer: state.pointer, buttons, delta }));
+            out.push(new PointerHoverEvent({ ...native, pointer: state.pointer, buttons, delta }));
           }
           break;
         case PointerPhase.up:
           if (state.down) {
             state.down = false;
-            out.push(new PointerUpEvent({ ...base, pointer: state.pointer, buttons: 0 }));
+            out.push(new PointerUpEvent({ ...native, pointer: state.pointer, buttons: 0 }));
           }
           break;
         case PointerPhase.remove:
@@ -99,12 +112,29 @@ export class PointerEventConverter {
             state.down = false;
             out.push(new PointerCancelEvent({ ...base, pointer: state.pointer }));
           }
-          if (state.added) out.push(new PointerRemovedEvent({ ...base, pointer: state.pointer }));
+          if (state.added) out.push(new PointerRemovedEvent({ ...native, pointer: state.pointer }));
           this.#devices.delete(device);
           break;
         case PointerPhase.scroll: {
           const scrollDelta = new Offset(data[b + PointerDataField.scrollDeltaX]! / devicePixelRatio, data[b + PointerDataField.scrollDeltaY]! / devicePixelRatio);
-          out.push(new PointerScrollEvent({ ...base, pointer: state.pointer, buttons, scrollDelta }));
+          const scrollPhase = stride > PointerDataField.signalPhase ? SCROLL_PHASES[data[b + PointerDataField.signalPhase]! | 0] ?? "none" : "none";
+          out.push(new PointerScrollEvent({ ...native, pointer: state.pointer, buttons, scrollDelta, scrollPhase }));
+          break;
+        }
+        case PointerPhase.gesture: {
+          const gesture = stride > PointerDataField.gestureKind ? GESTURES[data[b + PointerDataField.gestureKind]! | 0] ?? null : null;
+          const value = data[b + PointerDataField.gestureValue] ?? 0;
+          if (gesture === "pressure") {
+            // 只属于按下序列: 没有进行中的按下时丢弃(宿主在按下之外不会产生压力事件)。
+            if (state.down) {
+              const stage = data[b + PointerDataField.gestureStage]! | 0;
+              out.push(new PointerPressureEvent({ ...native, pointer: state.pointer, buttons, pressure: value, stage }));
+            }
+          } else if (gesture !== null) {
+            const phase = SCROLL_PHASES[data[b + PointerDataField.signalPhase]! | 0] ?? "none";
+            const swipeDelta = new Offset(data[b + PointerDataField.scrollDeltaX]!, data[b + PointerDataField.scrollDeltaY]!);
+            out.push(new PointerGestureEvent({ ...native, pointer: state.pointer, buttons, gesture, phase, value, swipeDelta }));
+          }
           break;
         }
         default:
