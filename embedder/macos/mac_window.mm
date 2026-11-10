@@ -3,6 +3,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -33,6 +34,26 @@ namespace {
 constexpr double kScrollLinePixels = 40.0;
 
 int64_t TimestampUs(NSEvent* event) { return static_cast<int64_t>(event.timestamp * 1e6); }
+
+// 屏幕坐标: Cocoa 以主屏左下为原点、y 向上;对外(PointerData::screen_x/y、screen_frame)统一为
+// 主屏左上原点、y 向下的逻辑点(与 Quartz 全局坐标一致)。两者互换只需按主屏顶边翻转 y。
+CGFloat PrimaryScreenTop() {
+  NSScreen* primary = NSScreen.screens.firstObject;
+  return primary != nil ? NSMaxY(primary.frame) : 0;
+}
+NSPoint FlipScreenY(NSPoint p) { return NSMakePoint(p.x, PrimaryScreenTop() - p.y); }
+
+// 事件的屏幕位置(主屏左上原点): 取事件自带的全局位置。
+// 不能用 [window convertPointToScreen:locationInWindow]: locationInWindow 相对事件产生时的窗口位置,
+// 换算却用窗口当前位置——拖动中窗口跟随指针移动(setPosition)时两者不一致, 误差逐次放大, 窗口"脱手"。
+NSPoint ScreenLocation(NSEvent* event) {
+  CGEventRef cg = event.CGEvent;
+  if (cg != nullptr) {
+    const CGPoint p = CGEventGetLocation(cg);
+    return NSMakePoint(p.x, p.y);
+  }
+  return FlipScreenY(NSEvent.mouseLocation);  // 合成事件: 退回当前指针位置
+}
 
 uint32_t ButtonBit(NSEvent* event) {
   switch (event.type) {
@@ -119,16 +140,36 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 // ---------------------------------------------------------------------------
 // MomoContentView: 输入归一化 + NSTextInputClient + 光标。
 
+// MomoWindow(NSWindow)与 MomoPanel(NSPanel)共有的接口, 实现见下方。
+@protocol MomoWindowLike <NSObject>
+@property(nonatomic, strong) MomoMouseEventDispatcher* mouseDispatcher;
+@property(nonatomic, weak) NSView* momoContentView;
+// 可拖动窗口的区域(内容视图逻辑坐标, 左上原点;无边框窗口由应用声明)。
+@property(nonatomic) std::vector<NSRect> dragRegions;
+// 能否成为 main window。面板为 NO;始终可以成为 key window。
+@property(nonatomic) BOOL canBecomeMain;
+// 平台视图宿主: 原生视图自己跟踪区的进入/离开/光标更新按指针归属处理。
+@property(nonatomic, weak) MomoPlatformViews* platformViews;
+@end
+
 @interface MomoContentView : NSView <NSTextInputClient, MomoMouseEventTarget>
 - (void)attachOwner:(MacWindow*)owner;
 - (void)detachOwner;
 - (void)setMomoCursor:(NSCursor*)cursor hidden:(BOOL)hidden;
+// view.setCapture(): 接管进行中的鼠标按下序列(按下发生在别的窗口)。
+- (void)beginPointerCapture;
+- (void)endPointerCapture;
+- (void)refreshCursor;
 @end
+
+// 窗口内侧的边缘缩放区(点): 其中的光标由系统显示, momo 不覆盖。
+constexpr CGFloat kResizeEdgeZone = 5;
 
 @implementation MomoContentView {
   MacWindow* _owner;             // 非拥有;MacWindow 析构时清空
   NSTrackingArea* _trackingArea;
   id _keyUpMonitor;
+  id _captureMonitor;            // 显式捕获期间的本地事件监视器(见 beginPointerCapture)
   NSEvent* __weak _lastKeyUp;    // 最近处理过的 keyUp(去重: 监视器补发后 AppKit 若也投递, 只处理一次)
   uint32_t _buttons;             // 当前按下的按钮位图(逻辑: Control+左键记为次键)
   BOOL _controlClick;            // 当前左键按下是 Control+单击(macOS 惯例: 视为右键)
@@ -175,6 +216,7 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 }
 
 - (void)detachOwner {
+  [self endPointerCapture];
   _owner = nullptr;
   if (_keyUpMonitor != nil) {
     [NSEvent removeMonitor:_keyUpMonitor];
@@ -244,16 +286,31 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 }
 
 - (PointerData)pointerFromEvent:(NSEvent*)event phase:(PointerPhase)phase {
+  // 视图坐标(点, 左下原点)。
+  const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
+  return [self pointerAtViewPoint:p screen:ScreenLocation(event) timestamp:TimestampUs(event) phase:phase];
+}
+
+// screen: 主屏左上原点、y 向下的逻辑点(Quartz 全局坐标)→ 本视图坐标(点, 左下原点)。
+- (NSPoint)viewPointFromScreen:(NSPoint)screen {
+  return [self convertPoint:[self.window convertPointFromScreen:FlipScreenY(screen)] fromView:nil];
+}
+
+- (PointerData)pointerAtViewPoint:(NSPoint)p
+                           screen:(NSPoint)screen
+                        timestamp:(int64_t)timestamp
+                            phase:(PointerPhase)phase {
   PointerData data;
-  data.timestamp_us = TimestampUs(event);
+  data.timestamp_us = timestamp;
   data.kind = PointerDeviceKind::kMouse;
   data.phase = phase;
   data.device = 0;
   // 视图坐标(点, 左下原点)→ 物理像素(左上原点)。
-  const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
   const double scale = [self scale];
   data.physical_x = p.x * scale;
   data.physical_y = (self.bounds.size.height - p.y) * scale;
+  data.screen_x = screen.x;
+  data.screen_y = screen.y;
   data.buttons = _buttons;
   return data;
 }
@@ -281,6 +338,87 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
   }
   packet.push_back(data);
   _owner->delegate()->OnPointerPacket(std::move(packet));
+}
+
+// ---- 显式捕获(view.setCapture())----
+// 按下发生在别的窗口(可能随后关闭), 本窗口接管这次按下序列: 在当前指针位置补发一次按下(框架据此
+// 在本窗口开始新的手势序列, 引擎已把捕获转交给本视图), 之后的拖动与抬起经本地事件监视器全部交给本视图,
+// 不论 AppKit 把它们投递给哪个窗口(与 Chromium 的 CocoaMouseCapture 相同)。抬起最后一个按键后释放。
+- (void)beginPointerCapture {
+  if (_owner == nullptr || self.window == nil) {
+    return;
+  }
+  [self endPointerCapture];
+  // pressedMouseButtons: bit0 左键, bit1 右键, bit2+ 其他 —— 与指针包的按钮位图一致。
+  const uint32_t pressed = static_cast<uint32_t>([NSEvent pressedMouseButtons] & 0x7);
+  if (pressed == 0) {
+    return;  // 按键已松开: 没有可接管的序列
+  }
+  _buttons = pressed;
+  _controlClick = NO;
+  const NSPoint screen = FlipScreenY(NSEvent.mouseLocation);
+  const int64_t now = static_cast<int64_t>(NSProcessInfo.processInfo.systemUptime * 1e6);
+  [self dispatchPointer:[self pointerAtViewPoint:[self viewPointFromScreen:screen]
+                                          screen:screen
+                                       timestamp:now
+                                           phase:PointerPhase::kDown]];
+  MomoContentView* __weak weakSelf = self;
+  // 捕获期间按键必然按住: 只有拖动与抬起。
+  const NSEventMask mask = NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged |
+                           NSEventMaskOtherMouseDragged | NSEventMaskLeftMouseUp |
+                           NSEventMaskRightMouseUp | NSEventMaskOtherMouseUp;
+  _captureMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mask
+                                                          handler:^NSEvent*(NSEvent* event) {
+                                                            MomoContentView* view = weakSelf;
+                                                            return view != nil ? [view handleCapturedEvent:event]
+                                                                               : event;
+                                                          }];
+  MOMO_LOG(VERBOSE) << "Pointer capture taken (buttons " << pressed << ").";
+}
+
+- (void)endPointerCapture {
+  if (_captureMonitor != nil) {
+    [NSEvent removeMonitor:_captureMonitor];
+    _captureMonitor = nil;
+  }
+}
+
+// 捕获期间的鼠标事件: 位置按事件的屏幕坐标换算到本视图(事件可能属于别的窗口)。
+// 发往本窗口的事件由这里独占处理(返回 nil, 不再经派发器重复投递);发往其他窗口的照常放行——
+// 那些窗口借此复位自己的按下状态, 它们上报的事件在引擎里因捕获已转交而被丢弃。
+- (NSEvent*)handleCapturedEvent:(NSEvent*)event {
+  if (_owner == nullptr) {
+    [self endPointerCapture];
+    return event;
+  }
+  const NSPoint screen = ScreenLocation(event);
+  const NSPoint p = [self viewPointFromScreen:screen];
+  const int64_t ts = TimestampUs(event);
+  switch (MomoClassifyMouseEvent(event)) {
+    case MomoMouseEventKindUp: {
+      _buttons &= ~ButtonBit(event);
+      const BOOL last = _buttons == 0;
+      [self dispatchPointer:[self pointerAtViewPoint:p screen:screen timestamp:ts
+                                               phase:last ? PointerPhase::kUp : PointerPhase::kMove]];
+      if (last) {
+        [self endPointerCapture];
+        if (!NSPointInRect(p, self.bounds)) {
+          _inside = NO;
+          [self dispatchPointer:[self pointerAtViewPoint:p screen:screen timestamp:ts
+                                                   phase:PointerPhase::kRemove]];
+        }
+        MOMO_LOG(VERBOSE) << "Pointer capture released.";
+      }
+      break;
+    }
+    case MomoMouseEventKindDrag:
+      [self dispatchPointer:[self pointerAtViewPoint:p screen:screen timestamp:ts
+                                               phase:PointerPhase::kMove]];
+      break;
+    default:
+      return event;
+  }
+  return event.window == self.window ? nil : event;
 }
 
 - (BOOL)mouseIsInside {
@@ -431,6 +569,12 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
   [self refreshCursor];
 }
 
+// 指针离窗口边缘的距离(点)。
+- (CGFloat)distanceToEdge:(NSPoint)p {
+  const NSRect b = self.bounds;
+  return std::min(std::min(p.x, NSWidth(b) - p.x), std::min(p.y, NSHeight(b) - p.y));
+}
+
 - (void)refreshCursor {
   BOOL inside = [self mouseIsInside];
   if (inside && _owner != nullptr && _owner->platform_views() != nil) {
@@ -450,6 +594,10 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
     _cursorHideApplied = hide;
   }
   if (inside && !hide) {
+    const NSPoint p = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
+    if ([self distanceToEdge:p] < kResizeEdgeZone) {
+      return;  // 系统的边缘缩放区: 光标归系统
+    }
     [_cursor set];
   }
 }
@@ -608,118 +756,31 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 //   - 消费者是平台视图(momoDeliversViaAppKit): 调 super, AppKit 命中测试期间宿主视图只返回该原生视图;
 //   - 消费者是 momo 内容视图: 已在派发器中处理。按钮事件仍调 super(窗口激活、第一响应者、AppKit 自身的
 //     按下跟踪), 此时命中落到内容视图, 其响应者方法为空实现;移动/滚动不调 super, 原生视图收不到;
-//   - 原生视图自己跟踪区域的进入/离开事件照常交给 AppKit(只接管内容视图跟踪区域的边界事件)。
-@interface MomoWindow : NSWindow
-@property(nonatomic, strong) MomoMouseEventDispatcher* mouseDispatcher;
-@property(nonatomic, weak) NSView* momoContentView;
-// 可拖动窗口的区域(内容视图逻辑坐标, 左上原点;无边框窗口由应用声明)。
-@property(nonatomic) std::vector<NSRect> dragRegions;
+//   - 跟踪区事件(进入/离开/光标更新)按所属分流: 原生视图的按指针归属处理(MomoPlatformViews
+//     routeTrackingEvent:), 内容视图的交给派发器, 窗口装饰的交给 AppKit(见 sendEvent:)。
+// MomoWindow(NSWindow)与 MomoPanel(NSPanel)共用同一份实现(mac_window_body.inc)。
+
+@interface MomoWindow : NSWindow <MomoWindowLike>
+@end
+
+// 面板(WindowSpec::panel, 同 Electron 的 type: 'panel'): NSPanel + NSWindowStyleMaskNonactivatingPanel。
+// 可成为 key window 接收键盘, 但不成为 main window, 点击/聚焦它也不激活应用——其他窗口保持原状
+// (应用在后台时不被带到前台, 主窗口的 main 外观不变)。
+@interface MomoPanel : NSPanel <MomoWindowLike>
 @end
 
 @implementation MomoWindow {
   BOOL _systemTracking;  // 当前按下序列交给了 AppKit(红绿灯等窗口控件), 直到抬起
   BOOL _momoOnly;        // 当前按下序列落在透明标题栏区域内的 momo 内容上: 不交给 AppKit(否则会拖动窗口)
 }
+#include "embedder/macos/mac_window_body.inc"
+@end
 
-- (BOOL)inDragRegion:(NSEvent*)event {
-  NSView* content = self.momoContentView;
-  if (content == nil || _dragRegions.empty()) return NO;
-  const NSPoint p = [content convertPoint:event.locationInWindow fromView:nil];
-  const NSPoint top_left = NSMakePoint(p.x, content.bounds.size.height - p.y);
-  for (const NSRect& r : _dragRegions) {
-    if (NSPointInRect(top_left, r)) return YES;
-  }
-  return NO;
+@implementation MomoPanel {
+  BOOL _systemTracking;
+  BOOL _momoOnly;
 }
-
-// 在 theme frame 上命中测试(隐藏标题栏后, 透明标题栏视图与红绿灯浮在内容之上)。
-- (NSView*)frameHit:(NSEvent*)event {
-  NSView* frame = self.momoContentView.superview;
-  return frame != nil ? [frame hitTest:[frame convertPoint:event.locationInWindow fromView:nil]] : nil;
-}
-
-// 命中窗口控件按钮(红绿灯)。
-- (BOOL)hitsWindowControl:(NSView*)hit {
-  for (NSView* v = hit; v != nil; v = v.superview) {
-    if ([v isKindOfClass:[NSButton class]]) return YES;
-  }
-  return NO;
-}
-
-// 命中内容视图之外的非按钮部分(透明标题栏视图): 这里的 momo 内容不能交给 AppKit, 否则按下即拖动窗口。
-- (BOOL)hitsTitlebarChrome:(NSView*)hit {
-  NSView* content = self.momoContentView;
-  return hit != nil && content != nil && hit != content.superview && ![hit isDescendantOf:content];
-}
-
-- (void)titleBarDoubleClick {
-  // 遵循系统设置"连按窗口标题栏以…"(缩放 / 最小化 / 无操作)。
-  NSString* action = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleActionOnDoubleClick"];
-  if ([action isEqualToString:@"Minimize"]) {
-    [self miniaturize:nil];
-  } else if (![action isEqualToString:@"None"]) {
-    [self zoom:nil];
-  }
-}
-
-- (void)sendEvent:(NSEvent*)event {
-  MomoMouseEventDispatcher* dispatcher = self.mouseDispatcher;
-  const MomoMouseEventKind kind = MomoClassifyMouseEvent(event);
-  if (dispatcher == nil || kind == MomoMouseEventKindNone) {
-    [super sendEvent:event];
-    return;
-  }
-  // 窗口控件(红绿灯)与拖动区域优先于 momo: 整个按下序列交给 AppKit。
-  if (_systemTracking) {
-    [super sendEvent:event];
-    if (kind == MomoMouseEventKindUp) _systemTracking = NO;
-    return;
-  }
-  if (kind == MomoMouseEventKindDown && !_momoOnly) {
-    NSView* hit = [self frameHit:event];
-    if (event.type == NSEventTypeLeftMouseDown && [self hitsWindowControl:hit]) {
-      _systemTracking = YES;
-      [super sendEvent:event];
-      return;
-    }
-    _momoOnly = [self hitsTitlebarChrome:hit];
-  }
-  if (event.type == NSEventTypeLeftMouseDown) {
-    if ([self inDragRegion:event]) {
-      _momoOnly = NO;  // 拖动/双击由 AppKit 处理, 不进入 momo
-      if (event.clickCount == 2) {
-        [self titleBarDoubleClick];
-      } else {
-        [self performWindowDragWithEvent:event];  // 拖动循环内消化抬起事件
-      }
-      return;
-    }
-  }
-  if (kind == MomoMouseEventKindEnter || kind == MomoMouseEventKindExit) {
-    if (event.trackingArea == nil || event.trackingArea.owner != self.momoContentView) {
-      [super sendEvent:event];  // 原生视图自己的跟踪区域
-      return;
-    }
-    [dispatcher dispatchEvent:event];
-    return;
-  }
-  id<MomoMouseEventTarget> target = [dispatcher dispatchEvent:event];
-  const BOOL via_appkit = target != nil &&
-                          [target respondsToSelector:@selector(momoDeliversViaAppKit)] &&
-                          [target momoDeliversViaAppKit];
-  const BOOL button = kind == MomoMouseEventKindDown || kind == MomoMouseEventKindUp ||
-                      kind == MomoMouseEventKindDrag;
-  if (_momoOnly) {
-    // 透明标题栏区域内的 momo 内容: 只由派发器处理;按下序列结束后恢复。
-    if (kind == MomoMouseEventKindUp && dispatcher.pressedButtons == 0) _momoOnly = NO;
-    return;
-  }
-  if (via_appkit || button || target == nil) {
-    [dispatcher beginRoutingToTarget:target];
-    [super sendEvent:event];
-    [dispatcher endRouting];
-  }
-}
+#include "embedder/macos/mac_window_body.inc"
 @end
 
 @interface MomoWindowObserver : NSObject <NSWindowDelegate>
@@ -741,6 +802,10 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 - (void)windowDidResize:(NSNotification*)notification {
   _owner->LayoutTrafficLights();
   _owner->NotifyMetricsChanged();
+  _owner->NotifyFrameChanged();
+}
+- (void)windowDidMove:(NSNotification*)notification {
+  _owner->NotifyFrameChanged();
 }
 - (void)windowDidExitFullScreen:(NSNotification*)notification {
   _owner->LayoutTrafficLights();
@@ -796,10 +861,26 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate) : delegat
     style |= NSWindowStyleMaskResizable;
   }
   const NSRect frame = NSMakeRect(0, 0, spec.size.width, spec.size.height);
-  MomoWindow* window = [[MomoWindow alloc] initWithContentRect:frame
-                                                   styleMask:style
-                                                     backing:NSBackingStoreBuffered
-                                                       defer:NO];
+  NSWindow<MomoWindowLike>* window = nil;
+  if (spec.panel) {
+    // 面板: 不激活应用即可成为 key(NonactivatingPanel 只对 NSPanel 有效);应用失活时不隐藏;
+    // 层级由 SetAlwaysOnTop 决定(不默认浮动)。
+    MomoPanel* panel = [[MomoPanel alloc] initWithContentRect:frame
+                                                    styleMask:style | NSWindowStyleMaskNonactivatingPanel
+                                                      backing:NSBackingStoreBuffered
+                                                        defer:NO];
+    panel.hidesOnDeactivate = NO;
+    panel.floatingPanel = NO;
+    panel.becomesKeyOnlyIfNeeded = NO;
+    window = panel;
+  } else {
+    window = [[MomoWindow alloc] initWithContentRect:frame
+                                           styleMask:style
+                                             backing:NSBackingStoreBuffered
+                                               defer:NO];
+  }
+  window.canBecomeMain = !spec.panel;
+  panel_ = spec.panel;
   window_ = window;
   window_.releasedWhenClosed = NO;  // 生命周期由本对象(ARC)管理
   window_.title = ToNSString(spec.title);
@@ -855,6 +936,7 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate) : delegat
   platform_views_.dispatcher = dispatcher;
   window.mouseDispatcher = dispatcher;
   window.momoContentView = view_;
+  window.platformViews = platform_views_;
 
   text_input_ = std::make_unique<MacTextInput>(view_, delegate_);
   [view_ attachOwner:this];
@@ -862,7 +944,11 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate) : delegat
 
   observer_ = [[MomoWindowObserver alloc] initWithOwner:this];
   window_.delegate = observer_;
-  [window_ center];
+  if (spec.position) {
+    SetPosition(*spec.position);
+  } else {
+    [window_ center];
+  }
   last_metrics_ = metrics();
 }
 
@@ -881,6 +967,12 @@ MacWindow::~MacWindow() {
 }
 
 void MacWindow::Show() {
+  if (panel_) {
+    // 面板: 带到最前并成为 key, 但不激活应用(其他窗口保持原状)。
+    [window_ orderFrontRegardless];
+    [window_ makeKeyWindow];
+    return;
+  }
   [window_ makeKeyAndOrderFront:nil];
   [NSApp activateIgnoringOtherApps:YES];
 }
@@ -969,21 +1061,48 @@ void MacWindow::LayoutTrafficLights() {
   }
 }
 
+// 屏幕框与定位都以内容区(momo 视图)为准: 屏幕坐标 − screen_frame 即窗口内坐标, 与窗口样式无关。
+Rect MacWindow::screen_frame() const {
+  const NSRect f = [window_ contentRectForFrameRect:window_.frame];
+  return {f.origin.x, PrimaryScreenTop() - NSMaxY(f), f.size.width, f.size.height};
+}
+
+void MacWindow::SetPosition(Point top_left) {
+  // 内容区左上角 → 窗口外框左上角(内容区之上可能还有标题栏)。
+  const NSRect frame = window_.frame;
+  const NSRect content = [window_ contentRectForFrameRect:frame];
+  const CGFloat titlebar = NSMaxY(frame) - NSMaxY(content);
+  [window_ setFrameTopLeftPoint:NSMakePoint(top_left.x - (content.origin.x - frame.origin.x),
+                                            PrimaryScreenTop() - top_left.y + titlebar)];
+}
+
+void MacWindow::NotifyFrameChanged() {
+  const Rect frame = screen_frame();
+  if (frame == last_frame_) {
+    return;
+  }
+  last_frame_ = frame;
+  delegate_->OnWindowFrameChanged(frame);
+}
+
 void MacWindow::SetDragRegions(const std::vector<Rect>& rects) {
   std::vector<NSRect> regions;
   regions.reserve(rects.size());
   for (const Rect& r : rects) {
     regions.push_back(NSMakeRect(r.x, r.y, r.width, r.height));
   }
-  ((MomoWindow*)window_).dragRegions = std::move(regions);
+  ((NSWindow<MomoWindowLike>*)window_).dragRegions = std::move(regions);
 }
 
 void MacWindow::Activate() {
   if (window_.miniaturized) {
     [window_ deminiaturize:nil];
   }
-  [window_ makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+  Show();
+}
+
+void MacWindow::CapturePointer() {
+  [view_ beginPointerCapture];
 }
 
 void MacWindow::AddPlatformView(int64_t view_id, void* native_view) {

@@ -355,7 +355,7 @@ TEST_F(ShellTest, SecondViewGetsItsOwnFramesAndIsRemovedOnDetach) {
   EXPECT_TRUE(WaitFor([&] { return main_surface.presented.load() >= 1; }));
 
   // 宿主创建并以 id 1 绑定第二个视图(JS createView 经 Shell 分配 id 后走的就是这条路径)。
-  ASSERT_TRUE(host.CreateView(1, {"second", {320, 200}, {100, 100}}).ok());
+  ASSERT_TRUE(host.CreateView(1, {"second", {320, 200}, {100, 100}, std::nullopt}).ok());
   FakeSurface& second = host.windows[1]->surface;
   EXPECT_TRUE(WaitFor([&] { return second.presented.load() >= 1; }));
   EXPECT_EQ(second.last_width.load(), 640);

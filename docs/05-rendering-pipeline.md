@@ -124,9 +124,19 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
   平台视图容器在"可见区域内且不在上层 momo 内容(occluders)内"时认领,事件由 AppKit 投递给原生视图——投递期间宿主
   视图的 `hitTest:` 只返回被选中的原生视图;momo 内容视图在派发器里直接处理,按钮事件仍经 AppKit(窗口激活、
   第一响应者),移动/滚动则不经 AppKit,原生视图收不到。按下即捕获(含多按钮),全部按钮抬起后释放;触控板滚动手势
-  锁定首个消费者直到惯性结束;悬停目标变化时旧目标收到 `momoMouseLeft:`(momo 据此发指针 remove)。
-  旁路全部堵住:内容视图的 AppKit 鼠标响应者方法为空实现,容器与宿主吞掉原生视图冒泡上来的事件;原生视图自身跟踪区域的
-  进入/离开事件照常交给 AppKit。光标在平台视图上时交给原生视图。点击 momo 区域时内容视图取回第一响应者;
+  锁定首个消费者直到惯性结束;悬停目标变化时旧目标收到 `momoMouseLeft:`(momo 据此发指针 remove),新目标收到
+  `momoMouseEntered:`。旁路全部堵住:内容视图的 AppKit 鼠标响应者方法为空实现,容器与宿主吞掉原生视图冒泡上来的事件。
+  **指针归属**(悬停 + 捕获)是唯一依据,跟踪区事件(进入/离开/光标更新)按所属分三类:
+  - 原生视图自己的跟踪区(`MomoPlatformViews routeTrackingEvent:`):原生视图"认为指针在它里面"必须与归属一致,
+    而不是 AppKit 的几何状态——被上层 momo 内容盖住时不投递进入与光标更新;失去归属时补发离开(网页清除 :hover),
+    归属恢复时补发暂存的进入;真实离开只发给收到过进入的跟踪区。同 Chromium `RenderWidgetHostViewCocoa`
+    (`shouldIgnoreMouseEvent` + `mouseEventWasIgnored` 合成 leave/enter);按下即捕获期间归属不变,原生视图收到真实的进出。
+  - momo 内容视图的:交给派发器。
+  - 窗口装饰(主题框架、标题栏、红绿灯)的:交给 AppKit;且由 momo 消费、未交给 AppKit 的移动也转给装饰自己的跟踪区
+    (不经 AppKit 全局投递,原生视图收不到)。装饰据此维护窗口级状态——典型是边缘缩放光标:收不到移动时窗口服务器
+    会一直显示缩放光标并忽略应用设置的光标。光标归属:装饰在处理中设置了光标(缩放区)则归装饰,否则重新应用 momo 的光标
+    (Flutter `FlutterCursorCoordinator` 同样在覆盖区恢复框架光标)。
+  光标在未被遮挡的平台视图上时交给原生视图。点击 momo 区域时内容视图取回第一响应者;
   原生视图获得焦点时经 `momo/platform_views` 通道发 `focused`,框架把 momo 焦点移到对应 `PlatformView`(输入框随之失焦)。
   限制:是否"消费"按区域同步判定(momo 的命中结果在 ui 线程异步产生,无法同步询问),momo 区域内的透明处也算 momo。
 - **生命周期**:视图由 JS 经 `momo/platform_views`(create/dispose/focus)请求,Shell 在 platform 线程调用扩展工厂

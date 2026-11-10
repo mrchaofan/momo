@@ -271,11 +271,12 @@ declare module "momo:ui" {
   // 输入(M2)。
 
   /**
-   * 指针包: 每个事件占 POINTER_DATA_STRIDE(= 10)个 Float64, 字段顺序:
+   * 指针包: 每个事件占 POINTER_DATA_STRIDE(= 12)个 Float64, 字段顺序:
    *   0 timeStampUs  1 kind(0 mouse, 1 trackpad, 2 touch, 3 stylus)
    *   2 phase(0 add, 1 down, 2 move, 3 up, 4 remove, 5 hover, 6 scroll)
    *   3 device  4 physicalX  5 physicalY(物理像素)  6 buttons(位图: 1 主键, 2 次键, 4 中键)
    *   7 scrollDeltaX  8 scrollDeltaY(物理像素)  9 momentum(1 = 惯性滚动阶段)
+   *   10 screenX  11 screenY(屏幕位置, 逻辑点, 主屏左上原点;与 View.screenFrame 同一坐标系)
    * data 是复用的缓冲区, 仅在回调期间有效(需要保留时自行拷贝)。
    * (无运行期枚举导出: 框架层自行定义同值常量。)
    */
@@ -307,9 +308,16 @@ declare module "momo:ui" {
     readonly devicePixelRatio: number;
     readonly physicalSize: { readonly width: number; readonly height: number };
     readonly focused: boolean;
+    /**
+     * 内容区(本视图)在屏幕上的框(逻辑点, 主屏左上原点, y 向下);宿主未报告时全为 0。
+     * 以内容区为准: PointerEvent.screenPosition − screenFrame 的原点 = 窗口内坐标, 与窗口样式无关。
+     */
+    readonly screenFrame: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
     /** 只写。 */
     title: string;
     onMetricsChanged: (() => void) | null;
+    /** 窗口移动或改变尺寸(screenFrame 已更新)。 */
+    onFrameChanged: (() => void) | null;
     /** 返回 false 取消关闭(如"未保存"提示);抛错视为放行。主窗口: 关闭 = 退出应用。 */
     onCloseRequested: (() => boolean | void) | null;
     /** count 个指针事件, 见 POINTER_DATA_STRIDE。坐标为本窗口的物理像素。 */
@@ -329,6 +337,13 @@ declare module "momo:ui" {
     /** 把窗口带到最前并获得焦点(最小化时先还原)。 */
     activate(): void;
     /**
+     * 把进行中的鼠标按下序列转交给本窗口(类似 Win32 SetCapture / Chromium Widget::SetCapture)。
+     * 原窗口此后不再收到这次按下的事件;本窗口在当前指针位置收到一次按下, 之后的拖动与抬起都投递给它
+     * (即使按下所在的窗口随后关闭), 抬起后自动释放。返回是否有序列被转交(没有按住的按键时为 false)。
+     * 框架层通常用 GestureBinding.transferPointerCapture, 它同时把被转交的序列交给调用方。
+     */
+    setCapture(): boolean;
+    /**
      * "hidden": 无边框外观——隐藏系统标题栏, 内容铺满整个窗口, 保留红绿灯(窗口控制按钮);
      * trafficLightsCenterY: 红绿灯中心距窗口顶部的逻辑像素(缺省系统位置)。"default": 恢复系统标题栏。
      * 隐藏标题栏后窗口靠 setDragRegions 声明的区域拖动。
@@ -336,6 +351,8 @@ declare module "momo:ui" {
     setTitleBarStyle(style: "default" | "hidden", trafficLightsCenterY?: number): void;
     /** 可拖动窗口的区域: [x, y, width, height, ...](逻辑像素, 左上原点);在其中拖动移动窗口, 双击缩放。 */
     setDragRegions(rects: readonly number[]): void;
+    /** 移动窗口, 使内容区左上角位于屏幕位置 (x, y)(逻辑点, 主屏左上原点)。 */
+    setPosition(x: number, y: number): void;
   }
 
   /** 主窗口(视图 0), 同时承载全局帧回调。 */
@@ -353,7 +370,12 @@ declare module "momo:ui" {
   /** 当前全部视图(含视图 0), 键为视图 id。 */
   export const views: ReadonlyMap<number, View>;
   /** 打开一个新窗口(逻辑像素)。宿主不支持或创建失败时 reject。 */
-  export function createView(options: { title?: string; width: number; height: number; minWidth?: number; minHeight?: number }): Promise<View>;
+  /**
+   * x/y: 内容区左上角的屏幕位置(逻辑点, 主屏左上原点), 两者同时给出时生效, 缺省居中。
+   * panel: 面板(同 Electron 的 type: 'panel';macOS 为 NSPanel + NonactivatingPanel)——可成为 key window
+   * 接收键盘, 但不成为 main window, 聚焦它也不激活应用(应用在后台时不被带到前台, 其他窗口保持原状)。缺省 false。
+   */
+  export function createView(options: { title?: string; width: number; height: number; minWidth?: number; minHeight?: number; x?: number; y?: number; panel?: boolean }): Promise<View>;
 }
 
 // 消息通道(docs/04 §5): 异步、字节流、双向。平台服务与扩展共用。

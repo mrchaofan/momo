@@ -35,7 +35,8 @@ if(APPLE)
 
   if(MOMO_BUILD_TESTS)
     add_executable(momo_embedder_macos_unittests macos/mac_platform_unittests.mm
-                   macos/mac_mouse_dispatcher_unittests.mm)
+                   macos/mac_mouse_dispatcher_unittests.mm
+                   macos/mac_platform_views_unittests.mm)
     target_link_libraries(momo_embedder_macos_unittests PRIVATE momo_embedder_macos
                           GTest::gtest_main "-framework Cocoa")
     gtest_discover_tests(momo_embedder_macos_unittests)

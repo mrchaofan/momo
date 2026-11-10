@@ -82,6 +82,7 @@ struct UiBindings::Impl final : public Object {
   ViewBinding* FindView(ViewId id);
   void SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
   void SyncFocus(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
+  void SyncFrame(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
   // 调用 target[name](args...);未设置或非函数时返回空。
   v8::MaybeLocal<v8::Value> CallHandler(v8::Local<v8::Object> target, const char* name,
                                         int argc, v8::Local<v8::Value>* argv);

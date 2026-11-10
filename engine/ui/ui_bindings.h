@@ -40,6 +40,8 @@ class UiBindings {
   // view.onKeyData(data) 返回 true 表示已消费。
   bool KeyData(ViewId view, const platform::KeyData& data);
   void FocusChanged(ViewId view, bool focused);
+  // 同步 view.screenFrame 后调用 view.onFrameChanged()。
+  void WindowFrameChanged(ViewId view);
   // 视图集合变化: 更新 views 后调用 window.onViewsChanged()。
   void ViewAdded(ViewId view);
   void ViewRemoved(ViewId view);

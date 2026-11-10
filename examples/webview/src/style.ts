@@ -27,8 +27,17 @@ export const TextStyles = {
 
 /** 无边框窗口左上角留给红绿灯的宽度(逻辑像素)。 */
 export const kTrafficLightsWidth = 78;
-/** 标签栏、工具栏高度(逻辑像素)。 */
-export const kTabStripHeight = 38;
+/**
+ * 标签栏 = 顶部缩放边 + 标签行(逻辑像素)。顶部这条细边不放标签: 系统的顶边缩放区落在这里,
+ * 标签整体在它下面, 指针移进标签就不会再出现缩放光标、按下也不会变成缩放。
+ */
+export const kTabStripTopInset = 8;
+export const kTabHeight = 38;
+export const kTabStripHeight = kTabStripTopInset + kTabHeight;
+/** 主窗口红绿灯中心: 与标签行的中线对齐。 */
+export const kTabStripTrafficLightsCenterY = kTabStripTopInset + kTabHeight / 2;
+/** 单独窗口的顶栏高度(红绿灯 + 标题 + 图标按钮)。 */
+export const kTitleBarHeight = 38;
 export const kToolbarHeight = 46;
 /** 插入/删除标签的动画时长(毫秒)。 */
 export const kTabAnimationMs = 220;

@@ -283,6 +283,14 @@ export interface WindowOptions {
   minHeight?: number;
   /** 置顶: 窗口浮在普通窗口之上。 */
   alwaysOnTop?: boolean;
+  /** 初始位置: 内容区左上角的屏幕坐标(逻辑点, 主屏左上原点), x 与 y 同时给出时生效;缺省居中。 */
+  x?: number;
+  y?: number;
+  /**
+   * 面板(同 Electron 的 type: 'panel'): 可接收键盘(key), 但不成为 main window, 聚焦它也不激活应用。
+   * 适合浮动的辅助窗口。仅在打开时生效。缺省 false。
+   */
+  panel?: boolean;
   /** 用户点了窗口的关闭按钮: 返回 false 取消关闭。 */
   onCloseRequested?: (() => boolean | void) | null;
   /** 窗口已打开(child 将在下一帧渲染进去)。适合在此把已有子树(GlobalKey)移进新窗口。 */
@@ -322,7 +330,7 @@ export class WindowState extends State<Window> {
   override initState(): void {
     const o = this.widget.opts;
     WidgetsBinding.instance.addViewsListener(this.#onViewsChanged);
-    createView({ title: o.title, width: o.width, height: o.height, minWidth: o.minWidth, minHeight: o.minHeight }).then(
+    createView({ title: o.title, width: o.width, height: o.height, minWidth: o.minWidth, minHeight: o.minHeight, x: o.x, y: o.y, panel: o.panel }).then(
       (view) => {
         if (this.#disposed) {
           view.close();  // 打开期间已被移除

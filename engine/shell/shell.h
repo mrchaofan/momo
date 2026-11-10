@@ -54,11 +54,14 @@ class Shell final : public Object, private Engine::Delegate {
     virtual void OnEngineSetCursor(platform::SystemCursor cursor) = 0;
     virtual void OnEngineSetAlwaysOnTop(bool on) { (void)on; }
     virtual void OnEngineActivate() {}
+    // 接管进行中的鼠标按下序列(view.setCapture()): 之后的拖动/抬起投递给本窗口, 并先补发一次按下。
+    virtual void OnEngineCapturePointer() {}
     virtual void OnEngineSetTitleBar(bool hidden, double traffic_center_y) {
       (void)hidden;
       (void)traffic_center_y;
     }
     virtual void OnEngineSetDragRegions(const std::vector<Rect>& rects) { (void)rects; }
+    virtual void OnEngineSetPosition(Point top_left) { (void)top_left; }
     // 窗口的 IME 连接(momo/textinput 通道的 JS→平台方向)。无窗口时返回空。
     virtual platform::TextInputConnection* GetTextInput() = 0;
     // 本窗口的原生句柄(NSView* / HWND), 供扩展 get_window_handle 使用。无窗口时返回空。
@@ -131,6 +134,8 @@ class Shell final : public Object, private Engine::Delegate {
   void OnKeyData(platform::ViewId view, const platform::KeyData& data);
   // 同时记录"当前获得焦点的窗口"(IME 连接、momo/textinput 发往它)。
   void OnFocusChanged(platform::ViewId view, bool focused);
+  // 窗口在屏幕上的框变化(逻辑点, 主屏左上原点)→ JS view.screenFrame / onFrameChanged。
+  void OnWindowFrameChanged(platform::ViewId view, const Rect& frame);
   // 主窗口(视图 0)的兼容入口。
   void OnMetricsChanged(const platform::ViewportMetrics& metrics) {
     OnMetricsChanged(platform::kImplicitViewId, metrics);
@@ -162,8 +167,10 @@ class Shell final : public Object, private Engine::Delegate {
   void CloseView(platform::ViewId view) override;
   void SetWindowAlwaysOnTop(platform::ViewId view, bool on) override;
   void ActivateWindow(platform::ViewId view) override;
+  void CaptureWindowPointer(platform::ViewId view) override;
   void SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) override;
   void SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects) override;
+  void SetWindowPosition(platform::ViewId view, Point top_left) override;
   // 主窗口(视图 0)的兼容入口。
   void SetWindowTitle(std::string title) { SetWindowTitle(platform::kImplicitViewId, std::move(title)); }
   void SetWindowMinSize(Size logical_size) { SetWindowMinSize(platform::kImplicitViewId, logical_size); }

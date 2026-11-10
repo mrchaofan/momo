@@ -96,6 +96,11 @@ void Engine::RemoveView(platform::ViewId view) {
     return;
   }
   MOMO_LOG(VERBOSE) << "View removed: " << view;
+  // 持有捕获的视图被移除(拖动中窗口关闭): 补一个 remove, 让框架取消进行中的手势。
+  const platform::PointerDataPacket released = pointer_capture_.ReleaseView(view);
+  if (!released.empty()) {
+    driver_->OnPointerPacket(platform::kImplicitViewId, released);
+  }
   driver_->OnViewRemoved(view);
 }
 
@@ -141,15 +146,42 @@ void Engine::OnMetricsChanged(platform::ViewId view, const platform::ViewportMet
 }
 
 void Engine::OnPointerPacket(platform::ViewId view, const platform::PointerDataPacket& packet) {
-  if (!packet.empty() && views_.count(view) != 0) {
-    driver_->OnPointerPacket(view, packet);
+  if (packet.empty() || views_.count(view) == 0) {
+    return;
   }
+  const platform::PointerDataPacket filtered = pointer_capture_.Filter(view, packet);
+  if (!filtered.empty()) {
+    driver_->OnPointerPacket(view, filtered);
+  }
+}
+
+bool Engine::SetPointerCapture(platform::ViewId view) {
+  // 先在 ui 线程转交(原窗口此后的事件立即作废), 再请宿主窗口接管系统层的鼠标事件。
+  if (views_.count(view) == 0 || !pointer_capture_.TransferTo(view)) {
+    return false;
+  }
+  delegate_.CaptureWindowPointer(view);
+  return true;
 }
 
 void Engine::OnKeyData(platform::ViewId view, const platform::KeyData& data) {
   if (views_.count(view) != 0) {
     driver_->OnKeyData(view, data);
   }
+}
+
+Rect Engine::screen_frame(platform::ViewId view) const {
+  auto it = views_.find(view);
+  return it != views_.end() ? it->second.frame : Rect{};
+}
+
+void Engine::OnWindowFrameChanged(platform::ViewId view, const Rect& frame) {
+  auto it = views_.find(view);
+  if (it == views_.end() || it->second.frame == frame) {
+    return;
+  }
+  it->second.frame = frame;
+  driver_->OnWindowFrameChanged(view);
 }
 
 void Engine::OnFocusChanged(platform::ViewId view, bool focused) {

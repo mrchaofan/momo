@@ -284,7 +284,7 @@ TEST_F(ApplicationTest, EngineCreatedWindowsOpenCloseAndShutDown) {
   std::vector<engine::platform::ViewId> attached;
   // ui 线程上发起(JS createView 走的就是这条路): Shell 投递到 platform 线程分配 id 并让宿主建窗口。
   raw->task_runners().ui->PostTask([&, raw] {
-    raw->shell()->CreateView(/*request=*/42, {"second", {400, 300}, {100, 100}});
+    raw->shell()->CreateView(/*request=*/42, {"second", {400, 300}, {100, 100}, std::nullopt});
     raw->task_runners().platform->PostTask([&, raw] {
       open_after_create = raw->extra_window_count();
       attached = raw->shell()->attached_views();
@@ -300,7 +300,7 @@ TEST_F(ApplicationTest, EngineCreatedWindowsOpenCloseAndShutDown) {
       [&, raw] {
         open_after_close = raw->extra_window_count();
         raw->task_runners().ui->PostTask([raw] {
-          raw->shell()->CreateView(43, {"third", {200, 200}, {100, 100}});
+          raw->shell()->CreateView(43, {"third", {200, 200}, {100, 100}, std::nullopt});
           raw->task_runners().platform->PostTask([raw] { raw->RequestTerminate(); });
         });
       },

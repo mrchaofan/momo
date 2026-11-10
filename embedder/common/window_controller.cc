@@ -46,6 +46,7 @@ void WindowController::AttachEngine(engine::Shell& shell,
   if (focused_) {
     shell.OnFocusChanged(view_id_, true);
   }
+  shell.OnWindowFrameChanged(view_id_, window_->screen_frame());
 }
 
 void WindowController::DetachEngine() {
@@ -166,9 +167,27 @@ void WindowController::OnEngineSetDragRegions(const std::vector<Rect>& rects) {
   }
 }
 
+void WindowController::OnWindowFrameChanged(const Rect& screen_frame) {
+  if (shell_ != nullptr) {
+    shell_->OnWindowFrameChanged(view_id_, screen_frame);
+  }
+}
+
+void WindowController::OnEngineSetPosition(Point top_left) {
+  if (window_) {
+    window_->SetPosition(top_left);
+  }
+}
+
 void WindowController::OnEngineActivate() {
   if (window_) {
     window_->Activate();
+  }
+}
+
+void WindowController::OnEngineCapturePointer() {
+  if (window_) {
+    window_->CapturePointer();
   }
 }
 

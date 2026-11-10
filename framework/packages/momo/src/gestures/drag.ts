@@ -11,11 +11,14 @@ import { VelocityTracker } from "./velocity_tracker";
 export interface DragDownDetails {
   readonly globalPosition: Offset;
   readonly localPosition: Offset;
+  /** 屏幕位置(逻辑点, 主屏左上原点;见 PointerEvent.screenPosition)。跨窗口拖拽用它计算。 */
+  readonly screenPosition: Offset;
 }
 /** 拖动开始。 */
 export interface DragStartDetails {
   readonly globalPosition: Offset;
   readonly localPosition: Offset;
+  readonly screenPosition: Offset;
   readonly sourceTimeStamp: number;
   readonly kind: PointerDeviceKind;
 }
@@ -25,6 +28,7 @@ export interface DragUpdateDetails {
   readonly primaryDelta: number | null;
   readonly globalPosition: Offset;
   readonly localPosition: Offset;
+  readonly screenPosition: Offset;
   readonly sourceTimeStamp: number;
 }
 /** 拖动结束(velocity 逻辑像素/秒)。 */
@@ -51,6 +55,8 @@ export abstract class DragGestureRecognizer extends OneSequenceGestureRecognizer
   #state: DragState = "ready";
   #initialGlobal = Offset.zero;
   #initialLocal = Offset.zero;
+  #initialScreen = Offset.zero;
+  #lastScreen = Offset.zero;
   #pendingGlobal = Offset.zero;
   #pendingLocal = Offset.zero;
   #lastTimeStamp = 0;
@@ -91,6 +97,8 @@ export abstract class DragGestureRecognizer extends OneSequenceGestureRecognizer
       this.#state = "possible";
       this.#initialGlobal = event.position;
       this.#initialLocal = event.localPosition;
+      this.#initialScreen = event.screenPosition;
+      this.#lastScreen = event.screenPosition;
       this.#initialButtons = event.buttons;
       this.#kind = event.kind;
       this.#pendingGlobal = Offset.zero;
@@ -98,7 +106,7 @@ export abstract class DragGestureRecognizer extends OneSequenceGestureRecognizer
       this.#globalDistanceMoved = 0;
       this.#lastTimeStamp = event.timeStamp;
       if (this.onDown) {
-        const d: DragDownDetails = { globalPosition: this.#initialGlobal, localPosition: this.#initialLocal };
+        const d: DragDownDetails = { globalPosition: this.#initialGlobal, localPosition: this.#initialLocal, screenPosition: this.#initialScreen };
         this.invokeCallback("onDown", () => this.onDown!(d));
       }
     } else if (this.#state === "accepted") {
@@ -115,6 +123,7 @@ export abstract class DragGestureRecognizer extends OneSequenceGestureRecognizer
         this.#giveUpPointer(event.pointer);
         return;
       }
+      this.#lastScreen = event.screenPosition;
       if (this.#state === "accepted") {
         this.#checkUpdate(event.delta, event.localDelta, event.position, event.localPosition, event.timeStamp);
       } else {
@@ -140,14 +149,16 @@ export abstract class DragGestureRecognizer extends OneSequenceGestureRecognizer
     const ts = this.#lastTimeStamp;
     let startGlobal = this.#initialGlobal;
     let startLocal = this.#initialLocal;
+    let startScreen = this.#initialScreen;
     if (this.dragStartBehavior === "start") {
       startGlobal = this.#initialGlobal.plus(delta);
       startLocal = this.#initialLocal.plus(localDelta);
+      startScreen = this.#lastScreen;
     }
     this.#pendingGlobal = Offset.zero;
     this.#pendingLocal = Offset.zero;
     if (this.onStart) {
-      const d: DragStartDetails = { globalPosition: startGlobal, localPosition: startLocal, sourceTimeStamp: ts, kind: this.#kind };
+      const d: DragStartDetails = { globalPosition: startGlobal, localPosition: startLocal, screenPosition: startScreen, sourceTimeStamp: ts, kind: this.#kind };
       this.invokeCallback("onStart", () => this.onStart!(d));
     }
     if (this.dragStartBehavior === "down" && (delta.dx !== 0 || delta.dy !== 0)) {
@@ -184,6 +195,7 @@ export abstract class DragGestureRecognizer extends OneSequenceGestureRecognizer
       primaryDelta: this.getPrimaryValueFromOffset(d),
       globalPosition: global,
       localPosition: local,
+      screenPosition: this.#lastScreen,
       sourceTimeStamp: ts,
     };
     void delta;

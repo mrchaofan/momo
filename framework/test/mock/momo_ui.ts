@@ -51,6 +51,8 @@ const control: MockControl = {
   failNextCreateView: false,
   alwaysOnTop: new Map<number, boolean>(),
   activated: [],
+  captures: [],
+  panelViews: new Set<number>(),
   titleBars: new Map<number, { style: string; center: number | null }>(),
   dragRegions: new Map<number, number[]>(),
 };
@@ -477,7 +479,7 @@ export class SceneBuilder {
 
 // ---------------------------------------------------------------------------
 
-export const POINTER_DATA_STRIDE = 10;
+export const POINTER_DATA_STRIDE = 12;
 
 export interface KeyData {
   type: "down" | "up" | "repeat"; timeStampUs: number; physicalKey: number; logicalKey: number; character: string; modifiers: number;
@@ -502,8 +504,12 @@ interface MockView {
   close(): void;
   setAlwaysOnTop(on: boolean): void;
   activate(): void;
+  setCapture(): boolean;
   setTitleBarStyle(style: "default" | "hidden", center?: number): void;
   setDragRegions(rects: readonly number[]): void;
+  screenFrame: { x: number; y: number; width: number; height: number };
+  onFrameChanged: (() => void) | null;
+  setPosition(x: number, y: number): void;
 }
 
 interface MockWindow extends MockView {
@@ -545,7 +551,16 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
     setAlwaysOnTop(on: boolean): void { control.alwaysOnTop.set(id, on); },
     setTitleBarStyle(style: "default" | "hidden", center?: number): void { control.titleBars.set(id, { style, center: center ?? null }); },
     setDragRegions(rects: readonly number[]): void { control.dragRegions.set(id, [...rects]); },
+    screenFrame: { x: 0, y: 0, width: width / dpr, height: height / dpr },
+    onFrameChanged: null,
+    setPosition(x: number, y: number): void {
+      const v = viewMap.get(id);
+      if (v === undefined) return;
+      v.screenFrame = { ...v.screenFrame, x, y };
+      v.onFrameChanged?.();
+    },
     activate(): void { control.activated.push(id); },
+    setCapture(): boolean { control.captures.push(id); return true; },
     close(): void {
       if (id === 0) throw new Error("view.close: the main window (view 0) cannot be closed from JS");
       removeView(id);
@@ -579,7 +594,7 @@ export const window = win;
 export const views: ReadonlyMap<number, MockView> = viewMap;
 
 /** 宿主异步创建窗口: 先加入 views 并通知 onViewsChanged, 再解析 Promise(与真实引擎顺序一致)。 */
-export function createView(o: { title?: string; width: number; height: number }): Promise<MockView> {
+export function createView(o: { title?: string; width: number; height: number; x?: number; y?: number; panel?: boolean }): Promise<MockView> {
   return new Promise((resolve, reject) => {
     void Promise.resolve().then(() => {
       if (control.failNextCreateView) {
@@ -590,7 +605,9 @@ export function createView(o: { title?: string; width: number; height: number })
       const id = nextViewId++;
       const v = makeView(id, o.width * win.devicePixelRatio, o.height * win.devicePixelRatio, win.devicePixelRatio);
       if (o.title) v.title = o.title;
+      v.screenFrame = { x: o.x ?? 200, y: o.y ?? 120, width: o.width, height: o.height };
       viewMap.set(id, v);
+      if (o.panel === true) control.panelViews.add(id);
       win.onViewsChanged?.();
       resolve(v);
     });

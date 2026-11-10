@@ -4,7 +4,7 @@ import {
   PointerScrollEvent, PointerUpEvent, kPrimaryButton, type PointerDeviceKind, type PointerEvent,
 } from "./events";
 
-/** 指针包字段下标(momo:ui POINTER_DATA_STRIDE = 10, 见 momo-ui.d.ts)。 */
+/** 指针包字段下标(momo:ui POINTER_DATA_STRIDE = 12, 见 momo-ui.d.ts)。 */
 export const PointerDataField = {
   timeStampUs: 0,
   kind: 1,
@@ -16,7 +16,9 @@ export const PointerDataField = {
   scrollDeltaX: 7,
   scrollDeltaY: 8,
   momentum: 9,
-  stride: 10,
+  screenX: 10,
+  screenY: 11,
+  stride: 12,
 } as const;
 
 /** 指针包 phase 取值。 */
@@ -51,13 +53,14 @@ export class PointerEventConverter {
       const position = new Offset(data[b + PointerDataField.physicalX]! / devicePixelRatio, data[b + PointerDataField.physicalY]! / devicePixelRatio);
       let buttons = data[b + PointerDataField.buttons]! | 0;
       const momentum = data[b + PointerDataField.momentum] === 1;
+      const screenPosition = new Offset(data[b + PointerDataField.screenX]!, data[b + PointerDataField.screenY]!);
       let state = this.#devices.get(device);
       if (state === undefined) {
         state = { added: false, down: false, pointer: 0, last: position };
         this.#devices.set(device, state);
       }
       const delta = position.minus(state.last);
-      const base = { timeStamp, kind, device, position, momentum };
+      const base = { timeStamp, kind, device, position, momentum, screenPosition };
       if (!state.added && phase !== PointerPhase.add && phase !== PointerPhase.remove) {
         state.added = true;
         out.push(new PointerAddedEvent({ ...base, pointer: state.pointer }));

@@ -22,6 +22,10 @@ struct PointerData {
   double scroll_delta_x = 0;
   double scroll_delta_y = 0;
   bool momentum = false;  // Mac 惯性滚动阶段
+  // 指针的屏幕位置(逻辑点, 主屏左上原点、y 向下;与窗口 screen_frame 同一坐标系)。
+  // 跨窗口交互(拖出标签成窗)用它计算, 不受窗口自身移动的影响。
+  double screen_x = 0;
+  double screen_y = 0;
 };
 
 using PointerDataPacket = std::vector<PointerData>;

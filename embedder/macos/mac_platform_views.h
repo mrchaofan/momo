@@ -41,6 +41,10 @@
 - (void)hideAll;
 // 内容视图坐标(点)下的位置是否落在可见、未被遮挡的平台视图上。
 - (BOOL)platformViewAtContentPoint:(NSPoint)point;
+// 原生视图自己跟踪区的进入/离开/光标更新(NSEvent.trackingArea 属于某个平台视图时返回 YES 并处理):
+// 原生视图的悬停状态由派发器的指针归属推导, 而不是 AppKit 的几何状态——被上层 momo 内容盖住时
+// 不投递进入、补发离开;归属恢复时补发进入(同 Chromium RenderWidgetHostViewCocoa 对被遮挡事件的处理)。
+- (BOOL)routeTrackingEvent:(NSEvent*)event;
 // responder 属于哪个平台视图;不属于返回 0。
 - (int64_t)viewIdForResponder:(NSResponder*)responder;
 // 是否持有任何平台视图。

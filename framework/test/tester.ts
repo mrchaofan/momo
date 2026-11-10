@@ -20,6 +20,8 @@ export interface PointerOptions {
   scrollDeltaY?: number;
   /** 目标视图(窗口)id, 缺省主窗口。坐标为该窗口的逻辑坐标。 */
   view?: number;
+  /** 指针的屏幕位置(逻辑点)。缺省 = 窗口屏幕框左上 + position。 */
+  screen?: Offset;
 }
 
 /** 测试驱动器。 */
@@ -135,7 +137,7 @@ export class WidgetTester {
 
   /** 发送一个指针事件(逻辑坐标)。 */
   sendPointer(phase: number, position: Offset, o: PointerOptions = {}): void {
-    const d = new Float64Array(10);
+    const d = new Float64Array(12);
     d[0] = this.now * 1000;
     d[1] = o.kind ?? Kind.mouse;
     d[2] = phase;
@@ -147,6 +149,10 @@ export class WidgetTester {
     d[8] = (o.scrollDeltaY ?? 0) * this.#dpr;
     d[9] = 0;
     const target = o.view !== undefined && o.view !== 0 ? views.get(o.view) : window;
+    // 屏幕位置 = 窗口屏幕框左上 + 窗口内位置(逻辑点)。
+    const frame = target?.screenFrame ?? { x: 0, y: 0 };
+    d[10] = o.screen?.dx ?? frame.x + position.dx;
+    d[11] = o.screen?.dy ?? frame.y + position.dy;
     target?.onPointerPacket?.(d, 1);
   }
 

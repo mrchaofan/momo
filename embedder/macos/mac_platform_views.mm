@@ -79,6 +79,10 @@ NSComparisonResult CompareByRank(__kindof NSView* a, __kindof NSView* b, void* c
 @property(nonatomic) int64_t viewId;
 @property(nonatomic, strong) NSView* native;
 - (void)setOccluders:(std::vector<NSRect>)occluders;
+// tracking area 是否属于本容器中的原生视图(子树中任一视图的跟踪区)。
+- (BOOL)ownsTrackingArea:(NSTrackingArea*)area;
+// 原生视图自己跟踪区的进入/离开/光标更新: 按指针归属投递、暂存或丢弃(见实现处说明)。
+- (void)routeTrackingEvent:(NSEvent*)event;
 // point 为宿主视图坐标: 原生视图中被命中的子视图(派发器已决定由本容器接收)。
 - (NSView*)nativeHitTest:(NSPoint)point;
 @end
@@ -111,6 +115,22 @@ MOMO_SWALLOW_MOUSE_EVENTS
 
 @implementation MomoPlatformViewContainer {
   std::vector<NSRect> _occluders;  // 宿主视图坐标(点)
+  // 原生视图跟踪区的悬停状态(与 Chromium RenderWidgetHostViewCocoa 的 mouseEventWasIgnored 同理):
+  // 原生视图认为"指针在我里面"必须与派发器的归属一致, 而不是 AppKit 的几何状态——被上层 momo 内容
+  // 盖住时, 指针在几何上仍在原生视图内, 但不归它。
+  //   _entered: AppKit 认为指针在内的跟踪区 → 其进入事件(归属恢复时补发用);
+  //   _delivered: 原生视图已收到进入、尚未收到离开的跟踪区;
+  //   _owned: 本容器是派发器的悬停(含捕获)目标。
+  NSMapTable<NSTrackingArea*, NSEvent*>* _entered;
+  NSHashTable<NSTrackingArea*>* _delivered;
+  BOOL _owned;
+}
+- (instancetype)initWithFrame:(NSRect)frame {
+  if ((self = [super initWithFrame:frame])) {
+    _entered = [NSMapTable strongToStrongObjectsMapTable];
+    _delivered = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory];
+  }
+  return self;
 }
 - (BOOL)isFlipped {
   return YES;
@@ -130,6 +150,102 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
   return [super hitTest:point];
 }
+- (BOOL)ownsTrackingArea:(NSTrackingArea*)area {
+  if (area == nil || self.native == nil) return NO;
+  if ([area.owner isKindOfClass:[NSView class]]) {
+    return [(NSView*)area.owner isDescendantOf:self];
+  }
+  // 跟踪区的 owner 可以不是视图(如 WebKit 的内部对象): 在子树里找安装了它的视图。
+  NSMutableArray<NSView*>* pending = [NSMutableArray arrayWithObject:self];
+  while (pending.count > 0) {
+    NSView* view = pending.lastObject;
+    [pending removeLastObject];
+    if ([view.trackingAreas containsObject:area]) return YES;
+    [pending addObjectsFromArray:view.subviews];
+  }
+  return NO;
+}
+
+// 按事件类型调用跟踪区 owner 的对应方法(与 AppKit 投递跟踪区事件相同)。
+static void DeliverTrackingEvent(NSEvent* event, NSTrackingArea* area) {
+  id owner = area.owner;
+  switch (event.type) {
+    case NSEventTypeMouseEntered:
+      if ([owner respondsToSelector:@selector(mouseEntered:)]) [owner mouseEntered:event];
+      break;
+    case NSEventTypeMouseExited:
+      if ([owner respondsToSelector:@selector(mouseExited:)]) [owner mouseExited:event];
+      break;
+    case NSEventTypeCursorUpdate:
+      if ([owner respondsToSelector:@selector(cursorUpdate:)]) [owner cursorUpdate:event];
+      break;
+    default:
+      break;
+  }
+}
+
+// 合成"离开": 原生视图失去指针归属(被 momo 内容盖住、移到别处)而 AppKit 仍认为指针在跟踪区内。
+- (NSEvent*)exitEventFor:(NSTrackingArea*)area like:(NSEvent*)event {
+  return [NSEvent enterExitEventWithType:NSEventTypeMouseExited
+                                location:event.locationInWindow
+                           modifierFlags:event.modifierFlags
+                               timestamp:event.timestamp
+                            windowNumber:event.windowNumber
+                                 context:nil
+                             eventNumber:0
+                          trackingNumber:(NSInteger)(__bridge void*)area
+                                userData:(__bridge void*)area.userInfo];
+}
+
+// AppKit 送来的原生视图跟踪区事件:
+//   进入: 归属于本容器时投递, 否则只记下(归属恢复时补发);
+//   离开: 只发给已收到进入的跟踪区(失去归属时已补发过离开的不再重复);
+//   光标更新: 归属于本容器时投递, 否则丢弃(指针归 momo, 光标由 momo 设置)。
+- (void)routeTrackingEvent:(NSEvent*)event {
+  NSTrackingArea* area = event.trackingArea;
+  switch (event.type) {
+    case NSEventTypeMouseEntered:
+      [_entered setObject:event forKey:area];
+      if (_owned) {
+        [_delivered addObject:area];
+        DeliverTrackingEvent(event, area);
+      }
+      break;
+    case NSEventTypeMouseExited:
+      [_entered removeObjectForKey:area];
+      if ([_delivered containsObject:area]) {
+        [_delivered removeObject:area];
+        DeliverTrackingEvent(event, area);
+      }
+      break;
+    case NSEventTypeCursorUpdate:
+      if (_owned) DeliverTrackingEvent(event, area);
+      break;
+    default:
+      break;
+  }
+}
+
+// 派发器: 悬停(指针归属)移到本容器——补发归属期间被暂存的进入。
+- (void)momoMouseEntered:(NSEvent*)event {
+  _owned = YES;
+  for (NSTrackingArea* area in _entered.keyEnumerator.allObjects) {
+    if (![_delivered containsObject:area]) {
+      [_delivered addObject:area];
+      DeliverTrackingEvent([_entered objectForKey:area], area);
+    }
+  }
+}
+
+// 派发器: 悬停离开本容器——已进入的跟踪区补发离开, 原生视图清除悬停状态(如网页的 :hover)。
+- (void)momoMouseLeft:(NSEvent*)event {
+  _owned = NO;
+  for (NSTrackingArea* area in _delivered.allObjects) {
+    DeliverTrackingEvent([self exitEventFor:area like:event], area);
+  }
+  [_delivered removeAllObjects];
+}
+
 - (NSView*)nativeHitTest:(NSPoint)point {
   NSView* hit = [super hitTest:point];
   return (hit == nil || hit == self) ? self.native : hit;
@@ -437,6 +553,18 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
   // hitTest: 的参数是接收者父视图(内容视图)的坐标。
   return [_host hitTest:point] != nil;
+}
+
+- (BOOL)routeTrackingEvent:(NSEvent*)event {
+  NSTrackingArea* area = event.trackingArea;
+  if (area == nil) return NO;
+  for (auto& [view_id, container] : _containers) {
+    if ([container ownsTrackingArea:area]) {
+      [container routeTrackingEvent:event];
+      return YES;
+    }
+  }
+  return NO;
 }
 
 - (int64_t)viewIdForResponder:(NSResponder*)responder {

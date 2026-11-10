@@ -9,7 +9,7 @@ import {
 } from "@momo/framework";
 import type { BrowserAppState, DetachedWindow } from "./main";
 import { IconButton } from "./icons";
-import { Palette, TextStyles, kTabStripHeight, kToolbarHeight, kTrafficLightsWidth } from "./style";
+import { Palette, TextStyles, kTitleBarHeight, kToolbarHeight, kTrafficLightsWidth } from "./style";
 import { IconTap, type Tab } from "./tabs";
 
 /** 胶囊按钮: primary 为黑底白字, 否则浅灰底黑字;active 用于开关的"开"状态(同 primary 外观)。 */
@@ -127,11 +127,11 @@ export class DetachedPage extends StatelessWidget {
     if (tab.url === "about:blank" || tab.url === "" || tab.url.startsWith("momo:")) host = tab.displayTitle;
     const progress = tab.loading ? Math.max(0.05, tab.progress) : 0;
     const titleBar = new Container({
-      height: kTabStripHeight,
+      height: kTitleBarHeight,
       padding: EdgeInsets.only({ right: 8 }),
       child: new Row({
         children: [
-          new SizedBox({ width: kTrafficLightsWidth, height: kTabStripHeight, child: new WindowDragArea() }),
+          new SizedBox({ width: kTrafficLightsWidth, height: kTitleBarHeight, child: new WindowDragArea() }),
           new Expanded({
             child: new WindowDragArea({
               child: new Align({
@@ -147,7 +147,7 @@ export class DetachedPage extends StatelessWidget {
         ],
       }),
     });
-    return new WindowChrome({ trafficLightsCenterY: kTabStripHeight / 2, child: new Container({
+    return new WindowChrome({ trafficLightsCenterY: kTitleBarHeight / 2, child: new Container({
       color: Palette.white,
       child: new Column({
         children: [

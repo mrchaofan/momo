@@ -49,6 +49,7 @@ class JsAppDriver final : public AppDriver {
     bindings_->FocusChanged(view, focused);
   }
   void OnViewAdded(ViewId view) override { bindings_->ViewAdded(view); }
+  void OnWindowFrameChanged(ViewId view) override { bindings_->WindowFrameChanged(view); }
   void OnViewRemoved(ViewId view) override { bindings_->ViewRemoved(view); }
   void OnViewCreateResult(uint64_t request, StatusOr<ViewId> result) override {
     bindings_->ViewCreateResult(request, std::move(result));
