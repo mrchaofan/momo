@@ -41,17 +41,17 @@ group("gestures", () => {
     set(0, Phase.down, 20, 40);
     set(1, Phase.move, 30, 40);
     set(2, Phase.up, 30, 40);
-    const events = c.expand(d, 3, 2);
+    const events = c.expand(d, 3, 2, 12);
     expect.deepEqual(events.map((e) => e.constructor.name), ["PointerAddedEvent", "PointerDownEvent", "PointerMoveEvent", "PointerUpEvent"]);
     expect.isTrue(events[0] instanceof PointerAddedEvent);
     const down = events[1] as PointerDownEvent;
     expect.deepEqual([down.position.dx, down.position.dy], [10, 20]);
     expect.deepEqual([down.screenPosition.dx, down.screenPosition.dy], [510, 320], "screen position is already in logical points");
     expect.equal((events[2] as PointerMoveEvent).delta.dx, 5);
-    const again = c.expand(d, 1, 2);
+    const again = c.expand(d, 1, 2, 12);
     expect.notEqual((again[0] as PointerDownEvent).pointer, down.pointer, "new down sequence gets a new pointer id");
     d.set([0, 0, Phase.scroll, 7, 0, 0, 0, 0, 30, 0], 0);
-    const s = c.expand(d, 1, 2)[0] as PointerScrollEvent;
+    const s = c.expand(d, 1, 2, 12)[0] as PointerScrollEvent;
     expect.equal(s.scrollDelta.dy, 15);
     void PointerUpEvent;
   });
@@ -232,7 +232,8 @@ group("gestures", () => {
     expect.deepEqual(log, ["outer+"]);
     expect.equal(t.binding.mouseTracker.currentCursor, "click");
     await t.hover(new Offset(10, 10));
-    expect.deepEqual(log, ["outer+", "h10", "inner+"]);
+    // 同 Flutter: 先进入区域, 再收到该位置的悬停(MouseTracker 在分发之前更新)。
+    expect.deepEqual(log, ["outer+", "inner+", "h10"]);
     expect.equal(t.binding.mouseTracker.currentCursor, "text");
     await t.hover(new Offset(300, 300));
     expect.deepEqual(log.slice(3), ["inner-", "outer-"]);

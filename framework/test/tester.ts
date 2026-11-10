@@ -10,7 +10,7 @@ import {
 /** 指针设备类型码(与 momo:ui 指针包一致)。 */
 export const Kind = { mouse: 0, trackpad: 1, touch: 2, stylus: 3 } as const;
 /** phase 码。 */
-export const Phase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6 } as const;
+export const Phase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6, gesture: 7 } as const;
 
 export interface PointerOptions {
   kind?: number;
@@ -22,6 +22,14 @@ export interface PointerOptions {
   view?: number;
   /** 指针的屏幕位置(逻辑点)。缺省 = 窗口屏幕框左上 + position。 */
   screen?: Offset;
+  /** 宿主为原生事件分配的 id(缺省 0 = 合成事件)。 */
+  nativeEventId?: number;
+  /** 滚动/手势阶段(0 none, 1 start, 2 update, 3 end)。 */
+  scrollPhase?: number;
+  /** gesture 事件的种类、值、阶段(见 POINTER_DATA_STRIDE)。 */
+  gestureKind?: number;
+  gestureValue?: number;
+  gestureStage?: number;
 }
 
 /** 测试驱动器。 */
@@ -137,7 +145,7 @@ export class WidgetTester {
 
   /** 发送一个指针事件(逻辑坐标)。 */
   sendPointer(phase: number, position: Offset, o: PointerOptions = {}): void {
-    const d = new Float64Array(12);
+    const d = new Float64Array(17);
     d[0] = this.now * 1000;
     d[1] = o.kind ?? Kind.mouse;
     d[2] = phase;
@@ -153,6 +161,11 @@ export class WidgetTester {
     const frame = target?.screenFrame ?? { x: 0, y: 0 };
     d[10] = o.screen?.dx ?? frame.x + position.dx;
     d[11] = o.screen?.dy ?? frame.y + position.dy;
+    d[12] = o.nativeEventId ?? 0;
+    d[13] = o.scrollPhase ?? 0;
+    d[14] = o.gestureKind ?? 0;
+    d[15] = o.gestureValue ?? 0;
+    d[16] = o.gestureStage ?? 0;
     target?.onPointerPacket?.(d, 1);
   }
 

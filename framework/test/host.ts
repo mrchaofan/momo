@@ -37,6 +37,8 @@ export interface MockControl {
   activated: number[];
   /** view.setCapture() 调用过的视图。 */
   captures: number[];
+  /** view.dispatchPlatformViewPointer() 的调用(按顺序)。 */
+  platformViewPointer: { view: number; platformViewId: number; nativeEventId: number; action: number }[];
   /** 以 panel: true 创建的视图。 */
   panelViews: Set<number>;
   /** setTitleBarStyle 的最近一次设置(键为视图 id)。 */

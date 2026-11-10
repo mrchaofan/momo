@@ -9,7 +9,25 @@
 namespace momo::engine::platform {
 
 enum class PointerDeviceKind : uint8_t { kMouse, kTrackpad, kTouch, kStylus };
-enum class PointerPhase : uint8_t { kAdd, kDown, kMove, kUp, kRemove, kHover, kScroll };
+// kGesture: 带位置、但不是按钮/移动/滚动的输入(触控板捏合与旋转、轻扫、Force Touch 压力…)。
+// 全部位置型输入都先交给框架, 由框架决定接收者(docs/05 §9 "输入"), 不由宿主按几何直接投递给原生视图。
+enum class PointerPhase : uint8_t { kAdd, kDown, kMove, kUp, kRemove, kHover, kScroll, kGesture };
+// 触控板手势的阶段(kScroll / kGesture 事件)。框架据此在整个手势(含惯性)内锁定接收者:
+// kStart 重新命中测试并锁定, kUpdate 沿用锁定, kEnd 沿用后解除。没有阶段的(普通滚轮)为 kNone, 每次命中测试。
+enum class SignalPhase : uint8_t { kNone, kStart, kUpdate, kEnd };
+// kGesture 事件的种类。
+enum class PointerGestureKind : uint8_t {
+  kNone,
+  kMagnify,       // 双指捏合: gesture_value = 本次缩放增量(1 + value 为比例)
+  kRotate,        // 双指旋转: gesture_value = 本次旋转角度(度, 逆时针为正)
+  kSmartMagnify,  // 双指轻点两下(智能缩放)
+  kSwipe,         // 三指轻扫: scroll_delta_x/y = 方向(-1/0/1)
+  kQuickLook,     // 查询(三指轻点 / 用力点按)
+  kPressure,      // Force Touch 压力(按下序列内): gesture_value = 压力 0..1, gesture_stage = 阶段 0..2
+  kTabletPoint,   // 手写板点(位置与压力)
+  kBegin,         // 触控板手势开始/结束(未细分种类的手势边界;signal_phase = kStart / kEnd)
+  kEnd,
+};
 
 struct PointerData {
   int64_t timestamp_us = 0;
@@ -26,6 +44,14 @@ struct PointerData {
   // 跨窗口交互(拖出标签成窗)用它计算, 不受窗口自身移动的影响。
   double screen_x = 0;
   double screen_y = 0;
+  SignalPhase signal_phase = SignalPhase::kNone;  // kScroll / kGesture
+  PointerGestureKind gesture_kind = PointerGestureKind::kNone;  // kGesture
+  double gesture_value = 0;
+  int32_t gesture_stage = 0;
+  // 宿主为原生事件分配的 id(0 = 合成事件, 无对应原生事件)。框架把事件交给平台视图时回送它
+  // (view.dispatchPlatformViewPointer), 宿主据此把原始事件投递给原生视图(docs/05 §9)。
+  // 窗口内唯一、递增, 小于 2^53(JS 以 double 精确表示)。
+  uint64_t native_event_id = 0;
 };
 
 using PointerDataPacket = std::vector<PointerData>;

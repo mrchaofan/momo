@@ -67,6 +67,8 @@ class WindowController final : public Object,
   void OnEngineSetAlwaysOnTop(bool on) override;
   void OnEngineActivate() override;
   void OnEngineCapturePointer() override;
+  void OnEnginePlatformViewPointer(int64_t platform_view_id, uint64_t native_event_id,
+                                   platform::PlatformViewPointerAction action) override;
   void OnEngineSetTitleBar(bool hidden, double traffic_center_y) override;
   void OnEngineSetDragRegions(const std::vector<Rect>& rects) override;
   void OnEngineSetPosition(Point top_left) override;

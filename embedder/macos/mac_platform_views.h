@@ -10,9 +10,8 @@
 //       └── MomoOverlayView(每个 overlay 一个: 承载一个 CAMetalLayer, 不可命中)
 // z 序由各子视图 layer 的 zPosition 决定(按合成布局 base → view0 → overlay0 → view1 …), 避免为调序
 // 而移除/重新加入子视图(会让 WKWebView 丢失第一响应者)。
-// 命中: 鼠标事件由 MomoMouseEventDispatcher 统一派发(mac_mouse_dispatcher.h)。每个可见容器是一个
-//   派发目标: 指针位于其可见区域、且不在"上层 momo 内容"(occluders)内时认领事件, 由 AppKit 投递给原生视图;
-//   AppKit 命中测试期间宿主视图只返回被派发器选中的原生视图。容器与宿主吞掉沿响应链冒泡上来的鼠标事件,
+// 输入: 不在这里处理。谁接收由框架决定, 投递由窗口的 MomoPlatformViewInputRouter 完成
+//   (mac_platform_view_input.h);这里只提供几何查询。容器与宿主吞掉沿响应链冒泡上来的鼠标事件,
 //   原生视图未处理的事件不会漏给 momo。
 // 线程约定: 只在主(platform)线程使用;MacMetalSurface 在主线程呈现合成帧时调用 applyLayout。
 
@@ -25,7 +24,7 @@
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include "embedder/macos/mac_mouse_dispatcher.h"
+@class MomoPlatformViewInputRouter;
 
 @interface MomoPlatformViews : NSObject
 
@@ -39,21 +38,19 @@
       overlayLayers:(const std::vector<CAMetalLayer*>&)overlayLayers;
 // 隐藏全部平台视图与 overlay(软件回退等)。
 - (void)hideAll;
-// 内容视图坐标(点)下的位置是否落在可见、未被遮挡的平台视图上。
-- (BOOL)platformViewAtContentPoint:(NSPoint)point;
-// 原生视图自己跟踪区的进入/离开/光标更新(NSEvent.trackingArea 属于某个平台视图时返回 YES 并处理):
-// 原生视图的悬停状态由派发器的指针归属推导, 而不是 AppKit 的几何状态——被上层 momo 内容盖住时
-// 不投递进入、补发离开;归属恢复时补发进入(同 Chromium RenderWidgetHostViewCocoa 对被遮挡事件的处理)。
-- (BOOL)routeTrackingEvent:(NSEvent*)event;
+// ---- 供输入路由器的几何查询 ----
+// 平台视图 viewId 当前可见且挂在本窗口时的原生视图;否则 nil(隐藏、已移除或已被其他窗口接管)。
+- (NSView*)hostedNativeForPlatformView:(int64_t)viewId;
+// 窗口坐标处在平台视图 viewId 的原生视图子树中命中的视图(不考虑遮挡: 接收者已由框架决定)。
+- (NSView*)nativeHitTestForPlatformView:(int64_t)viewId windowPoint:(NSPoint)point;
+// 跟踪区属于哪个平台视图的原生视图子树;不属于返回 0。
+- (int64_t)platformViewOwningTrackingArea:(NSTrackingArea*)area;
 // responder 属于哪个平台视图;不属于返回 0。
 - (int64_t)viewIdForResponder:(NSResponder*)responder;
 // 是否持有任何平台视图。
 @property(nonatomic, readonly) BOOL hasViews;
-// 鼠标派发器(弱引用, MacWindow 持有)。宿主视图在 AppKit 命中测试时据此路由。
-@property(nonatomic, weak) MomoMouseEventDispatcher* dispatcher;
-// 当前可见平台视图的派发目标, 自上而下(z 序最高在前)。
-- (NSArray<id<MomoMouseEventTarget>>*)mouseTargetsTopDown;
-
+// 窗口的输入路由(弱引用, MacWindow 持有)。AppKit 的几何命中测试据其指针归属回答(见实现处说明)。
+@property(nonatomic, weak) MomoPlatformViewInputRouter* inputRouter;
 @end
 
 #endif  // __OBJC__

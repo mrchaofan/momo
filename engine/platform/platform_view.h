@@ -40,6 +40,15 @@ struct PlatformViewGeometry {
   std::vector<Rect> occluders;
 };
 
+// 框架对一个原生指针事件的处置(view.dispatchPlatformViewPointer, docs/05 §9 "输入")。
+enum class PlatformViewPointerAction : uint8_t {
+  // 把 native_event_id 对应的原生事件投递给平台视图(按下时在原生视图内捕获接收子视图)。
+  // 平台视图 id 为 0: 该按下由 momo 内容消费(宿主把键盘焦点交还 momo)。
+  kEvent,
+  kEnter,  // 指针归属移到平台视图上(MouseTracker 进入): 原生视图开始认为指针在它里面
+  kExit,   // 指针归属离开平台视图: 补发离开, 原生视图清除悬停状态
+};
+
 struct CompositionLayout {
   // 按 z 序从下到上。
   std::vector<PlatformViewGeometry> views;

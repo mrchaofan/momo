@@ -442,6 +442,14 @@ void Shell::CaptureWindowPointer(platform::ViewId view) {
   PostToDelegate(view, [](Delegate& d) { d.OnEngineCapturePointer(); });
 }
 
+void Shell::DispatchPlatformViewPointer(platform::ViewId view, int64_t platform_view_id,
+                                        uint64_t native_event_id,
+                                        platform::PlatformViewPointerAction action) {
+  PostToDelegate(view, [platform_view_id, native_event_id, action](Delegate& d) {
+    d.OnEnginePlatformViewPointer(platform_view_id, native_event_id, action);
+  });
+}
+
 void Shell::CreateView(uint64_t request, const platform::ViewOptions& options) {
   // ui 线程 → platform 线程: 分配 id, 由宿主创建窗口并 AttachView(其 AddView 先于结果投递到 ui,
   // JS 在 Promise 结算时已能在 views 中看到新视图)。

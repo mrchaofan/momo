@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "base/logging.h"
+#include "embedder/macos/mac_platform_view_input.h"
 
 using momo::engine::platform::CompositionLayout;
 using momo::engine::platform::PlatformViewGeometry;
@@ -75,37 +76,41 @@ NSComparisonResult CompareByRank(__kindof NSView* a, __kindof NSView* b, void* c
   -(void)mouseMoved : (NSEvent*)e {}            \
   -(void)scrollWheel : (NSEvent*)e {}
 
-@interface MomoPlatformViewContainer : NSView <MomoMouseEventTarget>
+// 平台视图的几何包装(同 Flutter 的 FlutterMutatorView): 可见区域裁剪、圆角、透明度、z 序。
+// 不处理输入——谁接收由框架决定, 投递由窗口的 MomoPlatformViewInputRouter 完成。
+@interface MomoPlatformViewContainer : NSView
 @property(nonatomic) int64_t viewId;
 @property(nonatomic, strong) NSView* native;
 - (void)setOccluders:(std::vector<NSRect>)occluders;
+// 原生视图当前是否挂在本容器里(否则已被其他窗口接管, 本容器只是空壳)。
+- (BOOL)hostsNative;
+// point 为宿主视图坐标: 原生视图子树中被命中的视图(不考虑遮挡: 接收者已由框架决定)。
+- (NSView*)nativeHitTest:(NSPoint)point;
 // tracking area 是否属于本容器中的原生视图(子树中任一视图的跟踪区)。
 - (BOOL)ownsTrackingArea:(NSTrackingArea*)area;
-// 原生视图自己跟踪区的进入/离开/光标更新: 按指针归属投递、暂存或丢弃(见实现处说明)。
-- (void)routeTrackingEvent:(NSEvent*)event;
-// point 为宿主视图坐标: 原生视图中被命中的子视图(派发器已决定由本容器接收)。
-- (NSView*)nativeHitTest:(NSPoint)point;
 @end
 
 @interface MomoPlatformViewsHostView : NSView
-@property(nonatomic, weak) MomoMouseEventDispatcher* dispatcher;
+@property(nonatomic, weak) MomoPlatformViews* owner;
 @end
 
 @implementation MomoPlatformViewsHostView
 - (BOOL)isFlipped {
   return YES;
 }
-// AppKit 投递派发器选中的事件时: 只有被选中的平台视图可命中(其他平台视图、宿主自身都不可命中,
-// 事件落到内容视图)。非派发期间(拖放、光标等 AppKit 内部命中测试)按几何: 宿主自身不可命中。
+// 窗口把框架决定交给某个平台视图的事件经 AppKit 投递时(MomoMouseRouting momoRoutedPlatformView): 命中测试
+// 只落在那个平台视图的原生视图子树里(其他平台视图、overlay 与宿主都不可命中)。其他时候(拖放目标、光标等
+// AppKit 内部命中测试)按几何: 宿主自身不可命中。原始鼠标事件不经 AppKit 投递(只交给 momo), 不会走到这里。
 - (NSView*)hitTest:(NSPoint)point {
-  MomoMouseEventDispatcher* dispatcher = self.dispatcher;
-  if (dispatcher != nil && dispatcher.routing) {
-    id<MomoMouseEventTarget> target = dispatcher.routedTarget;
-    if ([(NSObject*)target isKindOfClass:[MomoPlatformViewContainer class]] &&
-        ((MomoPlatformViewContainer*)target).superview == self) {
-      return [(MomoPlatformViewContainer*)target nativeHitTest:point];
+  id window = self.window;
+  if ([window conformsToProtocol:@protocol(MomoMouseRouting)]) {
+    const int64_t routed = [(id<MomoMouseRouting>)window momoRoutedPlatformView];
+    if (routed != 0) {
+      MomoPlatformViews* owner = self.owner;
+      // point 为父视图(内容视图)坐标。
+      return [owner nativeHitTestForPlatformView:routed
+                                     windowPoint:[self.superview convertPoint:point toView:nil]];
     }
-    return nil;
   }
   NSView* hit = [super hitTest:point];
   return hit == self ? nil : hit;
@@ -115,22 +120,6 @@ MOMO_SWALLOW_MOUSE_EVENTS
 
 @implementation MomoPlatformViewContainer {
   std::vector<NSRect> _occluders;  // 宿主视图坐标(点)
-  // 原生视图跟踪区的悬停状态(与 Chromium RenderWidgetHostViewCocoa 的 mouseEventWasIgnored 同理):
-  // 原生视图认为"指针在我里面"必须与派发器的归属一致, 而不是 AppKit 的几何状态——被上层 momo 内容
-  // 盖住时, 指针在几何上仍在原生视图内, 但不归它。
-  //   _entered: AppKit 认为指针在内的跟踪区 → 其进入事件(归属恢复时补发用);
-  //   _delivered: 原生视图已收到进入、尚未收到离开的跟踪区;
-  //   _owned: 本容器是派发器的悬停(含捕获)目标。
-  NSMapTable<NSTrackingArea*, NSEvent*>* _entered;
-  NSHashTable<NSTrackingArea*>* _delivered;
-  BOOL _owned;
-}
-- (instancetype)initWithFrame:(NSRect)frame {
-  if ((self = [super initWithFrame:frame])) {
-    _entered = [NSMapTable strongToStrongObjectsMapTable];
-    _delivered = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory];
-  }
-  return self;
 }
 - (BOOL)isFlipped {
   return YES;
@@ -138,10 +127,21 @@ MOMO_SWALLOW_MOUSE_EVENTS
 - (void)setOccluders:(std::vector<NSRect>)occluders {
   _occluders = std::move(occluders);
 }
-// 非派发期间的几何命中(拖放等): 被上层 momo 内容遮挡的位置不命中。point 为宿主坐标。
+// 不经框架投递时的 AppKit 几何命中(光标归属、拖放目标等"指针下是哪个视图"的查询)。point 为宿主坐标。
+// momo 掌握指针位置时以框架的指针归属为准: 指针不归本平台视图(被 momo 内容盖住、已离开)就不可命中。
+// WKWebView 据此丢弃迟到的光标设置——WebKit 在 [NSCursor set] 之前用内容视图的 hitTest: 确认指针下是
+// 它自己的子树(PageClientImpl::setCursor), 光标因此也只有一个裁决者。拖放会话等期间框架收不到鼠标事件,
+// 退回按画面上的遮挡(occluders: 本视图之上绘制了 momo 内容的区域)近似。
 - (NSView*)hitTest:(NSPoint)point {
   if (self.hidden) {
     return nil;
+  }
+  MomoPlatformViewsHostView* host = (MomoPlatformViewsHostView*)self.superview;
+  MomoPlatformViewInputRouter* router = [host isKindOfClass:[MomoPlatformViewsHostView class]]
+                                            ? host.owner.inputRouter
+                                            : nil;
+  if (router != nil && router.pointerTracked) {
+    return [router pointerOwnedByPlatformView:self.viewId] ? [super hitTest:point] : nil;
   }
   for (const NSRect& r : _occluders) {
     if (NSPointInRect(point, r)) {
@@ -149,6 +149,13 @@ MOMO_SWALLOW_MOUSE_EVENTS
     }
   }
   return [super hitTest:point];
+}
+- (BOOL)hostsNative {
+  return self.native != nil && self.native.superview == self;
+}
+- (NSView*)nativeHitTest:(NSPoint)point {
+  NSView* hit = [super hitTest:point];
+  return (hit == nil || hit == self) ? self.native : hit;
 }
 - (BOOL)ownsTrackingArea:(NSTrackingArea*)area {
   if (area == nil || self.native == nil) return NO;
@@ -165,118 +172,6 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
   return NO;
 }
-
-// 按事件类型调用跟踪区 owner 的对应方法(与 AppKit 投递跟踪区事件相同)。
-static void DeliverTrackingEvent(NSEvent* event, NSTrackingArea* area) {
-  id owner = area.owner;
-  switch (event.type) {
-    case NSEventTypeMouseEntered:
-      if ([owner respondsToSelector:@selector(mouseEntered:)]) [owner mouseEntered:event];
-      break;
-    case NSEventTypeMouseExited:
-      if ([owner respondsToSelector:@selector(mouseExited:)]) [owner mouseExited:event];
-      break;
-    case NSEventTypeCursorUpdate:
-      if ([owner respondsToSelector:@selector(cursorUpdate:)]) [owner cursorUpdate:event];
-      break;
-    default:
-      break;
-  }
-}
-
-// 合成"离开": 原生视图失去指针归属(被 momo 内容盖住、移到别处)而 AppKit 仍认为指针在跟踪区内。
-- (NSEvent*)exitEventFor:(NSTrackingArea*)area like:(NSEvent*)event {
-  return [NSEvent enterExitEventWithType:NSEventTypeMouseExited
-                                location:event.locationInWindow
-                           modifierFlags:event.modifierFlags
-                               timestamp:event.timestamp
-                            windowNumber:event.windowNumber
-                                 context:nil
-                             eventNumber:0
-                          trackingNumber:(NSInteger)(__bridge void*)area
-                                userData:(__bridge void*)area.userInfo];
-}
-
-// AppKit 送来的原生视图跟踪区事件:
-//   进入: 归属于本容器时投递, 否则只记下(归属恢复时补发);
-//   离开: 只发给已收到进入的跟踪区(失去归属时已补发过离开的不再重复);
-//   光标更新: 归属于本容器时投递, 否则丢弃(指针归 momo, 光标由 momo 设置)。
-- (void)routeTrackingEvent:(NSEvent*)event {
-  NSTrackingArea* area = event.trackingArea;
-  switch (event.type) {
-    case NSEventTypeMouseEntered:
-      [_entered setObject:event forKey:area];
-      if (_owned) {
-        [_delivered addObject:area];
-        DeliverTrackingEvent(event, area);
-      }
-      break;
-    case NSEventTypeMouseExited:
-      [_entered removeObjectForKey:area];
-      if ([_delivered containsObject:area]) {
-        [_delivered removeObject:area];
-        DeliverTrackingEvent(event, area);
-      }
-      break;
-    case NSEventTypeCursorUpdate:
-      if (_owned) DeliverTrackingEvent(event, area);
-      break;
-    default:
-      break;
-  }
-}
-
-// 派发器: 悬停(指针归属)移到本容器——补发归属期间被暂存的进入。
-- (void)momoMouseEntered:(NSEvent*)event {
-  _owned = YES;
-  for (NSTrackingArea* area in _entered.keyEnumerator.allObjects) {
-    if (![_delivered containsObject:area]) {
-      [_delivered addObject:area];
-      DeliverTrackingEvent([_entered objectForKey:area], area);
-    }
-  }
-}
-
-// 派发器: 悬停离开本容器——已进入的跟踪区补发离开, 原生视图清除悬停状态(如网页的 :hover)。
-- (void)momoMouseLeft:(NSEvent*)event {
-  _owned = NO;
-  for (NSTrackingArea* area in _delivered.allObjects) {
-    DeliverTrackingEvent([self exitEventFor:area like:event], area);
-  }
-  [_delivered removeAllObjects];
-}
-
-- (NSView*)nativeHitTest:(NSPoint)point {
-  NSView* hit = [super hitTest:point];
-  return (hit == nil || hit == self) ? self.native : hit;
-}
-
-// ---- MomoMouseEventTarget ----
-// 认领: 指针位于可见区域且未被上层 momo 内容遮挡。投递交给 AppKit(原生视图自己处理)。
-- (BOOL)momoHandleMouseEvent:(NSEvent*)event captured:(BOOL)captured {
-  if (captured) {
-    return YES;
-  }
-  NSView* host = self.superview;
-  // 原生视图已被另一个窗口接管时, 本容器只是空壳。
-  if (self.hidden || host == nil || self.native == nil || self.native.superview != self) {
-    return NO;
-  }
-  const NSPoint p = [host convertPoint:event.locationInWindow fromView:nil];
-  if (!NSPointInRect(p, self.frame)) {
-    return NO;
-  }
-  for (const NSRect& r : _occluders) {
-    if (NSPointInRect(p, r)) {
-      return NO;
-    }
-  }
-  return YES;
-}
-- (BOOL)momoDeliversViaAppKit {
-  return YES;
-}
-
 MOMO_SWALLOW_MOUSE_EVENTS
 @end
 
@@ -322,29 +217,11 @@ MOMO_SWALLOW_MOUSE_EVENTS
   BOOL _warnedTransform;
 }
 
-- (MomoMouseEventDispatcher*)dispatcher {
-  return _host.dispatcher;
-}
-- (void)setDispatcher:(MomoMouseEventDispatcher*)dispatcher {
-  _host.dispatcher = dispatcher;
-}
-
-- (NSArray<id<MomoMouseEventTarget>>*)mouseTargetsTopDown {
-  NSMutableArray<id<MomoMouseEventTarget>>* targets = [NSMutableArray array];
-  for (auto it = _zOrder.rbegin(); it != _zOrder.rend(); ++it) {
-    auto found = _containers.find(*it);
-    if (found != _containers.end() && !found->second.hidden &&
-        found->second.native.superview == found->second) {
-      [targets addObject:found->second];
-    }
-  }
-  return targets;
-}
-
 - (instancetype)initWithContentView:(NSView*)contentView {
   if ((self = [super init])) {
     _content = contentView;
     _host = [[MomoPlatformViewsHostView alloc] initWithFrame:contentView.bounds];
+    _host.owner = self;
     _host.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _host.wantsLayer = YES;
     _host.layer.zPosition = 1;  // 在主帧 CAMetalLayer 之上
@@ -390,7 +267,6 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
   MomoPlatformViewContainer* container = it->second;
   _containers.erase(it);
-  [_host.dispatcher forgetTarget:container];
   // 焦点在被移除的视图里: 交还给内容视图(否则键盘事件无人接收)。
   [self resignFocusIfInside:container];
   if (container.native.superview == container) {
@@ -546,25 +422,28 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
 }
 
-- (BOOL)platformViewAtContentPoint:(NSPoint)point {
-  NSView* content = _content;
-  if (_containers.empty() || content == nil) {
-    return NO;
+- (NSView*)hostedNativeForPlatformView:(int64_t)viewId {
+  auto it = _containers.find(viewId);
+  if (it == _containers.end() || it->second.hidden || ![it->second hostsNative]) {
+    return nil;
   }
-  // hitTest: 的参数是接收者父视图(内容视图)的坐标。
-  return [_host hitTest:point] != nil;
+  return it->second.native;
 }
 
-- (BOOL)routeTrackingEvent:(NSEvent*)event {
-  NSTrackingArea* area = event.trackingArea;
-  if (area == nil) return NO;
-  for (auto& [view_id, container] : _containers) {
-    if ([container ownsTrackingArea:area]) {
-      [container routeTrackingEvent:event];
-      return YES;
-    }
+- (NSView*)nativeHitTestForPlatformView:(int64_t)viewId windowPoint:(NSPoint)point {
+  auto it = _containers.find(viewId);
+  if (it == _containers.end() || it->second.hidden || ![it->second hostsNative]) {
+    return nil;
   }
-  return NO;
+  return [it->second nativeHitTest:[_host convertPoint:point fromView:nil]];
+}
+
+- (int64_t)platformViewOwningTrackingArea:(NSTrackingArea*)area {
+  if (area == nil) return 0;
+  for (auto& [view_id, container] : _containers) {
+    if ([container ownsTrackingArea:area]) return view_id;
+  }
+  return 0;
 }
 
 - (int64_t)viewIdForResponder:(NSResponder*)responder {

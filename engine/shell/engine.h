@@ -47,6 +47,14 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
     }
     virtual void ActivateWindow(platform::ViewId view) { (void)view; }
     virtual void CaptureWindowPointer(platform::ViewId view) { (void)view; }
+    virtual void DispatchPlatformViewPointer(platform::ViewId view, int64_t platform_view_id,
+                                             uint64_t native_event_id,
+                                             platform::PlatformViewPointerAction action) {
+      (void)view;
+      (void)platform_view_id;
+      (void)native_event_id;
+      (void)action;
+    }
     virtual void SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) {
       (void)view;
       (void)hidden;
@@ -146,6 +154,11 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   }
   void ActivateView(platform::ViewId view) override { delegate_.ActivateWindow(view); }
   bool SetPointerCapture(platform::ViewId view) override;
+  void DispatchPlatformViewPointer(platform::ViewId view, int64_t platform_view_id,
+                                   uint64_t native_event_id,
+                                   platform::PlatformViewPointerAction action) override {
+    delegate_.DispatchPlatformViewPointer(view, platform_view_id, native_event_id, action);
+  }
   void SetTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) override {
     delegate_.SetWindowTitleBar(view, hidden, traffic_center_y);
   }

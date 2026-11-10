@@ -21,11 +21,13 @@
 @class MomoContentView;
 @class MomoWindowObserver;
 @class MomoPlatformViews;
+@class MomoPlatformViewInputRouter;
 #else
 typedef struct objc_object NSWindow;
 typedef struct objc_object MomoContentView;
 typedef struct objc_object MomoWindowObserver;
 typedef struct objc_object MomoPlatformViews;
+typedef struct objc_object MomoPlatformViewInputRouter;
 #endif
 
 namespace momo::embedder::macos {
@@ -60,6 +62,8 @@ class MacWindow final : public PlatformWindow {
   void AddPlatformView(int64_t view_id, void* native_view) override;
   void RemovePlatformView(int64_t view_id) override;
   void FocusPlatformView(int64_t view_id) override;
+  void DispatchPlatformViewPointer(int64_t view_id, uint64_t native_event_id,
+                                   platform::PlatformViewPointerAction action) override;
 
   // 供 ObjC 视图/观察者回调。
   WindowDelegate* delegate() const { return delegate_; }
@@ -67,6 +71,7 @@ class MacWindow final : public PlatformWindow {
   MacMetalSurface* metal_surface() const { return metal_surface_; }  // 软件 surface 时为空
   NSWindow* ns_window() const { return window_; }
   MomoPlatformViews* platform_views() const { return platform_views_; }
+  MomoPlatformViewInputRouter* input_router() const { return input_router_; }
   void NotifyMetricsChanged();
 
  private:
@@ -75,6 +80,7 @@ class MacWindow final : public PlatformWindow {
   MomoContentView* view_;
   MomoWindowObserver* observer_;
   MomoPlatformViews* platform_views_;
+  MomoPlatformViewInputRouter* input_router_;  // 平台视图的输入投递(谁接收由框架决定)
   bool titlebar_hidden_ = false;
   bool panel_ = false;  // NSPanel(非激活面板): 显示/激活时不激活应用
   Rect last_frame_;

@@ -56,6 +56,14 @@ class Shell final : public Object, private Engine::Delegate {
     virtual void OnEngineActivate() {}
     // 接管进行中的鼠标按下序列(view.setCapture()): 之后的拖动/抬起投递给本窗口, 并先补发一次按下。
     virtual void OnEngineCapturePointer() {}
+    // 框架对原生指针事件的处置(docs/05 §9 "输入"): 把 native_event_id 对应的原生事件投递给平台视图,
+    // 或平台视图的指针进入/离开;platform_view_id 为 0 的 kEvent 表示该按下由 momo 内容消费。
+    virtual void OnEnginePlatformViewPointer(int64_t platform_view_id, uint64_t native_event_id,
+                                             platform::PlatformViewPointerAction action) {
+      (void)platform_view_id;
+      (void)native_event_id;
+      (void)action;
+    }
     virtual void OnEngineSetTitleBar(bool hidden, double traffic_center_y) {
       (void)hidden;
       (void)traffic_center_y;
@@ -168,6 +176,9 @@ class Shell final : public Object, private Engine::Delegate {
   void SetWindowAlwaysOnTop(platform::ViewId view, bool on) override;
   void ActivateWindow(platform::ViewId view) override;
   void CaptureWindowPointer(platform::ViewId view) override;
+  void DispatchPlatformViewPointer(platform::ViewId view, int64_t platform_view_id,
+                                   uint64_t native_event_id,
+                                   platform::PlatformViewPointerAction action) override;
   void SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) override;
   void SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects) override;
   void SetWindowPosition(platform::ViewId view, Point top_left) override;

@@ -90,7 +90,7 @@ export class MouseTracker {
       if (next.has(a)) continue;
       // 已从树上移除的区域不再接收 exit(与 Flutter 一致)。
       if (a.validForMouseTracker) {
-        a.onExit?.(new PointerExitEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition }).transformed(t));
+        a.onExit?.(new PointerExitEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition, nativeEventId: event.nativeEventId }).transformed(t));
       }
     }
     // enter:从外到内
@@ -98,7 +98,7 @@ export class MouseTracker {
     for (const [a, t] of next) if (!prev.has(a)) entering.push([a, t]);
     for (let i = entering.length - 1; i >= 0; i--) {
       const [a, t] = entering[i]!;
-      a.onEnter?.(new PointerEnterEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition }).transformed(t));
+      a.onEnter?.(new PointerEnterEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition, nativeEventId: event.nativeEventId }).transformed(t));
     }
   }
 

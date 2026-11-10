@@ -17,6 +17,7 @@
 #include "engine/common/settings.h"
 #include "engine/graphics/layer_tree.h"
 #include "engine/platform/input_types.h"
+#include "engine/platform/platform_view.h"
 #include "engine/platform/system_cursor.h"
 #include "engine/platform/view.h"
 #include "engine/platform/viewport_metrics.h"
@@ -76,6 +77,16 @@ class WindowClient {
   virtual bool SetPointerCapture(ViewId view) {
     (void)view;
     return false;
+  }
+  // view.dispatchPlatformViewPointer(): 框架对原生指针事件的处置(把它投递给平台视图、平台视图的指针
+  // 进入/离开、按下由 momo 消费)。宿主在 platform 线程执行。
+  virtual void DispatchPlatformViewPointer(ViewId view, int64_t platform_view_id,
+                                           uint64_t native_event_id,
+                                           platform::PlatformViewPointerAction action) {
+    (void)view;
+    (void)platform_view_id;
+    (void)native_event_id;
+    (void)action;
   }
   // view.setTitleBarStyle(): 隐藏系统标题栏(内容铺满窗口, 保留红绿灯);traffic_center_y 为红绿灯
   // 中心距窗口顶部的逻辑像素(<= 0 用系统默认位置)。

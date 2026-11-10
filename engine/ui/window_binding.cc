@@ -36,7 +36,7 @@ using runtime::kUiViewFieldTag;
 
 namespace {
 
-constexpr int kPointerStride = 12;
+constexpr int kPointerStride = 17;
 
 UiBindings::Impl* ImplOf(const Args& a) {
   return static_cast<UiBindings::Impl*>(a.Data().As<v8::External>()->Value(kUiImplTag));
@@ -170,6 +170,20 @@ void SetCapture(const Args& a) {
   ViewBinding* view = ViewOf(a);
   const bool transferred = !view->removed && view->impl->client->SetPointerCapture(view->id);
   a.GetReturnValue().Set(transferred);
+}
+
+// dispatchPlatformViewPointer(platformViewId, nativeEventId, action): 框架对原生指针事件的处置
+// (action: 0 event, 1 enter, 2 exit;见 platform::PlatformViewPointerAction)。
+void DispatchPlatformViewPointer(const Args& a) {
+  ViewBinding* view = ViewOf(a);
+  double platform_view = 0, event_id = 0, action = 0;
+  if (view->removed || !ArgNumber(a, 0, &platform_view) || !ArgNumber(a, 1, &event_id) ||
+      !ArgNumber(a, 2, &action) || action < 0 || action > 2 || event_id < 0) {
+    return;
+  }
+  view->impl->client->DispatchPlatformViewPointer(
+      view->id, static_cast<int64_t>(platform_view), static_cast<uint64_t>(event_id),
+      static_cast<platform::PlatformViewPointerAction>(static_cast<int>(action)));
 }
 
 void CloseView(const Args& a) {
@@ -348,6 +362,7 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   fn("setAlwaysOnTop", &SetAlwaysOnTop);
   fn("activate", &Activate);
   fn("setCapture", &SetCapture);
+  fn("dispatchPlatformViewPointer", &DispatchPlatformViewPointer);
   fn("setTitleBarStyle", &SetTitleBarStyle);
   fn("setDragRegions", &SetDragRegions);
   fn("setPosition", &SetPosition);
@@ -610,6 +625,11 @@ void UiBindings::PointerPacket(ViewId view, const platform::PointerDataPacket& p
     out[9] = p.momentum ? 1 : 0;
     out[10] = p.screen_x;
     out[11] = p.screen_y;
+    out[12] = static_cast<double>(p.native_event_id);
+    out[13] = static_cast<double>(p.signal_phase);
+    out[14] = static_cast<double>(p.gesture_kind);
+    out[15] = p.gesture_value;
+    out[16] = p.gesture_stage;
     out += kPointerStride;
   }
   v8::Local<v8::Value> argv[] = {data, v8::Integer::New(isolate, static_cast<int>(packet.size()))};
