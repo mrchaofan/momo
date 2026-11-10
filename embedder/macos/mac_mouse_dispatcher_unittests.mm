@@ -14,6 +14,10 @@
 @property(nonatomic) std::vector<std::string>* log;
 @end
 
+// 同时记录"悬停进入"的目标(平台视图容器据此给原生视图补发进入)。
+@interface FakeEnteringTarget : FakeMouseTarget
+@end
+
 @implementation FakeMouseTarget
 - (BOOL)momoHandleMouseEvent:(NSEvent*)event captured:(BOOL)captured {
   self.log->push_back(std::string(self.name.UTF8String) + (captured ? ":captured" : ":ask"));
@@ -21,6 +25,12 @@
 }
 - (void)momoMouseLeft:(NSEvent*)event {
   self.log->push_back(std::string(self.name.UTF8String) + ":left");
+}
+@end
+
+@implementation FakeEnteringTarget
+- (void)momoMouseEntered:(NSEvent*)event {
+  self.log->push_back(std::string(self.name.UTF8String) + ":entered");
 }
 @end
 
@@ -157,15 +167,42 @@ TEST_F(MouseDispatcherTest, StaleCaptureIsDroppedWhenButtonsAreNoLongerPressed) 
   EXPECT_EQ(dispatcher_.captureTarget, bottom_);
 }
 
-TEST_F(MouseDispatcherTest, HoverChangeAndWindowExitNotifyTheOldTarget) {
-  EXPECT_EQ(Dispatch(Mouse(NSEventTypeMouseMoved)), top_);
-  top_.consumes = NO;
+// 悬停目标变化: 先通知旧目标离开, 再通知新目标进入;按下捕获期间悬停不变(拖到别处也不切换);
+// 离开窗口时通知悬停目标。
+TEST_F(MouseDispatcherTest, HoverChangesNotifyOldAndNewTargets) {
+  FakeEnteringTarget* web = [[FakeEnteringTarget alloc] init];
+  web.name = @"web";
+  web.consumes = YES;
+  web.log = &log_;
+  FakeEnteringTarget* momo = [[FakeEnteringTarget alloc] init];
+  momo.name = @"momo";
+  momo.consumes = YES;
+  momo.log = &log_;
+  dispatcher_.targetsProvider = ^NSArray<id<MomoMouseEventTarget>>* { return @[ web, momo ]; };
+  EXPECT_EQ(Dispatch(Mouse(NSEventTypeMouseMoved)), web);
+  EXPECT_EQ(log_, (Log{"web:ask", "web:entered"}));
   log_.clear();
-  EXPECT_EQ(Dispatch(Mouse(NSEventTypeMouseMoved)), bottom_);
-  EXPECT_EQ(log_, (Log{"top:ask", "bottom:ask", "top:left"}));
+  web.consumes = NO;  // 网页被 momo 内容盖住
+  EXPECT_EQ(Dispatch(Mouse(NSEventTypeMouseMoved)), momo);
+  EXPECT_EQ(log_, (Log{"web:ask", "momo:ask", "web:left", "momo:entered"}));
+  log_.clear();
+  EXPECT_EQ(Dispatch(Mouse(NSEventTypeMouseMoved)), momo);
+  EXPECT_EQ(log_, (Log{"web:ask", "momo:ask"})) << "no repeated enter while the hover target is unchanged";
+  // 在 momo 上按下并拖到网页上: 捕获归 momo, 悬停不切换, 网页不会收到进入。
+  log_.clear();
+  web.consumes = YES;
+  EXPECT_EQ(Dispatch(Mouse(NSEventTypeLeftMouseDown)), web) << "a fresh press hit-tests";
+  EXPECT_EQ(log_, (Log{"web:ask", "momo:left", "web:entered"}));
+  log_.clear();
+  web.consumes = NO;
+  EXPECT_EQ(Dispatch(Mouse(NSEventTypeLeftMouseDragged)), web) << "captured";
+  EXPECT_EQ(log_, (Log{"web:captured"})) << "hover stays with the capturing target while dragging";
+  // 抬起后离开窗口: 悬停目标收到离开。
+  pressed_ = 0;
+  Dispatch(Mouse(NSEventTypeLeftMouseUp));
   log_.clear();
   EXPECT_EQ(Dispatch(Exited()), nil);
-  EXPECT_EQ(log_, (Log{"bottom:left"}));
+  EXPECT_EQ(log_, (Log{"web:left"}));
   EXPECT_EQ(dispatcher_.hoverTarget, nil);
 }
 

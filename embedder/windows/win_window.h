@@ -43,6 +43,9 @@ class WinWindow final : public PlatformWindow {
   double device_pixel_ratio() const override;
   platform::RenderSurface& surface() override;
   void SetCursor(platform::SystemCursor cursor) override;
+  void CapturePointer() override;
+  Rect screen_frame() const override;
+  void SetPosition(Point top_left) override;
   platform::TextInputConnection& text_input() override;
   void* native_handle() const override { return hwnd_; }
 
@@ -56,6 +59,7 @@ class WinWindow final : public PlatformWindow {
 
   Status Initialize(const WindowSpec& spec);
   void NotifyMetricsChanged();
+  void NotifyFrameChanged();
   void UpdateDarkMode();
   // 逻辑客户区尺寸 → 当前 DPI 下的窗口外框尺寸。
   SIZE WindowSizeForClient(double logical_width, double logical_height, UINT dpi) const;
@@ -81,6 +85,7 @@ class WinWindow final : public PlatformWindow {
   UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
   bool resizable_ = true;
   bool created_ = false;     // 创建过程中的消息不上报
+  Rect last_frame_;          // 最近上报的内容区屏幕框
   bool minimized_ = false;
   Size min_size_;            // 逻辑像素
   std::unique_ptr<WinSoftwareSurface> surface_;

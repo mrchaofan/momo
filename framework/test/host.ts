@@ -35,6 +35,10 @@ export interface MockControl {
   alwaysOnTop: Map<number, boolean>;
   /** activate() 调用过的视图 id(按顺序)。 */
   activated: number[];
+  /** view.setCapture() 调用过的视图。 */
+  captures: number[];
+  /** 以 panel: true 创建的视图。 */
+  panelViews: Set<number>;
   /** setTitleBarStyle 的最近一次设置(键为视图 id)。 */
   titleBars: Map<number, { style: string; center: number | null }>;
   /** setDragRegions 的最近一次设置(键为视图 id, 扁平的 x,y,w,h)。 */

@@ -20,6 +20,7 @@
 #include "engine/platform/viewport_metrics.h"
 #include "engine/shell/animator.h"
 #include "engine/shell/lifecycle.h"
+#include "engine/shell/pointer_capture.h"
 #include "engine/shell/vsync_waiter.h"
 #include "engine/ui/app_driver.h"
 
@@ -45,6 +46,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
       (void)on;
     }
     virtual void ActivateWindow(platform::ViewId view) { (void)view; }
+    virtual void CaptureWindowPointer(platform::ViewId view) { (void)view; }
     virtual void SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) {
       (void)view;
       (void)hidden;
@@ -53,6 +55,10 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
     virtual void SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects) {
       (void)view;
       (void)rects;
+    }
+    virtual void SetWindowPosition(platform::ViewId view, Point top_left) {
+      (void)view;
+      (void)top_left;
     }
 
    protected:
@@ -83,6 +89,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   void OnPointerPacket(platform::ViewId view, const platform::PointerDataPacket& packet);
   void OnKeyData(platform::ViewId view, const platform::KeyData& data);
   void OnFocusChanged(platform::ViewId view, bool focused);
+  void OnWindowFrameChanged(platform::ViewId view, const Rect& frame);
   bool OnCloseRequested(platform::ViewId view) { return driver_->OnCloseRequested(view); }
 
   // 主窗口(视图 0)的兼容入口。
@@ -124,6 +131,10 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
     delegate_.SetWindowMinSize(view, logical_size);
   }
   platform::ViewportMetrics metrics(platform::ViewId view) const override;
+  Rect screen_frame(platform::ViewId view) const override;
+  void SetWindowPosition(platform::ViewId view, Point top_left) override {
+    delegate_.SetWindowPosition(view, top_left);
+  }
   bool focused(platform::ViewId view) const override;
   std::vector<platform::ViewId> views() const override;
   void CreateView(uint64_t request, const platform::ViewOptions& options) override {
@@ -134,6 +145,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
     delegate_.SetWindowAlwaysOnTop(view, on);
   }
   void ActivateView(platform::ViewId view) override { delegate_.ActivateWindow(view); }
+  bool SetPointerCapture(platform::ViewId view) override;
   void SetTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) override {
     delegate_.SetWindowTitleBar(view, hidden, traffic_center_y);
   }
@@ -153,8 +165,11 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   struct ViewState {
     platform::ViewportMetrics metrics;
     bool focused = false;
+    Rect frame;
   };
   std::map<platform::ViewId, ViewState> views_;
+  // 跨视图指针捕获: 按下所在视图独占该设备的事件直到抬起(拖动经过别的窗口时不被打断)。
+  PointerCapture pointer_capture_;
   // 先于 driver_ 构造(执行 bundle 时即可能 scheduleFrame), 后于 driver_ 析构。
   Animator animator_;
   std::unique_ptr<ui::AppDriver> driver_;

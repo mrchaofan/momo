@@ -426,8 +426,20 @@ void Shell::SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects)
   PostToDelegate(view, [rects = std::move(rects)](Delegate& d) { d.OnEngineSetDragRegions(rects); });
 }
 
+void Shell::SetWindowPosition(platform::ViewId view, Point top_left) {
+  PostToDelegate(view, [top_left](Delegate& d) { d.OnEngineSetPosition(top_left); });
+}
+
+void Shell::OnWindowFrameChanged(platform::ViewId view, const Rect& frame) {
+  PostToEngine([view, frame](Engine& engine) { engine.OnWindowFrameChanged(view, frame); });
+}
+
 void Shell::ActivateWindow(platform::ViewId view) {
   PostToDelegate(view, [](Delegate& d) { d.OnEngineActivate(); });
+}
+
+void Shell::CaptureWindowPointer(platform::ViewId view) {
+  PostToDelegate(view, [](Delegate& d) { d.OnEngineCapturePointer(); });
 }
 
 void Shell::CreateView(uint64_t request, const platform::ViewOptions& options) {

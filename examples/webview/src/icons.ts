@@ -1,8 +1,8 @@
 // 黑白线性图标(自绘, 16×16 设计网格, 按尺寸缩放)与图标按钮。
 import { Paint, Path, type Canvas } from "momo:ui";
 import {
-  BorderRadius, BoxDecoration, Center, Container, CustomPaint, CustomPainter, GestureDetector, MouseRegion, Size, State,
-  StatefulWidget, type BuildContext, type Widget,
+  AnimationController, BorderRadius, BoxDecoration, Center, Container, CustomPaint, CustomPainter, GestureDetector, MouseRegion, Size,
+  State, StatefulWidget, type Animation, type BuildContext, type Widget,
 } from "@momo/framework";
 import { Palette } from "./style";
 
@@ -75,5 +75,67 @@ class IconButtonState extends State<IconButton> {
         }),
       }),
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+/** 加载中: 270° 圆弧, 随动画匀速旋转(Path 无圆弧指令, 用折线逼近)。 */
+class SpinnerPainter extends CustomPainter {
+  constructor(readonly turn: Animation<number>, readonly color: number) {
+    super(turn);
+  }
+  paint(canvas: Canvas, size: Size): void {
+    const r = size.width / 2;
+    const stroke = Math.max(1.2, size.width / 9);
+    const p = new Paint();
+    p.color = this.color;
+    p.style = "stroke";
+    p.strokeWidth = stroke;
+    p.strokeCap = "round";
+    p.antiAlias = true;
+    const path = new Path();
+    const radius = r - stroke / 2;
+    const start = this.turn.value * Math.PI * 2;
+    const sweep = Math.PI * 1.5;
+    const steps = 36;
+    for (let i = 0; i <= steps; i++) {
+      const a = start + (sweep * i) / steps;
+      const x = r + radius * Math.cos(a);
+      const y = r + radius * Math.sin(a);
+      if (i === 0) path.moveTo(x, y);
+      else path.lineTo(x, y);
+    }
+    canvas.drawPath(path, p);
+  }
+  override shouldRepaint(old: CustomPainter): boolean {
+    return !(old instanceof SpinnerPainter) || old.turn !== this.turn || old.color !== this.color;
+  }
+}
+
+/** 转圈的加载图标(每秒一圈)。 */
+export class Spinner extends StatefulWidget {
+  constructor(readonly o: { size?: number; color?: number } = {}) {
+    super();
+  }
+  createState(): State {
+    return new SpinnerState();
+  }
+}
+
+class SpinnerState extends State<Spinner> {
+  #turn!: AnimationController;
+  override initState(): void {
+    super.initState();
+    this.#turn = new AnimationController({ vsync: this, duration: 1000 });
+    void this.#turn.repeat();
+  }
+  override dispose(): void {
+    this.#turn.dispose();
+    super.dispose();
+  }
+  build(_c: BuildContext): Widget {
+    const { size = 12, color = Palette.ink.value } = this.widget.o;
+    return new CustomPaint({ size: new Size(size, size), painter: new SpinnerPainter(this.#turn, color) });
   }
 }

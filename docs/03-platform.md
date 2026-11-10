@@ -121,7 +121,7 @@ class RenderSurface {
 
 `input_types.h` 定义平台无关事件,在各实现内完成翻译:
 
-- 指针:坐标统一为**物理像素**、按钮位图、`PointerPhase{add,down,move,up,remove,hover,scroll}`;鼠标滚轮/触控板精细滚动统一为 scroll delta(px);Mac 的惯性滚动阶段保留 momentum 标记。
+- 指针:坐标统一为**物理像素**、按钮位图、`PointerPhase{add,down,move,up,remove,hover,scroll}`;鼠标滚轮/触控板精细滚动统一为 scroll delta(px);Mac 的惯性滚动阶段保留 momentum 标记。每个事件另带屏幕位置(逻辑点, 主屏左上原点, 与 screen_frame 同一坐标系;screen_frame 与 SetPosition 均以内容区为准, 屏幕坐标 − 框原点即窗口内坐标), 供跨窗口交互(如标签拖出成窗口、拖动中移动窗口本身)使用, 不受窗口自身移动影响。多窗口时引擎做跨视图隐式捕获(`engine/shell/pointer_capture.h`, 相当于 SetCapture): 某设备在一个窗口按下后直到抬起, 其他窗口上报的同一设备事件(拖动经过时的进入/悬停/离开)被丢弃;捕获窗口被移除时补发 remove 取消进行中的手势。显式捕获 `view.setCapture()`(类似 Win32 SetCapture / Chromium Widget::SetCapture): 把进行中的按下序列转交给另一个窗口——引擎先转交捕获(原窗口此后的事件作废), 再由宿主窗口接管系统层的鼠标事件(macOS: 本地事件监视器, 同 Chromium CocoaMouseCapture;Windows: `::SetCapture`), 并在当前指针位置补发一次按下(框架 `GestureBinding.transferPointerCapture` 把它及后续事件交给调用方);抬起后自动释放。`setCapture()` 返回是否有序列被转交。用于拖动中原窗口即将关闭的场景(如单标签窗口整体并入另一个窗口)。
 - 键盘:三元组(physical key = USB HID usage,logical key,字符);修饰键状态快照。文本输入不走 KeyData,而走 IME 通道。
 - IME:`TextInputConnection` 实现双向协议——JS 侧 EditingState(文本、选区、composing 区间)同步给平台;平台回传 commit/composing 更新;候选窗位置由 JS 框架上报光标矩形。
 

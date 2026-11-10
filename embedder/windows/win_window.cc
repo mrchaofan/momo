@@ -216,7 +216,10 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
   HMONITOR monitor = ::MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
   MONITORINFO info{};
   info.cbSize = sizeof(info);
-  if (::GetMonitorInfoW(monitor, &info)) {
+  if (spec.position) {
+    ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    SetPosition(*spec.position);
+  } else if (::GetMonitorInfoW(monitor, &info)) {
     const RECT& work = info.rcWork;
     const LONG x = work.left + std::max<LONG>(0, (work.right - work.left - size.cx) / 2);
     const LONG y = work.top + std::max<LONG>(0, (work.bottom - work.top - size.cy) / 2);
@@ -338,6 +341,11 @@ platform::PointerData WinWindow::MakePointer(platform::PointerPhase phase, doubl
   data.device = 0;
   data.physical_x = x;  // Per-Monitor-V2: 客户区坐标即物理像素, 左上原点
   data.physical_y = y;
+  // 屏幕位置(逻辑点): 取消息产生时的屏幕位置(GetMessagePos), 不经窗口当前位置换算——拖动中窗口
+  // 跟随指针移动时, 客户区坐标与窗口位置不同步, 换算会累积误差。按本窗口 DPI 换算(混合 DPI 时为近似)。
+  const DWORD pos = ::GetMessagePos();
+  data.screen_x = static_cast<short>(LOWORD(pos)) / device_pixel_ratio();
+  data.screen_y = static_cast<short>(HIWORD(pos)) / device_pixel_ratio();
   data.buttons = buttons_;
   return data;
 }
@@ -437,6 +445,65 @@ void WinWindow::OnMouseButton(UINT message, WPARAM wparam, LPARAM lparam) {
       DispatchPointer(MakePointer(platform::PointerPhase::kRemove, x, y));
     }
   }
+}
+
+// view.setCapture(): 接管别的窗口里进行中的按下序列。系统捕获转到本窗口(原窗口收到 WM_CAPTURECHANGED,
+// 它上报的抬起在引擎里因捕获已转交而被丢弃), 在当前指针位置补发一次按下, 之后的移动/松开都发给本窗口。
+void WinWindow::CapturePointer() {
+  uint32_t pressed = 0;
+  if (::GetAsyncKeyState(VK_LBUTTON) & 0x8000) pressed |= 1u << 0;
+  if (::GetAsyncKeyState(VK_RBUTTON) & 0x8000) pressed |= 1u << 1;
+  if (::GetAsyncKeyState(VK_MBUTTON) & 0x8000) pressed |= 1u << 2;
+  if (pressed == 0) {
+    return;
+  }
+  POINT screen{};
+  ::GetCursorPos(&screen);
+  POINT client = screen;
+  ::ScreenToClient(hwnd_, &client);
+  buttons_ = pressed;
+  last_x_ = client.x;
+  last_y_ = client.y;
+  ::SetCapture(hwnd_);
+  platform::PointerData down = MakePointer(platform::PointerPhase::kDown, client.x, client.y);
+  down.screen_x = screen.x / device_pixel_ratio();
+  down.screen_y = screen.y / device_pixel_ratio();
+  DispatchPointer(down);
+}
+
+// 屏幕框与定位以客户区(momo 视图)为准, 与 macOS 一致;物理像素按本窗口 DPI 换算为逻辑点。
+Rect WinWindow::screen_frame() const {
+  RECT client{};
+  ::GetClientRect(hwnd_, &client);
+  POINT origin{0, 0};
+  ::ClientToScreen(hwnd_, &origin);
+  const double dpr = device_pixel_ratio();
+  return {origin.x / dpr, origin.y / dpr, (client.right - client.left) / dpr,
+          (client.bottom - client.top) / dpr};
+}
+
+void WinWindow::SetPosition(Point top_left) {
+  // 客户区左上角 → 窗口外框左上角(差值为标题栏与边框)。
+  RECT window{};
+  ::GetWindowRect(hwnd_, &window);
+  POINT origin{0, 0};
+  ::ClientToScreen(hwnd_, &origin);
+  const double dpr = device_pixel_ratio();
+  const LONG x = static_cast<LONG>(std::lround(top_left.x * dpr)) - (origin.x - window.left);
+  const LONG y = static_cast<LONG>(std::lround(top_left.y * dpr)) - (origin.y - window.top);
+  ::SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+void WinWindow::NotifyFrameChanged() {
+  if (!created_) {
+    return;
+  }
+  const Rect frame = screen_frame();
+  if (frame == last_frame_) {
+    return;
+  }
+  last_frame_ = frame;
+  delegate_->OnWindowFrameChanged(frame);
 }
 
 void WinWindow::OnCaptureLost() {
@@ -620,6 +687,10 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         if (created_) delegate_->OnVisibilityChanged(true);
       }
       NotifyMetricsChanged();
+      NotifyFrameChanged();
+      return 0;
+    case WM_MOVE:
+      NotifyFrameChanged();
       return 0;
 
     // ---- 绘制 ----

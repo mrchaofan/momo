@@ -43,6 +43,16 @@ class WindowClient {
   virtual void SetCursor(ViewId view, platform::SystemCursor cursor) = 0;    // view.setCursor()
   virtual void SetMinSize(ViewId view, Size logical_size) = 0;               // view.setMinSize()
   virtual platform::ViewportMetrics metrics(ViewId view) const = 0;
+  // 内容区在屏幕上的框(逻辑点, 主屏左上原点);宿主未报告时为空矩形。
+  virtual Rect screen_frame(ViewId view) const {
+    (void)view;
+    return {};
+  }
+  // view.setPosition(x, y): 移动窗口, 使内容区左上角位于屏幕位置(逻辑点)。
+  virtual void SetWindowPosition(ViewId view, Point top_left) {
+    (void)view;
+    (void)top_left;
+  }
   virtual bool focused(ViewId view) const = 0;
   // 当前存在的视图(升序;至少含视图 0)。
   virtual std::vector<ViewId> views() const { return {platform::kImplicitViewId}; }
@@ -60,6 +70,13 @@ class WindowClient {
   }
   // view.activate(): 把窗口带到最前并成为 key window。
   virtual void ActivateView(ViewId view) { (void)view; }
+  // view.setCapture(): 把进行中的鼠标按下序列转交给该窗口(类似 Win32 SetCapture / Chromium
+  // Widget::SetCapture)。之后的拖动与抬起都投递给它, 直到抬起;原窗口随后关闭也不影响。
+  // 返回是否有进行中的序列被转交(没有按住的按键时为 false)。
+  virtual bool SetPointerCapture(ViewId view) {
+    (void)view;
+    return false;
+  }
   // view.setTitleBarStyle(): 隐藏系统标题栏(内容铺满窗口, 保留红绿灯);traffic_center_y 为红绿灯
   // 中心距窗口顶部的逻辑像素(<= 0 用系统默认位置)。
   virtual void SetTitleBar(ViewId view, bool hidden, double traffic_center_y) {
@@ -90,6 +107,8 @@ class AppDriver {
   // 返回 true 表示应用已消费。
   virtual bool OnKeyData(ViewId, const platform::KeyData&) { return false; }
   virtual void OnFocusChanged(ViewId, bool) {}
+  // client.screen_frame(view) 已更新。
+  virtual void OnWindowFrameChanged(ViewId) {}
   // 视图加入/移除(视图 0 在驱动创建前就存在, 不会通知)。
   virtual void OnViewAdded(ViewId) {}
   virtual void OnViewRemoved(ViewId) {}

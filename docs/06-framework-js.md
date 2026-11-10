@@ -45,7 +45,7 @@ onDrawFrame : buildOwner.flushBuild → pipeline.flushLayout → flushCompositin
 widget/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`/`ViewAnchor`):
 
 - `ViewAnchor({ child, views })`:child 在原处正常渲染;views 挂在 element 树的这里(继承此处的 InheritedWidget 与状态),但渲染到各自的窗口。
-- `Window({ title, width, height, onCloseRequested, onClosed, onOpened, child })`:挂载即 `createView` 打开窗口,卸载即关闭;用户关闭后回调 `onClosed`,应用据此从状态中移除。
+- `Window({ title, width, height, onCloseRequested, onClosed, onOpened, child })`:挂载即 `createView` 打开窗口,卸载即关闭;用户关闭后回调 `onClosed`,应用据此从状态中移除。其他选项:`x`/`y` 初始屏幕位置;`alwaysOnTop` 置顶;`panel: true` 面板(同 Electron 的 `type: 'panel'`;macOS 为 NSPanel + NonactivatingPanel:可成为 key window 接收键盘,但不成为 main window,聚焦它也不激活应用)。
 - `View({ view, child })`:为窗口建立自己的 `RenderView` + `PipelineOwner`,向 `WidgetsBinding.registerView` 登记;每帧共用一次 build,各窗口分别 layout/paint/合成并 `view.render`。每个窗口有自己的 `MediaQuery`、`Overlay`(对话框、菜单只出现在本窗口)、默认快捷键与根焦点作用域(挂在焦点树根下,与主窗口并列;窗口获得系统焦点时恢复其上次的焦点)。
 - 指针事件按来源窗口命中测试(`GestureBinding.handlePointerPacket(..., viewId)`),光标发往最近一次指针所在的窗口。
 - 子树可以用 `GlobalKey` 在窗口之间移动并保留 State;含平台视图的子树移动时原生视图换窗口而不重建(MomoBrowser 的"移到新窗口")。
@@ -60,6 +60,12 @@ widget/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`
 
 - `onPointerPacket` → hit test(从 render 树根)→ `PointerRouter` 分发 → `GestureArena` 消歧(tap vs drag vs double-tap)。
 - 桌面特性一等公民:hover(MouseRegion/光标形状)、精细滚轮与触控板惯性滚动、右键菜单、键盘焦点链(FocusNode/Traversal)、快捷键表(`Shortcuts`/`Actions` 模式)、文本选择。
+- 跨窗口拖拽:指针事件与拖动回调(`DragDown/Start/UpdateDetails`)带 `screenPosition`(逻辑点,主屏左上原点),
+  与 `View.screenFrame`(内容区的屏幕框)同一坐标系,不受窗口自身移动影响;`view.setPosition` 按内容区定位。
+  拖动中持有按下的窗口即将关闭时(如把它的内容并入另一个窗口),`GestureBinding.transferPointerCapture(view, route)`
+  把按下序列转交给 `view`(`view.setCapture()`),宿主补发的按下及其后续事件只交给 `route`、不经命中测试与竞技场,
+  抬起后结束;没有可转交的序列时返回 null。示例见 examples/webview 的标签拖拽(会话独立于标签栏,同 Chromium
+  `TabDragController`)。
 
 ## 5. 状态与更新
 

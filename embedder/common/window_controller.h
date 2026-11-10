@@ -58,6 +58,7 @@ class WindowController final : public Object,
   void OnVisibilityChanged(bool visible) override;
   void OnTextInput(const platform::TextInputEvent& event) override;
   void OnPlatformViewFocused(int64_t view_id) override;
+  void OnWindowFrameChanged(const Rect& screen_frame) override;
 
   // engine::Shell::Delegate
   void OnEngineSetTitle(const std::string& title) override;
@@ -65,8 +66,10 @@ class WindowController final : public Object,
   void OnEngineSetCursor(platform::SystemCursor cursor) override;
   void OnEngineSetAlwaysOnTop(bool on) override;
   void OnEngineActivate() override;
+  void OnEngineCapturePointer() override;
   void OnEngineSetTitleBar(bool hidden, double traffic_center_y) override;
   void OnEngineSetDragRegions(const std::vector<Rect>& rects) override;
+  void OnEngineSetPosition(Point top_left) override;
   platform::TextInputConnection* GetTextInput() override;
   void* GetNativeWindowHandle() override;
   void OnPlatformViewCreated(int64_t view_id, void* native_view) override;

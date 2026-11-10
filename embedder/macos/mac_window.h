@@ -49,8 +49,12 @@ class MacWindow final : public PlatformWindow {
   void* native_handle() const override;
   void SetAlwaysOnTop(bool on) override;
   void Activate() override;
+  void CapturePointer() override;
   void SetTitleBar(bool hidden, double traffic_center_y) override;
   void SetDragRegions(const std::vector<Rect>& rects) override;
+  Rect screen_frame() const override;
+  void SetPosition(Point top_left) override;
+  void NotifyFrameChanged();
   // 隐藏标题栏时把红绿灯垂直居中到 traffic_center_y_(尺寸变化、退出全屏后重新布局)。
   void LayoutTrafficLights();
   void AddPlatformView(int64_t view_id, void* native_view) override;
@@ -72,6 +76,8 @@ class MacWindow final : public PlatformWindow {
   MomoWindowObserver* observer_;
   MomoPlatformViews* platform_views_;
   bool titlebar_hidden_ = false;
+  bool panel_ = false;  // NSPanel(非激活面板): 显示/激活时不激活应用
+  Rect last_frame_;
   double traffic_center_y_ = 0;
   std::unique_ptr<platform::RenderSurface> surface_;
   MacMetalSurface* metal_surface_ = nullptr;  // 指向 surface_(若为 Metal)

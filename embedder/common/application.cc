@@ -387,6 +387,8 @@ Status Application::CreateView(engine::platform::ViewId view_id,
   WindowSpec spec = options_.config.window;  // 继承主窗口的闪屏底色等
   spec.title = options.title.empty() ? spec.title : options.title;
   spec.size = options.size;
+  spec.position = options.position;
+  spec.panel = options.panel;
   spec.min_size = options.min_size;
   spec.resizable = true;
 

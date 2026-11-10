@@ -36,7 +36,7 @@ using runtime::kUiViewTag;
 
 namespace {
 
-constexpr int kPointerStride = 10;
+constexpr int kPointerStride = 12;
 
 UiBindings::Impl* ImplOf(const Args& a) {
   return static_cast<UiBindings::Impl*>(a.Data().As<v8::External>()->Value(kUiImplTag));
@@ -139,9 +139,25 @@ void SetDragRegions(const Args& a) {
   if (!view->removed) view->impl->client->SetDragRegions(view->id, std::move(rects));
 }
 
+// setPosition(x, y): 窗口左上角的屏幕位置(逻辑点, 主屏左上原点)。
+void SetPosition(const Args& a) {
+  ViewBinding* view = ViewOf(a);
+  double x = 0, y = 0;
+  if (ArgNumber(a, 0, &x) && ArgNumber(a, 1, &y) && !view->removed) {
+    view->impl->client->SetWindowPosition(view->id, {x, y});
+  }
+}
+
 void Activate(const Args& a) {
   ViewBinding* view = ViewOf(a);
   if (!view->removed) view->impl->client->ActivateView(view->id);
+}
+
+// setCapture() → boolean: 把进行中的鼠标按下序列转交给本窗口;没有可转交的序列时返回 false。
+void SetCapture(const Args& a) {
+  ViewBinding* view = ViewOf(a);
+  const bool transferred = !view->removed && view->impl->client->SetPointerCapture(view->id);
+  a.GetReturnValue().Set(transferred);
 }
 
 void CloseView(const Args& a) {
@@ -175,6 +191,15 @@ void CreateView(const Args& a) {
     options.size = {num("width", options.size.width), num("height", options.size.height)};
     options.min_size = {num("minWidth", options.min_size.width),
                         num("minHeight", options.min_size.height)};
+    v8::Local<v8::Value> x, y;
+    if (o->Get(context, V8String(isolate, "x")).ToLocal(&x) && x->IsNumber() &&
+        o->Get(context, V8String(isolate, "y")).ToLocal(&y) && y->IsNumber()) {
+      options.position = Point{x.As<v8::Number>()->Value(), y.As<v8::Number>()->Value()};
+    }
+    v8::Local<v8::Value> panel;
+    if (o->Get(context, V8String(isolate, "panel")).ToLocal(&panel) && panel->IsBoolean()) {
+      options.panel = panel->IsTrue();
+    }
   }
   if (options.size.IsEmpty()) {
     runtime::ThrowTypeError(isolate, "createView: width and height must be positive");
@@ -303,10 +328,12 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   fn("close", &CloseView);
   fn("setAlwaysOnTop", &SetAlwaysOnTop);
   fn("activate", &Activate);
+  fn("setCapture", &SetCapture);
   fn("setTitleBarStyle", &SetTitleBarStyle);
   fn("setDragRegions", &SetDragRegions);
-  for (const char* handler : {"onMetricsChanged", "onCloseRequested", "onPointerPacket",
-                              "onKeyData", "onFocusChanged"}) {
+  fn("setPosition", &SetPosition);
+  for (const char* handler : {"onMetricsChanged", "onFrameChanged", "onCloseRequested",
+                              "onPointerPacket", "onKeyData", "onFocusChanged"}) {
     v->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
   }
   // title: 只写访问器(读取返回 undefined)。
@@ -322,6 +349,7 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   }
   SyncMetrics(isolate, context, id);
   SyncFocus(isolate, context, id);
+  SyncFrame(isolate, context, id);
   return v;
 }
 
@@ -366,6 +394,24 @@ void UiBindings::Impl::SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> 
   w->Set(context, V8String(isolate, "devicePixelRatio"),
          v8::Number::New(isolate, m.device_pixel_ratio))
       .Check();
+}
+
+void UiBindings::Impl::SyncFrame(v8::Isolate* isolate, v8::Local<v8::Context> context,
+                                 ViewId id) {
+  ViewBinding* view = FindView(id);
+  if (view == nullptr || view->object.IsEmpty()) {
+    return;
+  }
+  const Rect f = client->screen_frame(id);
+  v8::Local<v8::Object> o = v8::Object::New(isolate);
+  auto set = [&](const char* k, double v) {
+    o->Set(context, V8String(isolate, k), v8::Number::New(isolate, v)).Check();
+  };
+  set("x", f.x);
+  set("y", f.y);
+  set("width", f.width);
+  set("height", f.height);
+  view->object.Get(isolate)->Set(context, V8String(isolate, "screenFrame"), o).Check();
 }
 
 void UiBindings::Impl::SyncFocus(v8::Isolate* isolate, v8::Local<v8::Context> context,
@@ -520,6 +566,8 @@ void UiBindings::PointerPacket(ViewId view, const platform::PointerDataPacket& p
     out[7] = p.scroll_delta_x;
     out[8] = p.scroll_delta_y;
     out[9] = p.momentum ? 1 : 0;
+    out[10] = p.screen_x;
+    out[11] = p.screen_y;
     out += kPointerStride;
   }
   v8::Local<v8::Value> argv[] = {data, v8::Integer::New(isolate, static_cast<int>(packet.size()))};
@@ -564,6 +612,19 @@ void UiBindings::FocusChanged(ViewId view, bool focused) {
   impl_->SyncFocus(isolate, context, view);
   v8::Local<v8::Value> argv[] = {v8::Boolean::New(isolate, focused)};
   impl_->CallViewHandler(view, "onFocusChanged", 1, argv);
+  impl_->runtime->DrainMicrotasks();
+}
+
+void UiBindings::WindowFrameChanged(ViewId view) {
+  if (!is_imported()) {
+    return;
+  }
+  v8::Isolate* isolate = impl_->runtime->isolate();
+  v8::HandleScope scope(isolate);
+  v8::Local<v8::Context> context = impl_->runtime->context();
+  v8::Context::Scope context_scope(context);
+  impl_->SyncFrame(isolate, context, view);
+  impl_->CallViewHandler(view, "onFrameChanged", 0, nullptr);
   impl_->runtime->DrainMicrotasks();
 }
 

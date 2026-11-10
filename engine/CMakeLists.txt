@@ -98,6 +98,7 @@ endif()
 add_library(momo_engine_shell STATIC
   shell/animator.cc
   shell/engine.cc
+  shell/pointer_capture.cc
   shell/rasterizer.cc
   shell/render_backend.cc
   shell/shell.cc
@@ -119,6 +120,7 @@ if(MOMO_BUILD_TESTS)
     graphics/graphics_unittests.cc
     graphics/testing/golden.cc
     shell/animator_unittests.cc
+    shell/pointer_capture_unittests.cc
     shell/rasterizer_unittests.cc
     shell/shell_unittests.cc
     shell/thread_host_unittests.cc)

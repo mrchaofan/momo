@@ -1,15 +1,20 @@
 // 标签模型与标签栏。
 // 插入: 宽度 0 → 目标宽度、透明度 0 → 1(easeOutCubic);删除: 反向(easeInCubic), 动画结束后才从列表移除。
 // 标签内容始终按完整宽度排版, 外层按动画进度裁剪, 因此缓动过程中文字不会被挤压重排。
+// 拖拽(类似 Chromium): 标签栏识别拖动, 把指针的屏幕位置(DragUpdateDetails.screenPosition)交给应用;
+// 应用据此决定在哪个窗口的标签栏里排序、何时拖出成窗口、何时并入另一个窗口(见 main.ts DragSession)。
+// 排序时被拖的标签原位置留空, 浮动副本跟随指针, 其他标签平移让位。
 import {
   AnimatedBuilder, AnimationController, Border, BorderRadius, BorderSide, GlobalKey, BoxDecoration, ClipRect, CurvedAnimation, Curves,
-  EdgeInsets, Expanded, GestureDetector, MouseRegion, Opacity, Padding, Positioned, Row, SizedBox, Stack, State,
-  StatefulWidget, StatelessWidget, Text, Container, Center, ValueKey, WindowDragArea,
-  type BuildContext, type Offset, type TickerProvider, type Widget,
+  EdgeInsets, Expanded, GestureDetector, IgnorePointer, ImplicitlyAnimatedWidget, ImplicitlyAnimatedWidgetState, MouseRegion,
+  Offset, Opacity, Padding, Positioned, Row, SizedBox, Stack, State, StatefulWidget, Text, Transform, Tween, Container, Center, ValueKey,
+  WindowDragArea,
+  type BuildContext, type DragDownDetails, type DragStartDetails, type DragUpdateDetails, type Key, type TickerProvider, type Widget,
 } from "@momo/framework";
 import type { WebViewController, WebViewState } from "@momo-examples/ext-webview";
-import type { DetachedWindow } from "./main";
-import { Palette, TextStyles, kTabAnimationMs, kTabStripHeight, kTrafficLightsWidth } from "./style";
+import type { BrowserWindow, DetachedWindow } from "./main";
+import { Spinner } from "./icons";
+import { Palette, TextStyles, kTabAnimationMs, kTabHeight, kTabStripHeight, kTabStripTopInset, kTrafficLightsWidth } from "./style";
 
 let nextTabId = 1;
 
@@ -29,6 +34,11 @@ export class Tab {
   closing = false;
   /** 已弹出到单独窗口(标签仍属于原窗口, 原处显示占位)。 */
   detached: DetachedWindow | null = null;
+  /**
+   * 拖出成新窗口、新窗口尚在打开时: 网页暂由这个(原)窗口继续渲染(隐藏), 新窗口打开后同一帧移过去,
+   * GlobalKey 子树始终挂在树上, 页面不刷新。
+   */
+  parking: BrowserWindow | null = null;
   readonly animation: AnimationController;
   readonly curve: CurvedAnimation;
 
@@ -104,6 +114,8 @@ interface TabItemOptions {
   onClose: () => void;
   /** 右键: position 为窗口逻辑坐标。 */
   onContextMenu: (position: Offset) => void;
+  /** 拖动中: 原位置留空(浮动副本画在上方)。 */
+  placeholder?: boolean;
 }
 
 /** 单个标签: 宽度与透明度跟随动画;激活时下方一条黑线。 */
@@ -120,7 +132,7 @@ class TabItemState extends State<TabItem> {
   #hover = false;
 
   build(_c: BuildContext): Widget {
-    const { tab, active, width, onSelect, onClose, onContextMenu } = this.widget.o;
+    const { tab, active, width, onSelect, onClose, onContextMenu, placeholder = false } = this.widget.o;
     const showClose = !tab.closing && (active || this.#hover);
     const face = new MouseRegion({
       cursor: "click",
@@ -141,7 +153,7 @@ class TabItemState extends State<TabItem> {
           padding: EdgeInsets.only({ left: 14, right: 6 }),
           child: new Row({
             children: [
-              ...(tab.loading ? [new Text("◌ ", { style: TextStyles.tab })] : []),
+              ...(tab.loading ? [new Spinner({ size: 12 }), new SizedBox({ width: 7 })] : []),
               new Expanded({
                 child: new Text(tab.displayTitle, { style: active ? TextStyles.tabActive : TextStyles.tab, maxLines: 1, overflow: "ellipsis" }),
               }),
@@ -159,11 +171,11 @@ class TabItemState extends State<TabItem> {
         const t = tab.curve.value;
         return new SizedBox({
           width: width * t,
-          height: kTabStripHeight,
+          height: kTabHeight,
           child: new ClipRect({
             child: new Opacity({
-              opacity: t,
-              child: new Stack({ children: [new Positioned({ left: 0, top: 0, width, height: kTabStripHeight, child: child! })] }),
+              opacity: placeholder ? 0 : t,
+              child: new Stack({ children: [new Positioned({ left: 0, top: 0, width, height: kTabHeight, child: child! })] }),
             }),
           }),
         });
@@ -174,35 +186,200 @@ class TabItemState extends State<TabItem> {
 
 // ---------------------------------------------------------------------------
 
+/** 标签宽度: 按窗口宽度均分, 限制在 96–220。 */
+export function tabWidthFor(windowWidth: number, count: number): number {
+  return Math.max(96, Math.min(220, (windowWidth - 48) / Math.max(1, count)));
+}
+
+/** 拖动中标签的左边界限制在标签区内(第一个到最后一个标签位)。 */
+export function clampDragLeft(left: number, tabWidth: number, count: number): number {
+  return Math.max(kTrafficLightsWidth, Math.min(kTrafficLightsWidth + (count - 1) * tabWidth, left));
+}
+
+/** 被拖标签左边界为 left 时的落点下标(count 为未关闭的标签数)。 */
+export function dropIndex(left: number, tabWidth: number, count: number): number {
+  const slot = Math.round((clampDragLeft(left, tabWidth, count) - kTrafficLightsWidth) / tabWidth);
+  return Math.max(0, Math.min(count - 1, slot));
+}
+
+/** 水平平移, 目标变化时缓动过去;instant 时直接到位(排序提交那一帧, 避免回弹)。 */
+class AnimatedShift extends ImplicitlyAnimatedWidget {
+  constructor(readonly o: { key: Key; dx: number; instant: boolean; child: Widget }) {
+    super({ key: o.key, duration: 150, curve: Curves.easeOutCubic });
+  }
+  createState(): State {
+    return new AnimatedShiftState();
+  }
+}
+
+class AnimatedShiftState extends ImplicitlyAnimatedWidgetState<AnimatedShift> {
+  readonly #dx = new Tween<number>(0, 0);
+  protected forEachTween(visitor: (tween: Tween<number>, target: number) => void): void {
+    visitor(this.#dx, this.widget.o.dx);
+  }
+  override didUpdateWidget(old: AnimatedShift): void {
+    if (this.widget.o.instant) {
+      this.#dx.begin = this.widget.o.dx;
+      this.#dx.end = this.widget.o.dx;
+    }
+    super.didUpdateWidget(old);
+  }
+  build(): Widget {
+    const dx = this.#dx.transform(this.animation.value);
+    return dx === 0 ? this.widget.o.child : Transform.translate({ offset: new Offset(dx, 0), child: this.widget.o.child });
+  }
+}
+
+/** 本窗口标签栏里正在排序的标签: left 为它左边界的窗口逻辑 x。 */
+export interface TabDrag {
+  tab: Tab;
+  left: number;
+}
+
 export interface TabStripOptions {
   tabs: readonly Tab[];
   activeId: number;
   tabWidth: number;
+  /** 正在本标签栏里排序的标签(拖出成窗口或在别的窗口时为 null)。 */
+  drag: TabDrag | null;
   onSelect: (tab: Tab) => void;
   onClose: (tab: Tab) => void;
   onContextMenu: (tab: Tab, position: Offset) => void;
   onNew: () => void;
+  /** 开始拖动标签: grab 为按下点相对标签左上角的偏移, screen 为指针屏幕位置。 */
+  onDragStart: (tab: Tab, grab: Offset, screen: Offset) => void;
+  onDragUpdate: (screen: Offset) => void;
+  onDragEnd: () => void;
 }
 
-/** 标签栏: 标签 + 新建按钮, 底部一条细线。 */
-export class TabStrip extends StatelessWidget {
+/** 标签栏: 标签 + 新建按钮, 底部一条细线;处理标签拖动。 */
+export class TabStrip extends StatefulWidget {
   constructor(readonly o: TabStripOptions) {
     super();
   }
+  createState(): State {
+    return new TabStripState();
+  }
+}
+
+class TabStripState extends State<TabStrip> {
+  /** 按下位置(标签栏内;拖动开始时据此找到被按下的标签)。 */
+  #downLocal: Offset | null = null;
+  #dragging = false;
+  /** 本帧刚结束排序: 让位平移直接归零(标签顺序已提交, 不再回弹)。 */
+  #instant = false;
+
+  override didUpdateWidget(old: TabStrip): void {
+    super.didUpdateWidget(old);
+    this.#instant = old.o.drag !== null && this.widget.o.drag === null;
+  }
+
+  override dispose(): void {
+    // 持有拖动的标签栏被卸载(所在窗口关闭): 结束这次拖动。
+    if (this.#dragging) {
+      this.#dragging = false;
+      this.widget.o.onDragEnd();
+    }
+    super.dispose();
+  }
+
+  /** 标签栏内 (x, y) 处的标签(按动画中的实际宽度累计)及其左边界;顶部缩放边上不算。 */
+  #tabAt(x: number, y: number): { tab: Tab; left: number } | null {
+    if (y < kTabStripTopInset) return null;
+    const { tabs, tabWidth } = this.widget.o;
+    let left = kTrafficLightsWidth;
+    for (const tab of tabs) {
+      const w = tabWidth * tab.curve.value;
+      if (x >= left && x < left + w) return tab.closing ? null : { tab, left };
+      left += w;
+    }
+    return null;
+  }
+
+  #onPanDown = (d: DragDownDetails): void => {
+    this.#downLocal = d.localPosition;
+  };
+
+  #onPanStart = (d: DragStartDetails): void => {
+    const down = this.#downLocal;
+    const hit = down !== null ? this.#tabAt(down.dx, down.dy) : null;
+    if (hit === null) return;
+    this.#dragging = true;
+    // 抓取点相对标签左上角(标签在顶部缩放边之下);位置用屏幕坐标, 拖到窗口外也成立。
+    this.widget.o.onDragStart(hit.tab, new Offset(down!.dx - hit.left, down!.dy - kTabStripTopInset), d.screenPosition);
+  };
+
+  #onPanUpdate = (d: DragUpdateDetails): void => {
+    if (this.#dragging) this.widget.o.onDragUpdate(d.screenPosition);
+  };
+
+  #onPanEnd = (): void => {
+    if (!this.#dragging) return;
+    this.#dragging = false;
+    this.widget.o.onDragEnd();
+  };
+
   build(_c: BuildContext): Widget {
-    const { tabs, activeId, tabWidth, onSelect, onClose, onContextMenu, onNew } = this.o;
-    return new Container({
-      height: kTabStripHeight,
-      decoration: new BoxDecoration({ color: Palette.white, border: new Border({ bottom: new BorderSide({ color: Palette.line, width: 1 }) }) }),
-      child: new Row({
-        children: [
-          // 红绿灯所在的空白: 也可拖动窗口。
-          new SizedBox({ width: kTrafficLightsWidth, height: kTabStripHeight, child: new WindowDragArea() }),
-          ...tabs.map((tab) => new TabItem({ tab, active: tab.id === activeId, width: tabWidth, onSelect: () => onSelect(tab), onClose: () => onClose(tab), onContextMenu: (p) => onContextMenu(tab, p) })),
-          new Padding({ padding: EdgeInsets.symmetric({ horizontal: 6 }), child: new IconTap({ glyph: "+", onTap: onNew }) }),
-          // 标签之后的空白: 拖动窗口, 双击缩放。
-          new Expanded({ child: new WindowDragArea() }),
-        ],
+    const { tabs, activeId, tabWidth, drag, onSelect, onClose, onContextMenu, onNew } = this.widget.o;
+    const instant = this.#instant;
+    this.#instant = false;
+    const live = tabs.filter((t) => !t.closing);
+    const from = drag !== null ? live.indexOf(drag.tab) : -1;
+    const to = from >= 0 ? dropIndex(drag!.left, tabWidth, live.length) : -1;
+    /** 其他标签的让位平移: 被拖标签从 from 移到 to, 中间的标签向反方向挪一格。 */
+    const shiftOf = (tab: Tab): number => {
+      if (from < 0 || tab.closing) return 0;
+      const i = live.indexOf(tab);
+      if (from < to && i > from && i <= to) return -tabWidth;
+      if (to < from && i >= to && i < from) return tabWidth;
+      return 0;
+    };
+    const item = (tab: Tab, placeholder: boolean): Widget => new TabItem({
+      tab,
+      active: tab.id === activeId,
+      width: tabWidth,
+      placeholder,
+      onSelect: () => onSelect(tab),
+      onClose: () => onClose(tab),
+      onContextMenu: (p) => onContextMenu(tab, p),
+    });
+    const row = new Row({
+      children: [
+        // 红绿灯所在的空白: 也可拖动窗口。
+        new SizedBox({ width: kTrafficLightsWidth, height: kTabHeight, child: new WindowDragArea() }),
+        ...tabs.map((tab) => new AnimatedShift({
+          key: new ValueKey(tab.id),
+          dx: shiftOf(tab),
+          instant,
+          child: item(tab, from >= 0 && tab === drag!.tab),
+        })),
+        new Padding({ padding: EdgeInsets.symmetric({ horizontal: 6 }), child: new IconTap({ glyph: "+", onTap: onNew }) }),
+        // 标签之后的空白: 拖动窗口, 双击缩放。
+        new Expanded({ child: new WindowDragArea() }),
+      ],
+    });
+    // 浮动副本: 跟随指针, 限制在标签区内。
+    const floating = from >= 0
+      ? [new Positioned({
+          left: clampDragLeft(drag!.left, tabWidth, live.length),
+          top: 0,
+          width: tabWidth,
+          height: kTabHeight,
+          child: new IgnorePointer({ child: new TabItem({ tab: drag!.tab, active: true, width: tabWidth, onSelect: () => {}, onClose: () => {}, onContextMenu: () => {} }) }),
+        })]
+      : [];
+    return new GestureDetector({
+      onPanDown: this.#onPanDown,
+      onPanStart: this.#onPanStart,
+      onPanUpdate: this.#onPanUpdate,
+      onPanEnd: this.#onPanEnd,
+      onPanCancel: this.#onPanEnd,
+      child: new Container({
+        height: kTabStripHeight,
+        decoration: new BoxDecoration({ color: Palette.white, border: new Border({ bottom: new BorderSide({ color: Palette.line, width: 1 }) }) }),
+        // 顶部缩放边: 留空(不是拖动区域), 窗口顶边缩放由系统原生处理。
+        padding: EdgeInsets.only({ top: kTabStripTopInset }),
+        child: new Stack({ children: [row, ...floating] }),
       }),
     });
   }

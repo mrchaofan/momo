@@ -23,6 +23,8 @@ export interface PointerEventInit {
   down?: boolean;
   /** 触控板惯性滚动阶段。 */
   momentum?: boolean;
+  /** 屏幕位置(逻辑点, 主屏左上原点;与 View.screenFrame 同一坐标系)。缺省为零点(来源未提供)。 */
+  screenPosition?: Offset;
 }
 
 /**
@@ -39,6 +41,11 @@ export abstract class PointerEvent {
   readonly buttons: number;
   readonly down: boolean;
   readonly momentum: boolean;
+  /**
+   * 指针的屏幕位置(逻辑点, 主屏左上原点, 与 View.screenFrame 同一坐标系)。
+   * 不随窗口移动而变化: 跨窗口交互(如把标签拖出成窗口、拖动窗口本身)用它计算。
+   */
+  readonly screenPosition: Offset;
   /** 局部坐标位置。 */
   readonly localPosition: Offset;
   /** 局部坐标位移。 */
@@ -58,6 +65,7 @@ export abstract class PointerEvent {
     this.buttons = init.buttons ?? 0;
     this.down = init.down ?? false;
     this.momentum = init.momentum ?? false;
+    this.screenPosition = init.screenPosition ?? Offset.zero;
     this.localPosition = this.position;
     this.localDelta = this.delta;
     this.transform = null;

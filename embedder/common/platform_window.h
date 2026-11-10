@@ -5,6 +5,7 @@
 // WindowDelegate 回调在 platform 线程触发, 由 embedder 的 WindowController 转投 ui 线程。
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -25,6 +26,11 @@ struct WindowSpec {
   Size min_size{200, 150};   // 逻辑像素
   bool resizable = true;
   uint32_t background_argb = 0xFFFFFFFF;  // 首帧前的闪屏底色
+  // 内容区左上角的屏幕位置(逻辑点, 主屏左上原点);为空则居中。
+  std::optional<Point> position;
+  // 面板: 可成为 key window, 不成为 main window, 聚焦不激活应用(macOS: NSPanel + NonactivatingPanel;
+  // 其他平台忽略)。
+  bool panel = false;
 };
 
 class WindowDelegate {
@@ -39,6 +45,8 @@ class WindowDelegate {
   virtual void OnVisibilityChanged(bool visible) = 0;
   // IME/文本输入事件(text_input_connection.h), 仅在 platform::TextInputConnection::Show 之后产生。
   virtual void OnTextInput(const platform::TextInputEvent& event) = 0;
+  // 内容区在屏幕上的位置或尺寸变化(逻辑点, 主屏左上原点)。
+  virtual void OnWindowFrameChanged(const Rect& screen_frame) { (void)screen_frame; }
   // 平台视图获得键盘焦点(用户点击等, docs/05 §9)。
   virtual void OnPlatformViewFocused(int64_t view_id) { (void)view_id; }
 
@@ -63,6 +71,9 @@ class PlatformWindow {
   virtual void SetAlwaysOnTop(bool on) { (void)on; }
   // 带到最前并成为 key window。
   virtual void Activate() { Show(); }
+  // 接管进行中的鼠标按下序列(按下发生在别的窗口): 若仍有按键按住, 在当前指针位置补发一次按下,
+  // 之后的拖动与抬起都投递给本窗口(即使按下所在的窗口已关闭), 抬起后自动释放。默认不支持。
+  virtual void CapturePointer() {}
   // 隐藏系统标题栏(内容铺满窗口, 保留窗口控制按钮);traffic_center_y: 按钮中心距顶部(逻辑像素, <= 0 默认)。
   virtual void SetTitleBar(bool hidden, double traffic_center_y) {
     (void)hidden;
@@ -70,6 +81,11 @@ class PlatformWindow {
   }
   // 可拖动窗口的区域(逻辑像素, 左上原点)。
   virtual void SetDragRegions(const std::vector<Rect>& rects) { (void)rects; }
+  // 内容区(momo 视图)在屏幕上的框(逻辑点, 主屏左上原点)。以内容区为准, 屏幕坐标 − 框原点即窗口内
+  // 坐标, 与窗口样式(有无标题栏、边框)无关。
+  virtual Rect screen_frame() const { return {}; }
+  // 移动窗口, 使内容区左上角位于屏幕位置 top_left(逻辑点, 主屏左上原点)。
+  virtual void SetPosition(Point top_left) { (void)top_left; }
 
   // ---- 平台视图(docs/05 §9;默认不支持)----
   // 挂入/移出窗口的视图层级。几何与可见性由 surface 的合成帧(RenderSurface::AcquireCompositionFrame)

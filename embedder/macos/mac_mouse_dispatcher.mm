@@ -116,6 +116,9 @@ MomoMouseEventKind MomoClassifyMouseEvent(NSEvent* event) {
   if (old != nil && [old respondsToSelector:@selector(momoMouseLeft:)]) {
     [old momoMouseLeft:event];
   }
+  if (target != nil && [target respondsToSelector:@selector(momoMouseEntered:)]) {
+    [target momoMouseEntered:event];
+  }
 }
 
 - (id<MomoMouseEventTarget>)dispatchEvent:(NSEvent*)event {

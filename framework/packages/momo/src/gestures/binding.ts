@@ -7,7 +7,13 @@ import {
   PointerUpEvent, type PointerEvent,
 } from "./events";
 import { HitTestResult } from "./hit_test";
-import { PointerRouter, PointerSignalResolver } from "./pointer_router";
+import { PointerRouter, PointerSignalResolver, type PointerRoute } from "./pointer_router";
+
+/** 可接管指针按下序列的窗口(momo:ui View 的子集)。 */
+export interface PointerCaptureTarget {
+  readonly id: number;
+  setCapture(): boolean;
+}
 
 /** 鼠标跟踪钩子(由渲染层的 MouseTracker 实现)。 */
 export interface MouseTrackerHook {
@@ -34,6 +40,8 @@ export class GestureBinding {
   /** 在视图 viewId(0 = 主窗口)的根做命中测试(由 WidgetsBinding 设置)。 */
   hitTestInView: ((result: HitTestResult, position: Offset, viewId: number) => void) | null = null;
   #viewId = 0;
+  /** 进行中的捕获转交(transferPointerCapture): 目标视图、被认领的指针与接收者。 */
+  #transfer: { viewId: number; pointer: number | null; route: PointerRoute } | null = null;
   /** 鼠标 hover 跟踪(由 WidgetsBinding 设置)。 */
   mouseTracker: MouseTrackerHook | null = null;
 
@@ -61,8 +69,44 @@ export class GestureBinding {
     return result;
   }
 
+  /**
+   * 把进行中的鼠标按下序列转交给窗口 view(view.setCapture()), 并由 route 继续接收它——用于拖动中
+   * 持有按下的窗口即将关闭(如把它的内容并入另一个窗口)时, 让同一次拖动不中断。
+   * 宿主在 view 里补发的按下以及该指针之后的移动、抬起/取消只交给 route(不做命中测试、不进竞技场,
+   * 因此目标窗口里的手势识别器不会把它当成新的拖动);抬起或取消后自动结束。
+   * 返回取消函数;没有可转交的按下序列(按键已松开)时返回 null, route 不会被调用。
+   */
+  transferPointerCapture(view: PointerCaptureTarget, route: PointerRoute): (() => void) | null {
+    if (!view.setCapture()) return null;
+    const transfer = { viewId: view.id, pointer: null as number | null, route };
+    this.#transfer = transfer;
+    return () => {
+      if (this.#transfer === transfer) this.#transfer = null;
+    };
+  }
+
+  /** 属于捕获转交的事件: 交给接收者并返回 true。 */
+  #routeTransfer(event: PointerEvent): boolean {
+    const t = this.#transfer;
+    if (t === null) return false;
+    if (t.pointer === null) {
+      if (!(event instanceof PointerDownEvent) || this.#viewId !== t.viewId) return false;
+      t.pointer = event.pointer;  // 认领: 目标窗口里宿主补发的按下
+    } else if (event.pointer !== t.pointer) {
+      return false;
+    }
+    if (event instanceof PointerUpEvent || event instanceof PointerCancelEvent) this.#transfer = null;
+    try {
+      t.route(event);
+    } catch (e) {
+      reportError(e, "while routing a transferred pointer capture");
+    }
+    return true;
+  }
+
   /** 处理单个指针事件。 */
   handlePointerEvent(event: PointerEvent): void {
+    if (this.#routeTransfer(event)) return;
     let result: HitTestResult | null = null;
     if (event instanceof PointerDownEvent || event instanceof PointerSignalEvent || event instanceof PointerHoverEvent || event instanceof PointerAddedEvent) {
       result = this.hitTest(event.position);
@@ -103,6 +147,7 @@ export class GestureBinding {
   /** 测试用:清空状态。 */
   debugReset(): void {
     this.#viewId = 0;
+    this.#transfer = null;
     this.#hitTests.clear();
     this.pointerRouter.reset();
     this.gestureArena.reset();

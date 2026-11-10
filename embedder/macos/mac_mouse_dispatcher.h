@@ -7,7 +7,8 @@
 // 目标(MomoMouseEventTarget)由上到下排列(z 序), 派发器依次调用 momoHandleMouseEvent:captured:,
 // 第一个返回 YES 的目标"消费"这次事件, 不再交给任何其他目标:
 //   - 按下: 命中测试选出目标并捕获;捕获期间(任一按钮仍按下)的拖拽/抬起/其他按钮都直接交给它。
-//   - 移动(无按钮): 每次命中测试;悬停目标变化时通知旧目标 momoMouseLeft:(momo 据此发指针 remove)。
+//   - 移动(无按钮): 每次命中测试;悬停目标变化时先通知旧目标 momoMouseLeft:(momo 据此发指针 remove),
+//     再通知新目标 momoMouseEntered:。
 //   - 滚动: 触控板手势(phase Began … 惯性结束)锁定首个消费者;普通滚轮每次命中测试。
 //   - 离开窗口: 通知悬停目标 momoMouseLeft:。
 // 目标有两种投递方式: momo 内容视图在 momoHandleMouseEvent 里直接处理;平台视图容器只"认领"
@@ -24,6 +25,9 @@
 @optional
 // 悬停离开本目标(移到其他目标上, 或离开窗口)。
 - (void)momoMouseLeft:(NSEvent*)event;
+// 悬停移到本目标上(在旧目标的 momoMouseLeft: 之后)。悬停与捕获是"指针归属"的唯一依据:
+// 平台视图据此决定原生视图何时认为指针在它里面(见 mac_platform_views.h)。
+- (void)momoMouseEntered:(NSEvent*)event;
 // YES: 事件由 AppKit 原生通路投递(平台视图);NO(默认): 目标已在 momoHandleMouseEvent 中处理。
 - (BOOL)momoDeliversViaAppKit;
 @end
