@@ -41,8 +41,12 @@ export interface MockControl {
   platformViewPointer: { view: number; platformViewId: number; nativeEventId: number; action: number }[];
   /** 以 panel: true 创建的视图。 */
   panelViews: Set<number>;
+  /** 最近一次 createView 的参数。 */
+  lastCreateViewOptions: { resizable?: boolean; panel?: boolean; width: number; height: number } | null;
   /** setTitleBarStyle 的最近一次设置(键为视图 id)。 */
   titleBars: Map<number, { style: string; center: number | null }>;
+  /** setResizeOptions 的最近一次设置(键为视图 id)。 */
+  resizeOptions: Map<number, { resizable?: boolean; border?: number | { left?: number; top?: number; right?: number; bottom?: number }; liveResizeFrameWait?: number }>;
   /** setDragRegions 的最近一次设置(键为视图 id, 扁平的 x,y,w,h)。 */
   dragRegions: Map<number, number[]>;
 }

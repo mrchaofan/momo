@@ -15,6 +15,7 @@
 #include "engine/platform/input_types.h"
 #include "engine/platform/platform_view.h"
 #include "engine/platform/render_surface.h"
+#include "engine/platform/view.h"
 #include "engine/platform/system_cursor.h"
 #include "engine/platform/text_input_connection.h"
 #include "engine/platform/viewport_metrics.h"
@@ -75,6 +76,8 @@ class PlatformWindow {
   // 接管进行中的鼠标按下序列(按下发生在别的窗口): 若仍有按键按住, 在当前指针位置补发一次按下,
   // 之后的拖动与抬起都投递给本窗口(即使按下所在的窗口已关闭), 抬起后自动释放。默认不支持。
   virtual void CapturePointer() {}
+  // 窗口的缩放行为(engine::platform::WindowResizeOptions)。默认不支持(忽略)。
+  virtual void SetResizeOptions(const platform::WindowResizeOptions& options) { (void)options; }
   // 隐藏系统标题栏(内容铺满窗口, 保留窗口控制按钮);traffic_center_y: 按钮中心距顶部(逻辑像素, <= 0 默认)。
   virtual void SetTitleBar(bool hidden, double traffic_center_y) {
     (void)hidden;

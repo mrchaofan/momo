@@ -389,7 +389,7 @@ Status Application::CreateView(engine::platform::ViewId view_id,
   spec.position = options.position;
   spec.panel = options.panel;
   spec.min_size = options.min_size;
-  spec.resizable = true;
+  spec.resizable = options.resizable;
 
   WeakPtr<Application> weak(this);
   WindowController::Callbacks callbacks;

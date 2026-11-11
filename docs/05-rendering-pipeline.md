@@ -72,7 +72,15 @@ CAMetalLayer drawable 包装为 render target)与回退链(GPU 后端创建失�
 
 - `Animator`(ui 线程):`scheduleFrame()` → 向 VsyncSource 请求回调 → vsync 到来时调 JS `onBeginFrame/onDrawFrame` → 收到 LayerTree 后入渲染队列。
 - **背压**:渲染队列深度 1 + 正在绘制 1;若 raster 落后,Animator 跳过 vsync 不再驱动 JS(丢 build 不丢最新画面),与 Flutter pipeline depth 策略一致。
-- **resize**:platform 线程收到尺寸变化 → metrics 投递 ui 线程触发新帧;raster 线程在 AcquireFrame 时以 surface 当前尺寸为准;Windows 上活动 resize 期间 platform 线程阻塞等待该帧 present(消除拉伸)。
+- **resize**:platform 线程收到尺寸变化 → metrics 投递 ui 线程触发新帧;raster 线程在 AcquireFrame 时以 surface 当前尺寸为准。
+  **拖拽缩放(live resize)同步**(macOS,`MacMetalSurface::WaitForFrame`,同 Flutter `FlutterResizeSynchronizer`):窗口尺寸的变化
+  在主线程的 CATransaction 里提交,而 raster 线程异步 present 的帧与之不同步——窗口服务器拿到新尺寸时内容仍是旧帧(被
+  `contentsGravity` 拉伸),直到松手。因此 live resize 期间全部帧改经**主线程呈现队列**(`presentsWithTransaction`);内容视图每次
+  `setFrameSize:` 后先把新尺寸交给引擎,再在主线程等待一帧该尺寸的帧(连同之前排队的帧按序)在当前事务里呈现——新尺寸与新内容、
+  平台视图几何同一事务生效。等待期间以 `EventLoop::RunDueTasksNested` 执行平台线程任务(vsync 请求与回调要经过主线程,否则死锁);
+  上限由应用配置(`view.setResizeOptions({ liveResizeFrameWait })` / `WindowChrome.liveResizeFrameWait`,缺省 100 ms,0 = 不等待),
+  应用更慢时退化为暂时拉伸,不让窗口拖动卡住。软件 surface 尚未同步。Windows 上活动 resize 期间 platform 线程同样
+  阻塞等待该帧 present(消除拉伸)。
 - 首帧特殊路径:`Rasterizer` 支持 `DrawLastLayerTree` 以便窗口显示前预热 shader/上下文。
 
 ## 6. 文本与图片在管线中的位置
@@ -153,7 +161,14 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
     | `MomoPlatformViews` 的容器(`mac_platform_views.mm`) | 只管几何:裁剪、圆角、透明度、z 序;回答 AppKit 的几何命中 | Flutter `FlutterMutatorView` |
 
     原始的鼠标与位置型输入只交给内容视图,**不经 AppKit 投递**;只有窗口装饰(红绿灯、拖动区域)的按下序列与它们
-    自己的跟踪区事件直接交给 AppKit。内容视图不在按下时抢第一响应者(否则点击已聚焦的网页会先失焦再聚焦),
+    自己的跟踪区事件直接交给 AppKit。**系统的边缘缩放区**(可缩放、非全屏窗口内侧的缩放边框,`inSystemResizeZone:`)优先于拖动区域与
+    momo 内容:光标在这里由系统显示为缩放形状,左键按下也先交给 AppKit(它在 `-[NSWindow sendEvent:]` 内跑缩放的跟踪循环);
+    松开后按键已不再按下即说明 AppKit 接管了整个序列,否则照常交给拖动区域或 momo。试探期间命中测试不落到任何平台视图、第一
+    响应者保持不变——光标与点击按同一个判断,看到缩放光标就能缩放(隐藏标题栏的窗口顶部即拖动区域的上边缘)。
+    **缩放行为由应用配置**(`view.setResizeOptions` / 框架的 `WindowChrome`,`engine/platform/view.h` 的 `WindowResizeOptions`):
+    `resizable`(缺省 true,`createView` / `Window` 也可在打开时给出)、`border`(内侧缩放边框,逻辑点,四边或分边,缺省 5;
+    0 = 该边没有内侧边框,应用内容收到全部输入,系统在窗口外侧的缩放区仍可用)、`liveResizeFrameWait`(见 §4 resize)。
+    未给出的字段取缺省值;框架的 `WindowChrome` 不给任何缩放项时不改动窗口。内容视图不在按下时抢第一响应者(否则点击已聚焦的网页会先失焦再聚焦),
     按下由 momo 消费时由框架回送"平台视图 0"再取回。零位移的滚动阶段事件也上报(原生视图需要完整手势)。
     框架回送后,输入路由按事件类型交给原生视图:
     - 按钮/拖拽/抬起、滚动、触控板手势、压力、手写板点:经 AppKit 的正常投递(`MomoMouseRouting

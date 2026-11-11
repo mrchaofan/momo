@@ -34,6 +34,9 @@
 @property(nonatomic, readonly) int64_t momoRoutedPlatformView;  // 0 = 不在投递中
 @end
 
+// momoRoutedPlatformView 的特殊值: 窗口正把事件交给 AppKit, 但不允许落到任何平台视图(试探系统缩放区等)。
+inline constexpr int64_t kNoPlatformView = -1;
+
 @interface MomoPlatformViewInputRouter : NSObject
 
 // views: 本窗口的平台视图(几何);content: momo 内容视图(按下由 momo 消费时取回键盘焦点)。

@@ -422,6 +422,11 @@ void Shell::SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic
   });
 }
 
+void Shell::SetWindowResizeOptions(platform::ViewId view,
+                                   const platform::WindowResizeOptions& options) {
+  PostToDelegate(view, [options](Delegate& d) { d.OnEngineSetResizeOptions(options); });
+}
+
 void Shell::SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects) {
   PostToDelegate(view, [rects = std::move(rects)](Delegate& d) { d.OnEngineSetDragRegions(rects); });
 }

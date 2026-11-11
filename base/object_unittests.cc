@@ -77,6 +77,25 @@ TEST_F(ObjectTest, DeleteLaterWaitsUntilTheCurrentTaskReturns) {
   EXPECT_EQ(weak.get(), nullptr);
 }
 
+// 原生同步等待中嵌套执行任务(如窗口缩放时主线程等新帧): 执行已到期任务, 但不析构对象——
+// 析构推迟到外层安全点。
+TEST_F(ObjectTest, NestedRunExecutesTasksButDefersDeletes) {
+  std::atomic<int> destroyed{0};
+  auto* probe = new Probe(&destroyed);
+  auto runner = loop_->GetTaskRunner();
+  int ran = 0;
+  runner->PostTask([&] {
+    probe->DeleteLater();
+    runner->PostTask([&ran] { ++ran; });
+    // 在任务内部模拟原生嵌套等待。
+    EXPECT_EQ(loop_->RunDueTasksNested(), 1u);
+    EXPECT_EQ(ran, 1);
+    EXPECT_EQ(destroyed.load(), 0) << "nested run must not destroy objects";
+  });
+  loop_->RunUntilIdle();
+  EXPECT_EQ(destroyed.load(), 1) << "destroyed at the outer safe point";
+}
+
 TEST_F(ObjectTest, DeleteLaterIsIdempotent) {
   std::atomic<int> destroyed{0};
   auto* probe = new Probe(&destroyed);

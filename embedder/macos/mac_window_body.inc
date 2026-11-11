@@ -145,6 +145,22 @@
       [super sendEvent:event];
       return;
     }
+    if (event.type == NSEventTypeLeftMouseDown && [content eventInSystemResizeZone:event]) {
+      // 边缘缩放区(光标在这里由系统显示为缩放形状): 先交给 AppKit, 优先于拖动区域与 momo 内容。AppKit 在
+      // -[NSWindow sendEvent:] 内跑缩放的跟踪循环直到松开;是否真的是缩放由它决定——松开后按键已不再按下,
+      // 说明它接管了整个按下序列。否则(不在 AppKit 的缩放区)照常往下, 交给拖动区域或 momo。
+      // 试探期间命中测试不落到任何平台视图(kNoPlatformView), 第一响应者保持不变: AppKit 若不缩放, 会把按下
+      // 投递给命中的视图——不能让原生视图或焦点绕过 momo 的路线。
+      NSResponder* responder = self.firstResponder;
+      const int64_t routed = _routedPlatformView;
+      _routedPlatformView = kNoPlatformView;
+      [super sendEvent:event];
+      _routedPlatformView = routed;
+      if (([NSEvent pressedMouseButtons] & 1) == 0) {
+        return;
+      }
+      if (self.firstResponder != responder) [self makeFirstResponder:responder];
+    }
     if (event.type == NSEventTypeLeftMouseDown && [self inDragRegion:event]) {
       // 拖动/双击由 AppKit 处理, 不进入 momo。
       if (event.clickCount == 2) {
