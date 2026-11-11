@@ -16,8 +16,6 @@ struct Settings {
   bool inspector_wait = false;     // 执行 bundle 前等待调试器连接
   // V8 code cache 目录(冷启动优化;空 = 不缓存)。由 embedder 设为用户缓存目录。
   std::filesystem::path code_cache_dir;
-  // V8 ICU 数据(icudtl.dat)。空 = 使用构建期默认(开发树内的预编译包)。
-  std::filesystem::path icu_data_path;
   // 显示器刷新率(Hz), 平台无 VsyncSource(或视图未绑定)时回退定时器使用。<= 0 = 未知(按 kDefaultRefreshRate)。
   double refresh_rate = 0;
 };

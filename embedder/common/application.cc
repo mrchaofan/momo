@@ -172,7 +172,6 @@ Status Application::LaunchEngine() {
   settings.inspector_port = options_.config.inspector_port;
   settings.inspector_wait = options_.config.inspector_wait;
   AssetResolver resolver(options_.resources_dir);
-  settings.icu_data_path = resolver.IcuDataPath();
   StatusOr<ResolvedAssets> assets = resolver.Resolve(options_.config);
   if (assets.ok()) {
     settings.bundle_path = assets->bundle_path;

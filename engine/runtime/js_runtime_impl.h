@@ -1,6 +1,14 @@
 #pragma once
 
-// JsRuntime 的 V8 实现细节。只能被 engine/runtime 与 engine/ui 的实现文件包含(docs/10 §1)。
+// JsRuntime 的 V8 / Node 实现细节。只能被 engine/runtime 与 engine/ui 的实现文件包含(docs/10 §1)。
+//
+// 一个 JsRuntimeImpl = 一个 Node.js 环境(node::CommonEnvironmentSetup: uv 循环 + isolate + IsolateData +
+// Environment), 运行在 ui 线程, 整个生命周期持有 v8::Locker 并保持 isolate 进入状态。
+//   - 事件循环: NodeBindings 把 libuv 接到 ui 线程(见 node_bindings.h, 对照 Electron)。
+//   - 模块: Node 的 ESM 加载器;momo:* / ext:* 经 module.registerHooks 映射到 node::AddLinkedBinding
+//     注册的原生绑定(node_bootstrap.cc)。入口模块经 uv_run 泵送直到求值完成(或 uv 无事可做)。
+//   - 从 momo 进入 JS(帧、输入、通道回调)直接调用 V8, 之后 DrainMicrotasks: 以 node::CallbackScope
+//     收尾, 按 Node 语义排空 process.nextTick 与 microtask。
 
 #include <filesystem>
 #include <functional>
@@ -17,8 +25,14 @@
 #include "base/task_runner.h"
 #include "v8.h"
 
+namespace node {
+class CommonEnvironmentSetup;
+class Environment;
+}  // namespace node
+
 namespace momo::engine::runtime {
 
+class NodeBindings;
 class Wrappable;
 struct WrapperTypeInfo;
 
@@ -29,33 +43,33 @@ using NativeModuleFactory =
 
 class JsRuntimeImpl {
  public:
-  // task_runner: isolate 归属线程(ui)的 runner, V8 前台任务投递到这里;须在该线程调用。
-  static StatusOr<std::unique_ptr<JsRuntimeImpl>> Create(const std::filesystem::path& icu_data,
-                                                         std::shared_ptr<TaskRunner> task_runner);
+  struct Options {
+    // Node 编译缓存目录(module.enableCompileCache;空 = 不缓存)。
+    std::filesystem::path code_cache_dir;
+  };
+
+  // task_runner: isolate 归属线程(ui)的 runner, uv 事件在这里处理;须在该线程调用。
+  // node_args: 进程级的 Node 选项(如 --inspect=...), 只在进程内第一次创建时生效。
+  static StatusOr<std::unique_ptr<JsRuntimeImpl>> Create(std::shared_ptr<TaskRunner> task_runner,
+                                                         const Options& options,
+                                                         const std::vector<std::string>& node_args);
   ~JsRuntimeImpl();
 
   static JsRuntimeImpl* From(v8::Isolate* isolate);
 
   v8::Isolate* isolate() const { return isolate_; }
   v8::Local<v8::Context> context() const { return context_.Get(isolate_); }
+  node::Environment* env() const { return env_; }
 
-  // V8 code cache 目录(冷启动优化, docs/11 M6): 非空时文件模块的编译结果(字节码)缓存到该目录,
-  // 下次以相同源码(按源码哈希 + V8 版本/flag 标签键控)启动时直接反序列化, 跳过解析与编译。
-  // 缓存在模块首次执行完成后写入(此时已惰性编译的函数也包含在内)。损坏/不匹配的缓存被 V8 拒绝后自动重建。
-  void SetCodeCacheDir(std::filesystem::path dir) { code_cache_dir_ = std::move(dir); }
-  struct CodeCacheStats {
-    int hits = 0;      // 使用缓存编译成功
-    int rejected = 0;  // 缓存存在但被拒绝(版本/源码不匹配, 已重建)
-    int written = 0;
-  };
-  const CodeCacheStats& code_cache_stats() const { return code_cache_stats_; }
-
-  // 注册 `specifier`(如 "momo:ui")对应的原生模块。须在执行导入它的模块之前注册。
+  // 注册 `specifier`(如 "momo:ui")对应的原生模块(node::AddLinkedBinding)。须在执行导入它的模块之前注册。
   void RegisterNativeModule(std::string specifier, NativeModuleFactory factory);
 
-  Status RunModule(std::string_view source, const std::string& url,
+  // 执行 ESM 模块并泵送 uv 循环, 直到求值完成或 uv 无事可做(此时求值继续异步进行, 返回 Ok)。
+  // source 为空时 url 是文件路径;否则 url 是源码的名字, 相对导入基于 base_dir(空 = 当前目录)。
+  Status RunModule(const std::string& url, const std::string* source,
                    const std::filesystem::path& base_dir);
   StatusOr<std::string> EvalToString(std::string_view source, std::string_view url);
+  // 从 momo 进入 JS 之后调用: 按 Node 语义排空 nextTick 与 microtask, 并让 uv poll 线程按新状态等待。
   void DrainMicrotasks();
 
   // 调用 JS 函数(在本 context 中), 异常转为 Status 并记录日志。之后不自动排空 microtask。
@@ -74,39 +88,28 @@ class JsRuntimeImpl {
   size_t live_wrappables() const { return wrappables_.size(); }
 
  private:
-  JsRuntimeImpl() = default;
+  JsRuntimeImpl();
 
-  static v8::MaybeLocal<v8::Module> ResolveModule(v8::Local<v8::Context> context,
-                                                  v8::Local<v8::String> specifier,
-                                                  v8::Local<v8::FixedArray> import_attributes,
-                                                  v8::Local<v8::Module> referrer);
-  static v8::MaybeLocal<v8::Promise> EvaluateSyntheticModule(v8::Local<v8::Context> context,
-                                                             v8::Local<v8::Module> module);
-  static void OnPromiseReject(v8::PromiseRejectMessage message);
+  // node::AddLinkedBinding 的初始化回调(priv 指向 native_factories_ 中的条目)。
+  static void InitLinkedBinding(v8::Local<v8::Object> exports, v8::Local<v8::Value> module,
+                                v8::Local<v8::Context> context, void* priv);
+  // Node preload: 执行 node_bootstrap, 保存宿主对象。
+  void RunBootstrap(v8::Local<v8::Value> process, v8::Local<v8::Value> require,
+                    const std::string& code_cache_dir);
+  Status PromiseToStatus(v8::Local<v8::Promise> promise, std::string_view what);
 
-  v8::MaybeLocal<v8::Module> LoadNativeModule(const std::string& specifier);
-  v8::MaybeLocal<v8::Module> LoadFileModule(const std::filesystem::path& path);
-  v8::MaybeLocal<v8::Module> CompileModule(std::string_view source, const std::string& url);
-  void InstallConsole(v8::Local<v8::Context> context);
-  std::filesystem::path CodeCachePath(std::string_view source) const;
-  void FlushCodeCaches();
-
-  v8::ArrayBuffer::Allocator* allocator_ = nullptr;
+  std::unique_ptr<node::CommonEnvironmentSetup> setup_;
+  std::unique_ptr<v8::Locker> locker_;
   v8::Isolate* isolate_ = nullptr;
+  node::Environment* env_ = nullptr;
   v8::Global<v8::Context> context_;
+  std::unique_ptr<NodeBindings> bindings_;
+  // node_bootstrap 返回的宿主对象: { importModule, flushCompileCache }。
+  v8::Global<v8::Object> host_;
+  bool code_cache_ = false;
 
-  // 模块缓存。key: 原生模块 specifier / 文件模块绝对路径。
+  // 原生模块: specifier → 工厂。std::map 的节点地址稳定, 键的 c_str() 与条目地址交给 Node 长期持有。
   std::map<std::string, NativeModuleFactory> native_factories_;
-  std::map<std::string, v8::Global<v8::Module>> modules_;
-  // 模块 identity hash → 其 url/路径(用于解析相对导入)与 synthetic 导出对象。
-  std::unordered_multimap<int, std::pair<v8::Global<v8::Module>, std::string>> module_urls_;
-  std::unordered_multimap<int, std::pair<v8::Global<v8::Module>, v8::Global<v8::Object>>>
-      synthetic_exports_;
-  std::filesystem::path current_base_dir_;
-  std::filesystem::path code_cache_dir_;
-  CodeCacheStats code_cache_stats_;
-  // 本次编译未命中缓存、待执行后写缓存的模块。
-  std::vector<std::pair<v8::Global<v8::Module>, std::filesystem::path>> pending_code_caches_;
 
   std::unordered_map<const WrapperTypeInfo*, v8::Global<v8::FunctionTemplate>> class_templates_;
   std::unordered_set<Wrappable*> wrappables_;

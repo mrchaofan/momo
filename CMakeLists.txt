@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 # 最低部署 macOS 12(docs/09 §1), 须在 project() 之前设置。
-set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "Minimum macOS version")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "13.5" CACHE STRING "Minimum macOS version (Node 26 / libnode 要求)")
 
 project(momo LANGUAGES C CXX)
 if(APPLE)

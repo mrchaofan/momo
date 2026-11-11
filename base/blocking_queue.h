@@ -3,7 +3,7 @@
 // BlockingQueue<T>: 线程安全的无界 FIFO, 消费方可阻塞等待。header-only, 属于 momo_base。
 //
 // 用途: EventLoop 无法服务的场景下的跨线程消息传递 —— 典型是"当前线程被同步阻塞, 但仍要处理
-// 来自其他线程的消息"(如 V8 Inspector 断点暂停: ui 线程停在 runMessageLoopOnPause 里, 而
+// 来自其他线程的消息"(如调试器断点暂停: ui 线程停在 runMessageLoopOnPause 里, 而
 // EventLoop::Run/RunUntilIdle 不可嵌套)。普通跨线程投递请用 TaskRunner, 不要用本类。
 //
 // 线程约定: 所有方法线程安全, 任意线程调用。生产者与消费者都可以有多个。

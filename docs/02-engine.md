@@ -64,7 +64,7 @@ common, platform → base
 | `JsRuntimeImpl`(`js_runtime_impl.h`) | v8::Isolate + 主 Context;ESM 模块解析(`ResolveModule`);`RegisterNativeModule(specifier, factory)` 注册 `momo:*` / `ext:*` synthetic module;JS 异常转 `Status`;V8 code cache |
 | `Wrappable` + `ClassBuilder<T>` | 把 C++ 对象暴露为 JS 类(类型校验不依赖 RTTI,GC 弱回调释放) |
 | `js_args.h` | 绑定函数的参数解码(`ArgNumber`、`ArgWrapped<T>`…) |
-| `Inspector` / `InspectorServer` | V8 Inspector over WebSocket,`--dev` 时启用,Chrome DevTools 可连 |
+| `NodeBindings` | libuv 循环接到 ui 线程(poll 线程 + `uv_sem`,对照 Electron);`--dev` 时 Node 的 inspector 供 Chrome DevTools 连接 |
 
 消息通道 `MessageChannelHub` 不在 runtime,而在 `common/`(不依赖 V8,platform 服务与扩展共用)。
 

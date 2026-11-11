@@ -67,7 +67,7 @@ main()                                         embedder/macos/main_mac.mm
        ├─ Engine                      (ui)
        │   ├─ Animator → VsyncWaiter  (ui)        帧调度与背压
        │   └─ AppDriver = JsAppDriver (ui)
-       │       ├─ JsRuntime (V8 Isolate + Context)
+       │       ├─ JsRuntime (Node.js 环境: libuv 循环 + V8 Isolate + Context;NodeBindings → uv poll 线程)
        │       └─ UiBindings (momo:ui / momo:services / ext:*)
        └─ Rasterizer                  (raster)
            └─ RenderBackend (Metal / Software)
@@ -83,7 +83,7 @@ main()                                         embedder/macos/main_mac.mm
 - **GPU 上下文只在 raster 线程**，绝不调用 JS。
 - **平台 API 只在 platform 线程**（macOS 的主线程）。
 - 跨线程只靠**投递任务** + **不可变数据**（`DisplayList`、`LayerTree` 以 `shared_ptr` 共享）。帧路径上没有阻塞等待；`PostTaskAndWait` 只在启动和关闭时出现。
-- **回调一律在调用方线程执行。** A 线程把回调交给某个 API，这个回调就只会在 A 线程上被调用；唯一的例外是注册时以 runner 参数显式指定了执行线程（如 `MessageChannelHub::SetNativeHandler`、扩展的 `channel_set_handler`）。系统线程（CVDisplayLink、DwmFlush、inspector 网络线程）和扩展的 worker 线程只负责投递，从不直接调用别人的回调。
+- **回调一律在调用方线程执行。** A 线程把回调交给某个 API，这个回调就只会在 A 线程上被调用；唯一的例外是注册时以 runner 参数显式指定了执行线程（如 `MessageChannelHub::SetNativeHandler`、扩展的 `channel_set_handler`）。系统线程（CVDisplayLink、DwmFlush、uv poll 线程、inspector IO 线程）和扩展的 worker 线程只负责投递，从不直接调用别人的回调。
 - `RenderSurface` 是唯一的例外：它归窗口所有（platform），却被 raster 线程使用。所以解绑时 `Shell::DetachView` 必须与 raster 同步汇合，之后窗口才能销毁。
 
 设计文档：[docs/00-overview.md](docs/00-overview.md)、[docs/08-threading-model.md](docs/08-threading-model.md)。
@@ -265,7 +265,7 @@ Application::Launch() {
 
 Application::LaunchEngine() {
   settings = { bundle/assets/extensions 路径 ← AssetResolver,
-               dev_mode, inspector, icu_data_path,
+               dev_mode, inspector,
                code_cache_dir = ~/Library/Caches/dev.momo.app/v8（非 --dev）,
                refresh_rate = 主显示器刷新率（vsync 回退定时器用） };
   shell_ = Shell::Create(task_runners_, settings, &platform_->services());   // 见 §4.2，会执行 JS bundle
@@ -277,7 +277,7 @@ Application::LaunchEngine() {
 
 "合适的时机创建 JS 环境"在实现中的含义：窗口先 `Show()`（用户立刻看到原生窗口和闪屏底色），然后才创建 Shell；V8 初始化与 bundle 执行在 ui 线程进行，Rasterizer 初始化在 raster 线程**并行**进行。
 
-资源默认布局（`AssetResolver`）：`<Momo.app>/Contents/Resources/{bundle.js, assets/, extensions/, icudtl.dat}`。`--bundle=` / `--assets=` 可覆盖；`--dev` 下 bundle 缺失只告警，以占位驱动启动。
+资源默认布局（`AssetResolver`）：`<Momo.app>/Contents/Resources/{bundle.js, assets/, extensions/}`。`--bundle=` / `--assets=` 可覆盖；`--dev` 下 bundle 缺失只告警，以占位驱动启动。
 
 ### 3.3 生命周期
 
@@ -474,7 +474,7 @@ void Application::Terminate(int code) {                  // 幂等
 ### 3.9 开发模式
 
 - `--dev`：bundle 缺失可以启动；每 500ms 检查 bundle 修改时间，变化即 hot restart（ui 线程销毁 JS 运行时、重新执行 bundle；新 bundle 出错时退回占位驱动，修好后可再次重启）。不保留 JS 状态。
-- `--dev` 同时启用 V8 Inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。
+- `--dev` 同时启用 Node 的 inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。
 - 非 `--dev` 时启用 V8 code cache（`~/Library/Caches/dev.momo.app/v8`）。
 
 设计文档：[docs/01-embedder.md](docs/01-embedder.md)、[docs/03-platform.md](docs/03-platform.md)。
@@ -492,7 +492,7 @@ void Application::Terminate(int code) {                  // 幂等
 | `platform/` | 平台契约（纯接口 + POD），由 embedder 实现 | `render_surface.h`、`vsync_source.h`、`input_types.h`、`text_input_connection.h`、`platform_services.h`、`viewport_metrics.h` |
 | `common/` | 无 V8/Skia 的公共设施 | `settings.h`、`task_runners.h`、`message_channel_hub.h`、`standard_codec.h` |
 | `shell/` | 协调中枢：Shell、Engine、Animator、VsyncWaiter、Rasterizer、RenderBackend、ThreadHost | `shell.cc`、`engine.cc`、`animator.cc`、`rasterizer.cc` |
-| `runtime/` | V8 封装：Isolate/Context、ESM 模块、宿主类绑定、Inspector、code cache | `js_runtime_impl.cc`、`class_builder.h`、`wrappable.h`、`inspector*.cc` |
+| `runtime/` | Node.js 环境（isolate、uv 循环接入 ui 线程）、ESM 入口与 `momo:*` 模块、宿主类绑定 | `js_runtime_impl.cc`、`node_bindings.cc`、`node_bootstrap.cc`、`class_builder.h`、`wrappable.h` |
 | `ui/` | `momo:ui` / `momo:services` / `ext:*` 绑定；`AppDriver` | `window_binding.cc`、`painting_bindings.cc`、`scene_bindings.cc`、`text_bindings.cc`、`image_bindings.cc`、`js_app_driver.cc` |
 | `graphics/` | DisplayList、LayerTree、软件光栅、Metal 光栅（Skia） | `display_list.h`、`layer.h`、`software_rasterizer.cc`、`gpu/metal_rasterizer.mm` |
 | `text/` | 字体集合（系统 + 内嵌 + 回退）、段落排版（SkParagraph） | `font_collection.cc`、`paragraph.cc` |
@@ -671,11 +671,12 @@ Layer（Preroll(ctx) / Paint(ctx)）
 
 raster cache（缓存不变子树为纹理）目前**没有实现**，每帧都完整重放。
 
-### 4.6 runtime：V8 集成
+### 4.6 runtime：V8 与 Node.js 集成
 
-- 每个 Shell 一个 `v8::Isolate` + 一个主 `Context`，只在 ui 线程使用。公共头 `js_runtime.h` 不含任何 V8 类型；V8 细节都在 `JsRuntimeImpl`。
-- **ESM 模块**：`RunMainModule(bundle)` 把 bundle 作为主模块编译执行。`ResolveModule` 支持相对/绝对路径和 `momo:*`、`ext:*` 两类 specifier，后两者是由 `RegisterNativeModule(specifier, factory)` 注册的 **synthetic module**，在被 import 时才调用 factory 填充导出。
-- **Microtask 策略是 explicit**：每个从 C++ 进入 JS 的入口（帧回调、事件、消息回复）结束后，由绑定层调用 `DrainMicrotasks()`。这样 Promise 回调相对帧管线的执行顺序是确定的。
+- 每个 Shell 一个 **Node.js 环境**（libnode：libuv 循环 + `v8::Isolate` + 主 `Context` + `node::Environment`），只在 ui 线程使用。公共头 `js_runtime.h` 不含任何 V8/Node 类型；细节都在 `JsRuntimeImpl`。JS 可用 `node:*`、npm 包和 Node 的定时器/IO。
+- **libuv 跑在 ui 线程**（`NodeBindings`，对照 Electron）：poll 线程只等 `uv_backend_fd`，有事件就向 ui 投递 `UvRunOnce`（`uv_run(NOWAIT)`），两者以 `uv_sem` 交替；uv 回调都在 ui 线程执行。
+- **ESM 模块**：`RunMainModule(bundle)` 经 Node 的 ESM 加载器导入 bundle，并以 `uv_run` 泵送直到求值完成。`momo:*`、`ext:*` 由 `RegisterNativeModule(specifier, factory)` 注册为 Node 的 linked binding，bootstrap 的模块钩子把它们映射成 ESM 模块，被 import 时才调用 factory 填充导出。
+- **从 C++ 进入 JS**（帧回调、事件、消息回复）结束后，由绑定层调用 `DrainMicrotasks()`：一个空的 `node::CallbackScope` 收尾，按 Node 语义排空 `process.nextTick` 与 microtask，并唤醒 poll 线程按新的定时器/IO 状态等待。
 - **宿主类绑定**：C++ 对象继承 `Wrappable`，用 `ClassBuilder<T>` 暴露成 JS 类。`this` 的类型校验不依赖 RTTI；GC 弱回调释放 C++ 对象，运行时销毁时兜底释放剩余的。
 
 ```cpp
@@ -687,7 +688,7 @@ ClassBuilder<JsPaint>(isolate, "Paint", &JsPaint::Construct)
 // ctor 传空 = JS 不能 new（如 Canvas、Picture，只能由原生代码经 NewWrapper<T> 创建）
 ```
 
-- 错误：JS 异常在 C++ 侧收敛为 `Status`（带 JS 栈）并打日志，不会让引擎崩溃；未处理的 Promise rejection 也会记日志。
+- 错误：JS 异常在 C++ 侧收敛为 `Status`（带 JS 栈）并打日志，不会让引擎崩溃；uv 回调里的未捕获异常和未处理的 Promise rejection 打印到 stderr，不退出进程。
 - code cache：非 `--dev` 时，模块编译结果写入缓存目录，下次启动 `kConsumeCodeCache`；被拒绝的缓存会被重写，出错的 bundle 不缓存。
 
 ### 4.7 ui：`momo:*` 绑定与 AppDriver
@@ -761,7 +762,7 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 Shell::Create → ExtensionHost 读 <Resources>/extensions/extensions.manifest
   → dlopen（只加载 manifest 声明、位于应用包内的库）→ momo_ext_init(host_api_version, &ext) 版本握手
   → ext.on_attach(host_api, engine)                                 [platform 线程]
-       register_module("ext:x", setup)   → JS 运行时创建时在 ui 线程安装 synthetic module
+       register_module("ext:x", setup)   → JS 运行时创建时在 ui 线程注册为 Node 的 linked binding
        channel_set_handler("x/y", runner, fn)
   … 运行期：post_task(platform/ui/io/worker_pool)、promise_resolve、texture_update_pixels、get_window_handle …
   → Shell::Shutdown：JS 运行时销毁后 on_detach，排空扩展的 worker，拒绝之后的一切调用（动态库不卸载）
@@ -974,7 +975,7 @@ handlePointerPacket(data: Float64Array, count, dpr) {
 | CMake target | 产物 / 用途 |
 |---|---|
 | `momo_base`、`momo_engine_*`、`momo_embedder_common`、`momo_embedder_macos` | 各层静态库 |
-| `momo_app_mac` | `Momo.app`：`Contents/MacOS/Momo`、`Contents/Resources/{bundle.js, icudtl.dat}`、`Contents/Frameworks/libv8*.dylib`。默认把 `examples/hello_frame/main.js` 打包为 `bundle.js`（CMake 缓存变量 `MOMO_APP_DEFAULT_BUNDLE`） |
+| `momo_app_mac` | `Momo.app`：`Contents/MacOS/Momo`、`Contents/Resources/bundle.js`、`Contents/Frameworks/libnode.*.dylib`(V8 来自 libnode)。默认把 `examples/hello_frame/main.js` 打包为 `bundle.js`（CMake 缓存变量 `MOMO_APP_DEFAULT_BUNDLE`） |
 | `momo_headless` | 无窗口宿主，离屏软件 surface；用于冒烟测试和在真实引擎上跑框架测试 |
 | `momo_ext_sdk_package` | 扩展 SDK 产物 `out/<build>/sdk/{include, lib/cmake/MomoExtSdk, types}`（默认构建；`cmake --install . --component sdk` 安装到任意前缀） |
 | `ext_hello` / `ext_texture` | 示例扩展的动态库（纯 C / C++ 封装各一个） |

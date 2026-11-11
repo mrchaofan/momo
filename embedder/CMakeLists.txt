@@ -53,7 +53,7 @@ if(APPLE)
     MACOSX_BUNDLE_GUI_IDENTIFIER dev.momo.app
     MACOSX_BUNDLE_SHORT_VERSION_STRING 0.0.1)
 
-  # ---- .app 打包(docs/09 §4): Resources/{bundle.js, icudtl.dat}、Frameworks/libv8*.dylib ----
+  # ---- .app 打包(docs/09 §4): Resources/bundle.js、Frameworks/libnode.*.dylib ----
   set(MOMO_APP_DEFAULT_BUNDLE "${PROJECT_SOURCE_DIR}/examples/hello_frame/main.js" CACHE FILEPATH
       "JS bundle packaged as Momo.app/Contents/Resources/bundle.js (empty = none)")
   set(_momo_app_contents "$<TARGET_BUNDLE_CONTENT_DIR:momo_app_mac>")
@@ -66,14 +66,15 @@ if(APPLE)
   endif()
   if(MOMO_HAVE_V8)
     file(GLOB _momo_v8_dylibs "${MOMO_V8_RUNTIME_DIR}/*.dylib")
+    # 先清空: 增量构建中换过运行时(如 V8 dylib → libnode)时, 旧文件不应留在 .app 里。
     add_custom_command(TARGET momo_app_mac POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E rm -rf "${_momo_app_contents}/Frameworks"
+      COMMAND ${CMAKE_COMMAND} -E rm -f "${_momo_app_contents}/Resources/icudtl.dat"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${_momo_app_contents}/Frameworks"
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_momo_v8_dylibs}
               "${_momo_app_contents}/Frameworks"
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MOMO_V8_ICU_DATA}"
-              "${_momo_app_contents}/Resources/icudtl.dat"
-      COMMENT "Packaging V8 runtime into Momo.app")
-    # 运行期从 .app 内加载 V8(构建树内运行时 CMake 另加绝对路径 rpath 作为兜底)。
+      COMMENT "Packaging libnode (V8) into Momo.app")
+    # 运行期从 .app 内加载 libnode(构建树内运行时 CMake 另加绝对路径 rpath 作为兜底)。
     set_property(TARGET momo_app_mac APPEND PROPERTY BUILD_RPATH "@executable_path/../Frameworks")
     set_property(TARGET momo_app_mac APPEND PROPERTY INSTALL_RPATH "@executable_path/../Frameworks")
   endif()
@@ -118,7 +119,7 @@ elseif(WIN32)
   target_compile_definitions(momo_app_win PRIVATE ${_momo_win_defines})
   set_target_properties(momo_app_win PROPERTIES OUTPUT_NAME Momo)
 
-  # ---- 打包(docs/09 §4): exe 同级 {bundle.js, assets/, extensions/, icudtl.dat, V8 DLL} ----
+  # ---- 打包(docs/09 §4): exe 同级 {bundle.js, assets/, extensions/, libnode DLL} ----
   set(MOMO_APP_DEFAULT_BUNDLE "${PROJECT_SOURCE_DIR}/examples/hello_frame/main.js" CACHE FILEPATH
       "JS bundle copied next to Momo.exe as bundle.js (empty = none)")
   if(MOMO_APP_DEFAULT_BUNDLE)
@@ -127,22 +128,16 @@ elseif(WIN32)
               "$<TARGET_FILE_DIR:momo_app_win>/bundle.js"
       COMMENT "Copying default JS bundle next to Momo.exe")
   endif()
-  # V8 运行时: Windows 预编译包尚无来源(docs/09 §2.1), cmake/momo_prebuilt.cmake 目前只在 APPLE 上导出
-  # momo::v8, 因此 Windows 上 MOMO_HAVE_V8 恒为 OFF, 下面的拷贝不会执行。接入 Windows V8 包时约定:
-  #   - MOMO_V8_RUNTIME_DIR 下的 *.dll(component 构建: v8.dll、v8_libbase.dll、v8_libplatform.dll、
-  #     third_party_icu / zlib 等;monolith 静态库则无需拷贝)拷到 exe 同级(DLL 搜索路径首选 exe 目录);
-  #   - MOMO_V8_ICU_DATA(icudtl.dat)拷到 exe 同级(resources_dir = exe 目录, 与 mac 的 Resources 对应)。
+  # libnode: Windows 尚无构建(tools/build_libnode.py 只支持 macOS), cmake/momo_prebuilt.cmake 只在 APPLE 上
+  # 导出 momo::v8, 因此 Windows 上 MOMO_HAVE_V8 恒为 OFF。接入时把 MOMO_V8_RUNTIME_DIR 下的 libnode DLL
+  # 拷到 exe 同级(DLL 搜索路径首选 exe 目录)。
   if(MOMO_HAVE_V8)
     file(GLOB _momo_v8_dlls "${MOMO_V8_RUNTIME_DIR}/*.dll")
     if(_momo_v8_dlls)
       add_custom_command(TARGET momo_app_win POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_momo_v8_dlls} "$<TARGET_FILE_DIR:momo_app_win>"
-        COMMENT "Copying V8 DLLs next to Momo.exe")
+        COMMENT "Copying libnode DLL next to Momo.exe")
     endif()
-    add_custom_command(TARGET momo_app_win POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MOMO_V8_ICU_DATA}"
-              "$<TARGET_FILE_DIR:momo_app_win>/icudtl.dat"
-      COMMENT "Copying icudtl.dat next to Momo.exe")
   endif()
 endif()
 

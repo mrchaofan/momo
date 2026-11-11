@@ -32,7 +32,7 @@
 - [~] MetalBackend ✅(沙箱无 GPU, 真机待验证)+ 软件回退 ✅;AngleGlBackend ⬜(无 ANGLE 预编译包)
 - [x] 输入:PointerData/KeyData 归一化(keycode/扫描码 → HID 全表)、事件打包投递(Float64Array 平铺复用);resize: Mac drawableSize 同步, Windows 同步等帧未做
 - [x] MessageChannelHub + StandardCodec / StandardMethodCodec(JS/C++ 两端, Flutter 字节格式)
-- [x] V8 Inspector(--dev / --inspect-port / --inspect-brk;沙箱禁止绑端口, WebSocket 端点需真机验证)
+- [x] V8 Inspector(--dev / --inspect-port / --inspect-brk);M7 起改用 Node 的 inspector
 - [x] 验收:`examples/bounce`(60fps + 鼠标跟随, 示例已于精简时删除);断点暂停/恢复经进程内会话测试, DevTools 连接需真机验证
 
 ## M3 · 文本与资源(约 3 周)
@@ -74,6 +74,20 @@
 - [~] 打包:.app + DMG(`momo build --dmg`)✅;MSIX、崩溃上报、性能浮层/Perfetto ⬜
 - [x] 多窗口支持(Shell 多视图, macOS;docs/02 §2、docs/06 §2);Windows embedder 未实现
 - [ ] 无障碍(语义树 → UIA/AX)——设计预留,独立立项(未做)
+
+## M7 · 接入 Node.js(参照 Electron `NodeBindings`)
+
+完整嵌入 Node 26 LTS(libnode):JS 可用 `require`、`node:*`、npm 包与 Node 的定时器/IO。libuv 跑在 V8 所在的
+ui 线程:`uv_run(UV_RUN_NOWAIT)` 由 ui 线程执行,独立的 poll 线程只等待 `uv_backend_fd`,两者以 `uv_sem` 轮流
+(Electron `NodeBindings::UvRunOnce` / `EmbedThreadRunner`);入口 JS 经 `node::LoadEnvironment`;UI 事件仍直接调 V8,
+外包 `node::CallbackScope`。
+
+- [x] P0:libnode 预编译(`tools/build_libnode.py`,源码构建);momo 改用 libnode 内置的 V8 14.6;最低 macOS 13.5
+- [x] P1:NodeBindings(uv 循环、poll 线程、`uv_sem`)、Node 平台替换 momo `V8Platform`、`node::Environment`、入口经
+      Node ESM 加载器 + `uv_run` 泵送、UI 事件 `CallbackScope`、`momo:*` / `ext:*` 经 `module.registerHooks`、Node inspector
+      (删除自研 inspector)、Node 编译缓存替换自研 code cache;文档 04/08、ARCHITECTURE
+- [ ] P2:Windows `PollEvents`(IOCP,参照 Electron `node_bindings_win.cc`)与 libnode 的 Windows 构建;`process.exit()` 改为
+      走应用的正常退出流程;Node 的 `AsyncLocalStorage` 上下文贯穿 momo 回调(`CallbackScope` 带 async context)
 
 ## 风险清单(提前盯防)
 
