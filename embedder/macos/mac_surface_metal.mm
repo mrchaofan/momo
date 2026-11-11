@@ -4,6 +4,10 @@
 #import <Metal/Metal.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+
 #include "base/logging.h"
 #include "embedder/macos/mac_platform_views.h"
 
@@ -18,6 +22,65 @@
 
 namespace momo::embedder::macos {
 
+// 主线程呈现队列: raster 线程入队(帧尺寸 + 呈现动作), 主线程按入队顺序执行。平常由 GCD 主队列触发执行;
+// 拖拽缩放时主线程在 WaitForFrame 里直接执行(此时主线程阻塞在 AppKit 的缩放回调中, GCD 任务要等它返回)。
+class MainThreadPresenter : public std::enable_shared_from_this<MainThreadPresenter> {
+ public:
+  // raster 线程。
+  void Post(Size size, std::function<void()> present) {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      queue_.push_back({size, std::move(present)});
+    }
+    cv_.notify_all();
+    std::shared_ptr<MainThreadPresenter> self = shared_from_this();
+    dispatch_async(dispatch_get_main_queue(), ^{
+      self->Drain(nullptr);
+    });
+  }
+
+  // 主线程: 依次执行已入队的呈现。返回是否执行了尺寸为 *target 的帧。
+  bool Drain(const Size* target) {
+    bool matched = false;
+    while (true) {
+      Entry entry;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (queue_.empty()) {
+          break;
+        }
+        entry = std::move(queue_.front());
+        queue_.pop_front();
+      }
+      entry.present();
+      if (target != nullptr && SameSize(entry.size, *target)) {
+        matched = true;
+      }
+    }
+    return matched;
+  }
+
+  // 主线程: 等到队列非空或超时。
+  void WaitForWork(TimeDelta timeout) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    cv_.wait_for(lock, timeout, [this] { return !queue_.empty(); });
+  }
+
+ private:
+  struct Entry {
+    Size size;
+    std::function<void()> present;
+  };
+  static bool SameSize(Size a, Size b) {
+    return static_cast<int>(a.width) == static_cast<int>(b.width) &&
+           static_cast<int>(a.height) == static_cast<int>(b.height);
+  }
+
+  std::mutex mutex_;
+  std::condition_variable cv_;
+  std::deque<Entry> queue_;
+};
+
 StatusOr<std::unique_ptr<MacMetalSurface>> MacMetalSurface::Create(NSView* view) {
   id<MTLDevice> device = MTLCreateSystemDefaultDevice();
   if (device == nil) {
@@ -31,7 +94,11 @@ StatusOr<std::unique_ptr<MacMetalSurface>> MacMetalSurface::Create(NSView* view)
 }
 
 MacMetalSurface::MacMetalSurface(NSView* view, id<MTLDevice> device, id<MTLCommandQueue> queue)
-    : view_(view), device_(device), queue_(queue), software_surface_(view) {
+    : view_(view),
+      device_(device),
+      queue_(queue),
+      software_surface_(view),
+      presenter_(std::make_shared<MainThreadPresenter>()) {
   layer_ = MakeLayer();
   // 主帧放在内容视图最底层的子视图里: 之后加入的平台视图宿主(MomoPlatformViews)按子视图顺序位于其上。
   base_view_ = [[MomoSurfaceBaseView alloc] initWithFrame:view.bounds];
@@ -133,21 +200,22 @@ StatusOr<platform::SurfaceFrame> MacMetalSurface::AcquireFrame(Size physical_siz
     return software_surface_.AcquireFrame(physical_size);
   }
   @autoreleasepool {
-    // 刚退出平台视图合成: 主线程还有待呈现的合成帧时, 本帧也经主线程呈现(保持帧顺序);
-    // 全部呈现完后切回命令缓冲 presentDrawable。
-    const bool via_main = presents_with_transaction_ && pending_main_presents_->load() > 0;
-    if (!via_main) {
-      SetPresentsWithTransaction(false);
-    }
+    // 经主线程呈现: 拖拽缩放期间(与窗口尺寸同一事务), 或刚退出平台视图合成、主线程还有待呈现的合成帧时
+    // (保持帧顺序);其余时候切回命令缓冲 presentDrawable。
+    const bool via_main = live_resizing_.load(std::memory_order_acquire) ||
+                          (presents_with_transaction_ && pending_main_presents_->load() > 0);
+    SetPresentsWithTransaction(via_main);
     MOMO_ASSIGN_OR_RETURN(id<CAMetalDrawable> drawable, NextDrawable(layer_, physical_size));
     platform::SurfaceFrame frame;
     frame.kind = platform::SurfaceKind::kMetal;
     frame.gpu_target = (__bridge void*)drawable;  // 帧内有效: present 闭包持有强引用
     frame.size = {drawable.texture.width * 1.0, drawable.texture.height * 1.0};
     id<MTLCommandQueue> queue = queue_;
+    std::shared_ptr<std::atomic<bool>> presented = has_presented_;
     if (via_main) {
       std::shared_ptr<std::atomic<int>> pending = pending_main_presents_;
-      frame.present = [queue, drawable, pending]() -> bool {
+      std::shared_ptr<MainThreadPresenter> presenter = presenter_;
+      frame.present = [queue, drawable, pending, presenter, physical_size, presented]() -> bool {
         @autoreleasepool {
           id<MTLCommandBuffer> marker = [queue commandBuffer];
           if (marker == nil) {
@@ -157,15 +225,16 @@ StatusOr<platform::SurfaceFrame> MacMetalSurface::AcquireFrame(Size physical_siz
           [marker waitUntilScheduled];  // 之前提交的绘制命令都已调度
         }
         pending->fetch_add(1);
-        dispatch_async(dispatch_get_main_queue(), ^{
-          [drawable present];
+        presenter->Post(physical_size, [drawable, pending, presented] {
+          [drawable present];  // presentsWithTransaction: 随主线程当前事务提交
           pending->fetch_sub(1);
+          presented->store(true, std::memory_order_release);
         });
         return true;
       };
       return frame;
     }
-    frame.present = [queue, drawable]() -> bool {
+    frame.present = [queue, drawable, presented]() -> bool {
       @autoreleasepool {
         id<MTLCommandBuffer> buffer = [queue commandBuffer];
         if (buffer == nil) {
@@ -174,6 +243,7 @@ StatusOr<platform::SurfaceFrame> MacMetalSurface::AcquireFrame(Size physical_siz
         [buffer presentDrawable:drawable];
         [buffer commit];
       }
+      presented->store(true, std::memory_order_release);
       return true;
     };
     return frame;
@@ -241,30 +311,58 @@ StatusOr<platform::CompositionFrame> MacMetalSurface::AcquireCompositionFrame(
 
     MomoPlatformViews* __weak weak_views = platform_views_;
     std::shared_ptr<std::atomic<int>> pending = pending_main_presents_;
-    // present(raster 线程): 后端已等到命令被调度;几何与全部 drawable 在主线程同一事务内生效。
-    frame.present = [weak_views, pending, layout, layers, base, drawables]() -> bool {
+    std::shared_ptr<MainThreadPresenter> presenter = presenter_;
+    std::shared_ptr<std::atomic<bool>> presented = has_presented_;
+    // present(raster 线程): 后端已等到命令被调度;几何与全部 drawable 在主线程同一事务内生效
+    // (拖拽缩放时这个事务嵌套在 AppKit 提交新窗口尺寸的事务里)。
+    frame.present = [weak_views, pending, presenter, presented, physical_size, layout, layers, base,
+                     drawables]() -> bool {
       pending->fetch_add(1);
-      const platform::CompositionLayout layout_copy = layout;
-      const std::vector<CAMetalLayer*> layers_copy = layers;
-      const std::vector<id<CAMetalDrawable>> drawables_copy = drawables;
-      id<CAMetalDrawable> base_drawable = base;
-      dispatch_async(dispatch_get_main_queue(), ^{
+      presenter->Post(physical_size, [weak_views, pending, presented, layout, layers, base, drawables] {
         [CATransaction begin];
         [CATransaction setDisableActions:YES];
         MomoPlatformViews* views = weak_views;
         if (views != nil) {
-          [views applyLayout:layout_copy overlayLayers:layers_copy];
+          [views applyLayout:layout overlayLayers:layers];
         }
-        [base_drawable present];
-        for (id<CAMetalDrawable> d : drawables_copy) {
+        [base present];
+        for (id<CAMetalDrawable> d : drawables) {
           [d present];
         }
         [CATransaction commit];
         pending->fetch_sub(1);
+        presented->store(true, std::memory_order_release);
       });
       return true;
     };
     return frame;
+  }
+}
+
+void MacMetalSurface::SetLiveResizing(bool resizing) {
+  live_resizing_.store(resizing, std::memory_order_release);
+}
+
+bool MacMetalSurface::WaitForFrame(Size physical_size, TimeDelta timeout,
+                                   const std::function<void()>& pump) {
+  if (software_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  const TimePoint deadline = Clock::now() + timeout;
+  while (true) {
+    if (presenter_->Drain(&physical_size)) {
+      return true;
+    }
+    if (Clock::now() >= deadline) {
+      return false;
+    }
+    // vsync 请求、vsync 回调等平台线程任务: 引擎出下一帧要经过它们。
+    pump();
+    if (presenter_->Drain(&physical_size)) {
+      return true;
+    }
+    presenter_->WaitForWork(std::min<TimeDelta>(std::chrono::milliseconds(2),
+                                                std::max<TimeDelta>(deadline - Clock::now(), TimeDelta::zero())));
   }
 }
 

@@ -58,6 +58,11 @@ class EventLoop final : public MessagePump::Delegate, public std::enable_shared_
   // 请求结束(任意线程, 幂等)。
   void Terminate();
 
+  // 在循环线程上的原生同步等待中(如窗口缩放时主线程等待新尺寸的帧)执行一轮已到期任务, 不经 pump。
+  // 视为嵌套循环: 不析构 DeleteLater 对象(推迟到外层安全点), 不做结束清理。返回执行的任务数。仅循环线程,
+  // 且须在 Run 期间(pump 正在服务本循环)。
+  size_t RunDueTasksNested();
+
   void PostTask(Closure task, TimePoint target_time);
   // 由 TaskRunner::ScheduleDeleteLater 调用(经 Object::DeleteLater)。任意线程。
   void ScheduleDeleteLater(Object* object);

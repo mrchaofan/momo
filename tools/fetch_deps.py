@@ -3,9 +3,10 @@
 
 用法:
   python3 tools/fetch_deps.py                 # 当前平台的全部依赖
-  python3 tools/fetch_deps.py skia v8         # 指定依赖
+  python3 tools/fetch_deps.py skia node       # 指定依赖
   python3 tools/fetch_deps.py --platform windows-x64
   python3 tools/fetch_deps.py --mirror DIR    # 离线镜像: 从 DIR/<archive 文件名> 取包, 不联网
+  (锁定文件中带 "build" 的依赖(libnode)由对应脚本从源码构建, 见 tools/build_libnode.py。)
 
 产物:
   third_party/.downloads/<archive>            下载缓存(断点续传, SHA256 校验)
@@ -214,38 +215,7 @@ def safe_extract(archive, kind, staging):
         raise RuntimeError(f"unsupported archive type: {kind}")
 
 
-def homebrew_relocate(root):
-    """Homebrew bottle 的 dylib 使用 @@HOMEBREW_*@@ 占位路径: 改为 @rpath 并 ad-hoc 重签名。"""
-    dylibs = []
-    for dirpath, _, files in os.walk(root):
-        for f in files:
-            p = os.path.join(dirpath, f)
-            if f.endswith(".dylib") and not os.path.islink(p):
-                dylibs.append(p)
-    names = {os.path.basename(p) for p in dylibs}
-    for path in dylibs:
-        base = os.path.basename(path)
-        out = subprocess.run(["otool", "-L", path], check=True, capture_output=True, text=True).stdout
-        args = ["install_name_tool", "-id", f"@rpath/{base}"]
-        for line in out.splitlines()[1:]:
-            dep = line.strip().split(" (")[0]
-            if "@@HOMEBREW" in dep or (os.path.basename(dep) in names and not dep.startswith("@rpath/")):
-                args += ["-change", dep, f"@rpath/{os.path.basename(dep)}"]
-        rpaths = subprocess.run(["otool", "-l", path], check=True, capture_output=True, text=True).stdout
-        lines = rpaths.splitlines()
-        for i, line in enumerate(lines):
-            if "cmd LC_RPATH" in line:
-                rp = lines[i + 2].strip().split("path ", 1)[1].split(" (offset")[0]
-                if "@@HOMEBREW" in rp:
-                    args += ["-delete_rpath", rp]
-        args.append(path)
-        os.chmod(path, 0o755)
-        subprocess.run(args, check=True, capture_output=True)
-        subprocess.run(["codesign", "--force", "--sign", "-", path], check=True, capture_output=True)
-    log(f"relocated {len(dylibs)} dylib(s) to @rpath")
-
-
-POST_EXTRACT = {"homebrew_relocate": homebrew_relocate}
+POST_EXTRACT = {}
 
 
 def install(name, dep, entry, archive, platform_key):
@@ -300,6 +270,13 @@ def main():
         if dep is None:
             log(f"unknown dependency: {name}")
             failed = True
+            continue
+        if dep.get("build"):
+            # 从源码构建的依赖(如 libnode): 交给对应脚本(自带版本戳记, 已安装时跳过)。
+            cmd = [sys.executable, os.path.join(ROOT, dep["build"])] + (["--force"] if args.force else [])
+            if subprocess.run(cmd).returncode != 0:
+                log(f"{name}: FAILED: {dep['build']}")
+                failed = True
             continue
         entry = dep["platforms"].get(args.platform)
         if entry is None:

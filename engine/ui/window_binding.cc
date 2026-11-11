@@ -130,6 +130,45 @@ void SetTitleBarStyle(const Args& a) {
   if (!view->removed) view->impl->client->SetTitleBar(view->id, style == "hidden", center);
 }
 
+// setResizeOptions({ resizable?, border?: number | {left?, top?, right?, bottom?}, liveResizeFrameWait? })
+// 未给出的字段取默认值(platform::WindowResizeOptions)。
+void SetResizeOptions(const Args& a) {
+  ViewBinding* view = ViewOf(a);
+  v8::Isolate* isolate = a.GetIsolate();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  platform::WindowResizeOptions options;
+  if (a.Length() > 0 && a[0]->IsObject()) {
+    v8::Local<v8::Object> o = a[0].As<v8::Object>();
+    auto get = [&](v8::Local<v8::Object> from, const char* key) {
+      v8::Local<v8::Value> v;
+      return from->Get(context, V8String(isolate, key)).ToLocal(&v) ? v : v8::Local<v8::Value>();
+    };
+    auto non_negative = [](double v) { return v > 0 ? v : 0.0; };
+    v8::Local<v8::Value> resizable = get(o, "resizable");
+    if (!resizable.IsEmpty() && resizable->IsBoolean()) options.resizable = resizable->IsTrue();
+    v8::Local<v8::Value> border = get(o, "border");
+    if (!border.IsEmpty() && border->IsNumber()) {
+      const double v = non_negative(border.As<v8::Number>()->Value());
+      options.border_left = options.border_top = options.border_right = options.border_bottom = v;
+    } else if (!border.IsEmpty() && border->IsObject()) {
+      v8::Local<v8::Object> edges = border.As<v8::Object>();
+      auto edge = [&](const char* key, double* out) {
+        v8::Local<v8::Value> v = get(edges, key);
+        if (!v.IsEmpty() && v->IsNumber()) *out = non_negative(v.As<v8::Number>()->Value());
+      };
+      edge("left", &options.border_left);
+      edge("top", &options.border_top);
+      edge("right", &options.border_right);
+      edge("bottom", &options.border_bottom);
+    }
+    v8::Local<v8::Value> wait = get(o, "liveResizeFrameWait");
+    if (!wait.IsEmpty() && wait->IsNumber()) {
+      options.live_resize_frame_wait_ms = non_negative(wait.As<v8::Number>()->Value());
+    }
+  }
+  if (!view->removed) view->impl->client->SetResizeOptions(view->id, options);
+}
+
 // setDragRegions([x, y, w, h, ...])(逻辑像素)
 void SetDragRegions(const Args& a) {
   ViewBinding* view = ViewOf(a);
@@ -195,7 +234,7 @@ void CloseView(const Args& a) {
   if (!view->removed) view->impl->client->CloseView(view->id);
 }
 
-// createView({title?, width, height, minWidth?, minHeight?}) → Promise<View>
+// createView({title?, width, height, minWidth?, minHeight?, x?, y?, panel?, resizable?}) → Promise<View>
 void CreateView(const Args& a) {
   UiBindings::Impl* impl = ImplOf(a);
   v8::Isolate* isolate = a.GetIsolate();
@@ -225,6 +264,11 @@ void CreateView(const Args& a) {
     v8::Local<v8::Value> panel;
     if (o->Get(context, V8String(isolate, "panel")).ToLocal(&panel) && panel->IsBoolean()) {
       options.panel = panel->IsTrue();
+    }
+    v8::Local<v8::Value> resizable;
+    if (o->Get(context, V8String(isolate, "resizable")).ToLocal(&resizable) &&
+        resizable->IsBoolean()) {
+      options.resizable = resizable->IsTrue();
     }
   }
   if (options.size.IsEmpty()) {
@@ -364,6 +408,7 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   fn("setCapture", &SetCapture);
   fn("dispatchPlatformViewPointer", &DispatchPlatformViewPointer);
   fn("setTitleBarStyle", &SetTitleBarStyle);
+  fn("setResizeOptions", &SetResizeOptions);
   fn("setDragRegions", &SetDragRegions);
   fn("setPosition", &SetPosition);
   for (const char* handler : kViewHandlers) {

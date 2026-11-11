@@ -36,7 +36,7 @@
 | OS 主线程(platform) | `NativeMessagePump(platform.native_loop())` | `embedder::Application::Create` |
 | 测试 | `RunUntilIdle()` 手动驱动 | `testing::ScopedTestEventLoop` |
 
-**一轮迭代**:取出此刻已到期任务的快照依次执行(期间新投递的进入下一轮)→ 若栈上无任务(非嵌套),析构所有 DeleteLater 对象(**安全点**)→ 返回下一次唤醒时刻。原生嵌套循环(模态框、live resize)中 pump 重入 DoWork:嵌套层只执行任务、不析构。
+**一轮迭代**:取出此刻已到期任务的快照依次执行(期间新投递的进入下一轮)→ 若栈上无任务(非嵌套),析构所有 DeleteLater 对象(**安全点**)→ 返回下一次唤醒时刻。原生嵌套循环(模态框、live resize)中 pump 重入 DoWork:嵌套层只执行任务、不析构。宿主在原生同步等待里(如拖拽缩放时主线程等新尺寸的帧)可调用 `RunDueTasksNested()` 执行一轮已到期任务,语义相同(不析构、不结束循环)。
 
 **结束**:`Terminate()` 之前已到期的任务全部执行;其余丢弃(闭包在循环线程析构);反复清理 DeleteLater 队列直到为空。结束后 DeleteLater:循环线程上立即析构,他线程上记 ERROR 并泄漏(绝不在错误线程析构)。
 

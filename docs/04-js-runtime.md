@@ -1,16 +1,44 @@
-# 04 · JS 运行时与绑定(V8)
+# 04 · JS 运行时与绑定(V8 / Node.js)
 
 本文定义 `engine/runtime/` 的设计:V8 的集成方式、JS↔C++ 绑定基建、模块系统、消息通道与调试。
 
-## 1. V8 集成
+## 1. V8 与 Node.js 集成
 
-- 每个 `engine::Shell` 一个 `v8::Isolate`,运行在 **ui 线程**,一个主 `v8::Context`。首期一窗一引擎一 isolate;多窗口共享 isolate 留作后续(Context 隔离)。
-- 冷启动优化用 **V8 code cache**(非 `--dev` 时缓存模块编译结果)。原计划的自定义 startup snapshot 未实现:ESM 模块不支持完整 snapshot(docs/11 M6)。
-- Microtask 策略为 explicit:每个宏任务/帧回调结束后由 `JsRuntime::DrainMicrotasks()` 排空,保证与帧管线的相对顺序可控。
-- V8 引入方式见 docs/09 §2.1:当前 macOS 为 Homebrew 预编译的 component 构建(dylib 打包进 `.app/Contents/Frameworks`);pointer compression 开(嵌入方定义 `V8_COMPRESS_POINTERS`、`V8_31BIT_SMIS_ON_64BIT_ARCH`)、sandbox 关。进程级初始化(平台、ICU)在 `runtime/js_runtime_impl.cc` 中只做一次。
-- ui 线程由 `base::Thread` 以 8 MiB 栈创建(macOS 次线程默认 512 KiB 不足以容纳 V8 的栈上限)。
+- 每个 `engine::Shell` 一个 **Node.js 环境**(Node 26 LTS 的 libnode,docs/09 §2.1):`node::CommonEnvironmentSetup`
+  = libuv 循环 + `v8::Isolate` + IsolateData + `node::Environment`,运行在 **ui 线程**,主 Context 即 Node 的主 Context。
+  JS 可以使用 `node:*` 内置模块、npm 包(node_modules)、Node 的定时器与 IO。首期一窗一引擎一 isolate。
+- 进程级初始化 `node::InitializeOncePerProcess` 只做一次(V8 平台、V8、ICU、OpenSSL):不改动 stdio/TTY、不安装
+  Node 的信号处理、不读 `NODE_OPTIONS`。V8 平台即 Node 的 `MultiIsolatePlatform`(后台任务在它的线程池上)。
+  ui 线程整个运行时生命周期持有 `v8::Locker` 并保持 isolate 进入状态。
+- **libuv 接到 ui 线程**(`runtime/node_bindings.{h,cc}`,对照 Electron `shell/common/node_bindings`):
+  ```
+  ui 线程(V8 + momo EventLoop)                 poll 线程 "momo.uv.poll"(uv_thread)
+  StartPolling() → UvRunOnce()                   loop: uv_sem_wait(&embed_sem_)    ← 等 ui 跑完一轮
+  UvRunOnce(): HandleScope + Context::Scope            PollEvents(): poll(uv_backend_fd,
+               uv_run(loop, UV_RUN_NOWAIT)                           uv_backend_timeout)  只等待
+               uv_sem_post(&embed_sem_)  ──────────►   WakeupMainThread(): 投递 UvRunOnce 到 ui
+  ```
+  uv 回调(定时器、IO、V8 前台任务)都在 ui 线程执行,poll 线程只等内核事件;`uv_sem` 保证二者严格交替。
+  `uv_async` 空句柄保持循环存活(否则 poll 线程空转)并用于唤醒。与 Electron 的差异:Electron 给 libuv 打了
+  `uv_loop_interrupt` 补丁,让 ui 线程上新增的定时器/IO 打断 poll 线程;momo 用上游 libuv,改为每次从 momo 进入 JS
+  之后(`DrainMicrotasks`)`uv_async_send` 唤醒 poll 线程(自带合并)。
+- **入口**:`node::LoadEnvironment` 的 preload 中运行 `runtime/node_bootstrap.cc`(可访问 Node 内部模块),它安装模块钩子
+  并返回宿主对象;`RunMainModule` 经 Node 的 ESM 加载器(cascaded loader)导入 bundle,并在 ui 线程 **以 `uv_run(UV_RUN_ONCE)`
+  泵送**直到求值完成(同 Electron `JoinAppCode`):模块图的文件读取、顶层 await 的 Node IO 都在这里完成。保活句柄在泵送期间
+  不计入存活:uv 无事可做时停止泵送,剩下的求值(如顶层 await 等待 momo 的平台通道)继续异步进行。加载/求值错误以
+  Promise 拒绝返回宿主,转成 `Status`(含 JS 栈)。
+- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):直接调用 V8,结束后 `DrainMicrotasks()`——
+  以一个空的 `node::CallbackScope` 收尾,按 Node 语义排空 `process.nextTick` 与 microtask(nextTick 先于 Promise)。
+- **错误**:C++ 调用 JS 的异常收敛为 `Status` 并记日志;uv 回调里的未捕获异常与未处理的 Promise 拒绝由 bootstrap 注册的
+  `process.on('uncaughtException' / 'unhandledRejection')` 打印到 stderr,**不退出进程**(Node 默认会退出)。
+  `process.exit()` 保持 Node 默认行为(退出进程)。
+- 冷启动优化用 Node 的**编译缓存**(`module.enableCompileCache`,非 `--dev` 时启用,入口执行后 flush)。startup snapshot 未实现。
+- V8 配置跟随 Node 默认:pointer compression 关、sandbox 关;ICU 数据编入 libnode。
+- ui 线程由 `base::Thread` 以 8 MiB 栈创建(macOS 次线程默认 512 KiB 不足以容纳 V8 的栈上限);poll 线程 256 KiB。
+- 关闭:停 poll 线程(`embed_closed_` + 信号量 + 唤醒 + join)→ 关闭保活句柄 → 退出 isolate、释放 Locker →
+  `CommonEnvironmentSetup` 析构(FreeEnvironment 运行循环直到句柄关闭、销毁 isolate、关闭 uv 循环)。hot restart 每次新建环境。
 
-**M1 已实现**(`engine/runtime/`):`JsRuntime`(公共头无 V8 类型)、`JsRuntimeImpl`(isolate/context、ESM 主模块与相对路径模块、`momo:*` synthetic module、console、异常转 `Status`(含 JS 栈)、未处理 rejection 日志)、`Wrappable` + `ClassBuilder<T>`(宿主类绑定, 类型校验无需 RTTI, GC 弱回调 + 销毁时兜底释放)、`js_args.h`(参数解码)、`js_tags.h`(V8 指针类型标签分配表)。
+**已实现**(`engine/runtime/`):`JsRuntime`(公共头无 V8 类型)、`JsRuntimeImpl`(Node 环境、ESM 入口、`momo:*` 原生模块、异常转 `Status`(含 JS 栈))、`NodeBindings`(libuv ↔ ui 线程)、`Wrappable` + `ClassBuilder<T>`(宿主类绑定, 类型校验无需 RTTI, GC 弱回调 + 销毁时兜底释放)、`js_args.h`(参数解码)、`js_tags.h`(V8 指针类型标签分配表)。
 
 ## 2. V8 封装的边界
 
@@ -41,10 +69,15 @@ ClassBuilder<JsPaint>(isolate, "Paint", &JsPaint::Construct)   // ctor 传空 = 
 
 ## 4. 模块系统
 
-- 应用代码与框架层均为 **ESM**;`JsRuntimeImpl::ResolveModule` 实现 V8 的 module resolve 回调,支持相对/绝对路径与 `momo:*`、`ext:*`。
-- 内置 synthetic module:`momo:ui`、`momo:services`。
-- 扩展 JS 包以 `ext:<name>` specifier 暴露(如 `ext:sqlite`),其 JS 部分打进应用 bundle,原生部分由 ExtensionHost 注册(docs/07)。
-- 生产模式:单 bundle(esbuild 产物)+ V8 code cache;startup snapshot 尚未实现(docs/11 M6)。
+- 应用代码与框架层均为 **ESM**,由 Node 的 ESM 加载器执行:相对/绝对路径、`node:*`、npm 包(按 Node 规则从 node_modules
+  解析)。momo 应用自己的 `.js` 文件一律按 ESM 处理(不依赖 package.json 的 `type`);node_modules 中的包保持 Node 的格式判定。
+- `momo:*` / `ext:*`:`RegisterNativeModule(specifier, factory)` 以 `node::AddLinkedBinding` 注册原生绑定(import 时才调用 factory
+  填充导出);bootstrap 的 `module.registerHooks` 把这类 specifier 解析为 ESM 模块,内容从 `process._linkedBinding(specifier)` 读出导出。
+- 内置原生模块:`momo:ui`、`momo:services`。扩展 JS 包以 `ext:<name>` 暴露(如 `ext:sqlite`),其 JS 部分打进应用 bundle,
+  原生部分由 ExtensionHost 注册(docs/07)。
+- `RunModuleSource(source, name, base_dir)`(测试与 `--dev` 片段):源码由加载钩子提供,url 带递增查询串(每次都是新模块),
+  相对导入基于 `base_dir`。
+- 生产模式:单 bundle(esbuild 产物)+ Node 编译缓存;startup snapshot 尚未实现(docs/11 M6)。
 
 ## 5. 消息通道(MessageChannelHub)
 
@@ -84,15 +117,15 @@ M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS
 
 ## 7. 调试与诊断
 
-- `--dev` 启动时 `runtime::Inspector` 监听 127.0.0.1 上的 WebSocket(默认 9229, `--inspect-port=`;`--inspect-brk`
-  执行 bundle 前等待调试器),提供 `/json/list`、`/json/version` 发现端点, Chrome DevTools 直连:断点、console、
-  profile。断点暂停时 ui 线程阻塞在 Inspector 自己的消息队列(base/blocking_queue.h)上继续处理 DevTools 消息。
-- `console.*` 绑定到引擎日志(spdlog),带 JS 调用栈。
-- 未捕获异常/未处理 rejection:开发模式红屏(engine 绘制错误层)+ 控制台;生产模式回调 `onError` 通道交由应用上报。
+- `--dev` 启动时启用 **Node 的 inspector**(`--inspect=127.0.0.1:<port>`,默认 9229,`--inspect-port=` 修改;`--inspect-brk`
+  映射为 Node 的 `--inspect-wait`:执行 bundle 前等待调试器连接)。Chrome DevTools / VS Code 直连:断点、console、profile、
+  heap snapshot。inspector 选项是进程级的,以第一次创建运行时时为准;hot restart 后新环境重新监听。
+- `console.*` 是 Node 的 console(写 stdout/stderr,连着 inspector 时同时送到 DevTools)。
+- 未捕获异常/未处理 rejection:打印到 stderr 并继续运行(见 §1)。
 
 ## 8. 热重载(开发体验,M4+)
 
 已实现 hot restart: `--dev` 下 embedder 每 500ms 检查 bundle 修改时间, 变化时 `Shell::RequestHotRestart` →
-ui 线程销毁 JS 运行时并重新执行 bundle(新 bundle 出错时退回占位驱动, 修复后可再次重启)。
+ui 线程销毁 JS 运行时(整个 Node 环境)并新建、重新执行 bundle(新 bundle 出错时退回占位驱动, 修复后可再次重启)。
 
 监听 bundle 文件变化 → 重建 Context(保留 Isolate)→ 重新执行 bundle → 框架层从根重建树。状态保持(类似 Flutter hot reload)不做首期承诺,先做秒级 hot restart。

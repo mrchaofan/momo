@@ -55,6 +55,11 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
       (void)native_event_id;
       (void)action;
     }
+    virtual void SetWindowResizeOptions(platform::ViewId view,
+                                        const platform::WindowResizeOptions& options) {
+      (void)view;
+      (void)options;
+    }
     virtual void SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) {
       (void)view;
       (void)hidden;
@@ -158,6 +163,10 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
                                    uint64_t native_event_id,
                                    platform::PlatformViewPointerAction action) override {
     delegate_.DispatchPlatformViewPointer(view, platform_view_id, native_event_id, action);
+  }
+  void SetResizeOptions(platform::ViewId view,
+                        const platform::WindowResizeOptions& options) override {
+    delegate_.SetWindowResizeOptions(view, options);
   }
   void SetTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) override {
     delegate_.SetWindowTitleBar(view, hidden, traffic_center_y);

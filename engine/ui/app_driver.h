@@ -88,6 +88,11 @@ class WindowClient {
     (void)native_event_id;
     (void)action;
   }
+  // view.setResizeOptions(): 窗口的缩放行为(可否缩放、内侧缩放边框、拖拽缩放时等待新帧的上限)。
+  virtual void SetResizeOptions(ViewId view, const platform::WindowResizeOptions& options) {
+    (void)view;
+    (void)options;
+  }
   // view.setTitleBarStyle(): 隐藏系统标题栏(内容铺满窗口, 保留红绿灯);traffic_center_y 为红绿灯
   // 中心距窗口顶部的逻辑像素(<= 0 用系统默认位置)。
   virtual void SetTitleBar(ViewId view, bool hidden, double traffic_center_y) {

@@ -1,7 +1,8 @@
 // 多视图(多窗口): Window 声明式开关窗口、各窗口独立 MediaQuery/Overlay/渲染、共享状态、GlobalKey 跨窗口迁移。
 import {
   Builder, Center, ColoredBox, Colors, Focus, FocusManager, FocusNode, GlobalKey, MediaQuery, SizedBox, State,
-  StatefulWidget, Text, ViewAnchor, Window, WindowDragArea, WidgetsBinding, type BuildContext, type Widget,
+  StatefulWidget, Text, ViewAnchor, Window, WindowChrome, WindowDragArea, WidgetsBinding, EdgeInsets,
+  type BuildContext, type Widget,
 } from "../packages/momo/src/index";
 import { views } from "momo:ui";
 import { expect, group } from "./harness";
@@ -62,6 +63,40 @@ group("multi-view", () => {
     await t.pump();
     expect.deepEqual(mock.openViews(), []);
     expect.equal(WidgetsBinding.instance.viewHosts.size, 0);
+  }, { mockOnly: true });
+
+  // 缩放行为由应用配置: 不给缩放选项时不改动窗口;给出任一项时, 未给出的取缺省值;相同配置不重复下发。
+  testWidgets("WindowChrome configures the window's resize behaviour", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    mock.resizeOptions.clear();
+    await t.pumpWidget(new WindowChrome({ child: new SizedBox({}) }));
+    await t.pump();
+    expect.isFalse(mock.resizeOptions.has(0), "no resize options given: the window keeps its own behaviour");
+
+    await t.pumpWidget(new WindowChrome({
+      resizeBorder: EdgeInsets.only({ left: 4, right: 4, bottom: 4 }),
+      child: new SizedBox({}),
+    }));
+    await t.pump();
+    expect.deepEqual(mock.resizeOptions.get(0), {
+      resizable: true, border: { left: 4, top: 0, right: 4, bottom: 4 }, liveResizeFrameWait: 100,
+    });
+
+    await t.pumpWidget(new WindowChrome({ resizable: false, liveResizeFrameWait: 0, child: new SizedBox({}) }));
+    await t.pump();
+    expect.deepEqual(mock.resizeOptions.get(0), { resizable: false, border: 5, liveResizeFrameWait: 0 });
+  }, { mockOnly: true });
+
+  testWidgets("Window passes resizable to createView", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    await t.pumpWidget(new ViewAnchor({
+      child: new SizedBox({}),
+      views: [new Window({ width: 200, height: 100, resizable: false, child: new SizedBox({}) })],
+    }));
+    await t.pump();
+    expect.equal(mock.lastCreateViewOptions?.resizable, false);
+    await t.pumpWidget(new SizedBox({}));
+    await t.pump();
   }, { mockOnly: true });
 
   testWidgets("closed windows are not retained by drag-region bookkeeping", async (t, ctx) => {

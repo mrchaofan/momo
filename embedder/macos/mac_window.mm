@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "base/event_loop.h"
 #include "base/logging.h"
 #include "embedder/macos/mac_key_mapping.h"
 #include "embedder/macos/mac_mouse_events.h"
@@ -164,6 +165,8 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
                      action:(PlatformViewPointerAction)action;
 // 当前是否有按钮按下(本窗口的按下序列进行中)。
 @property(nonatomic, readonly) BOOL hasPressedButtons;
+// 事件位于系统的边缘缩放区(光标归系统、按下先交给 AppKit)。
+- (BOOL)eventInSystemResizeZone:(NSEvent*)event;
 - (void)attachOwner:(MacWindow*)owner;
 - (void)detachOwner;
 - (void)setMomoCursor:(NSCursor*)cursor hidden:(BOOL)hidden;
@@ -173,8 +176,6 @@ uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
 - (void)refreshCursor;
 @end
 
-// 窗口内侧的边缘缩放区(点): 其中的光标由系统显示, momo 不覆盖。
-constexpr CGFloat kResizeEdgeZone = 5;
 
 @implementation MomoContentView {
   MacWindow* _owner;             // 非拥有;MacWindow 析构时清空
@@ -277,6 +278,24 @@ constexpr CGFloat kResizeEdgeZone = 5;
   [super setFrameSize:size];
   if (_owner != nullptr && _owner->metal_surface() != nullptr) {
     _owner->metal_surface()->UpdateGeometry();
+    if (self.inLiveResize) {
+      // 拖拽缩放: 等一帧新尺寸的内容, 与新窗口尺寸在同一事务里提交(否则旧帧被拉伸到松手)。
+      _owner->SynchronizeLiveResize();
+    }
+  }
+}
+
+- (void)viewWillStartLiveResize {
+  [super viewWillStartLiveResize];
+  if (_owner != nullptr && _owner->metal_surface() != nullptr) {
+    _owner->metal_surface()->SetLiveResizing(true);
+  }
+}
+
+- (void)viewDidEndLiveResize {
+  [super viewDidEndLiveResize];
+  if (_owner != nullptr && _owner->metal_surface() != nullptr) {
+    _owner->metal_surface()->SetLiveResizing(false);
   }
 }
 
@@ -706,10 +725,27 @@ static SignalPhase GesturePhaseOf(NSEvent* event) {
   [self refreshCursor];
 }
 
-// 指针离窗口边缘的距离(点)。
-- (CGFloat)distanceToEdge:(NSPoint)p {
+// 系统的边缘缩放区(本视图坐标): 可缩放、非全屏的窗口内侧, 各边宽度由应用配置(view.setResizeOptions 的
+// border, 缺省 5 点)。这里的光标归系统(显示为缩放形状), 左键按下也先交给 AppKit(MomoWindow -sendEvent:)——
+// 光标与点击按同一个判断, 用户看到缩放光标就能缩放。
+- (BOOL)inSystemResizeZone:(NSPoint)p {
+  NSWindow* window = self.window;
+  if (_owner == nullptr || window == nil || (window.styleMask & NSWindowStyleMaskResizable) == 0 ||
+      (window.styleMask & NSWindowStyleMaskFullScreen) != 0) {
+    return NO;
+  }
   const NSRect b = self.bounds;
-  return std::min(std::min(p.x, NSWidth(b) - p.x), std::min(p.y, NSHeight(b) - p.y));
+  if (!NSPointInRect(p, b)) {
+    return NO;
+  }
+  const momo::engine::platform::WindowResizeOptions& o = _owner->resize_options();
+  // 本视图不翻转: y 从底边向上。
+  return p.x - NSMinX(b) < o.border_left || NSMaxX(b) - p.x < o.border_right ||
+         p.y - NSMinY(b) < o.border_bottom || NSMaxY(b) - p.y < o.border_top;
+}
+
+- (BOOL)eventInSystemResizeZone:(NSEvent*)event {
+  return [self inSystemResizeZone:[self convertPoint:event.locationInWindow fromView:nil]];
 }
 
 - (void)refreshCursor {
@@ -729,7 +765,7 @@ static SignalPhase GesturePhaseOf(NSEvent* event) {
   }
   if (inside && !hide) {
     const NSPoint p = [self convertPoint:self.window.mouseLocationOutsideOfEventStream fromView:nil];
-    if ([self distanceToEdge:p] < kResizeEdgeZone) {
+    if ([self inSystemResizeZone:p]) {
       return;  // 系统的边缘缩放区: 光标归系统
     }
     [_cursor set];
@@ -990,6 +1026,7 @@ bool SoftwareRenderingForced() {
 MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate) : delegate_(delegate) {
   NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable;
+  resize_options_.resizable = spec.resizable;
   if (spec.resizable) {
     style |= NSWindowStyleMaskResizable;
   }
@@ -1138,6 +1175,16 @@ void MacWindow::SetAlwaysOnTop(bool on) {
                                   : NSWindowCollectionBehaviorDefault;
 }
 
+void MacWindow::SetResizeOptions(const platform::WindowResizeOptions& options) {
+  resize_options_ = options;
+  NSWindowStyleMask style = window_.styleMask;
+  style = options.resizable ? (style | NSWindowStyleMaskResizable) : (style & ~NSWindowStyleMaskResizable);
+  if (style != window_.styleMask) {
+    window_.styleMask = style;
+  }
+  [view_ refreshCursor];
+}
+
 void MacWindow::SetTitleBar(bool hidden, double traffic_center_y) {
   titlebar_hidden_ = hidden;
   traffic_center_y_ = traffic_center_y;
@@ -1244,6 +1291,31 @@ void MacWindow::RemovePlatformView(int64_t view_id) {
 }
 
 void MacWindow::FocusPlatformView(int64_t view_id) { [platform_views_ focusViewId:view_id]; }
+
+void MacWindow::SynchronizeLiveResize() {
+  // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖;应用可关闭等待(0)。
+  const auto wait = std::chrono::duration_cast<TimeDelta>(
+      std::chrono::duration<double, std::milli>(resize_options_.live_resize_frame_wait_ms));
+  if (metal_surface_ == nullptr || resize_waiting_ || wait <= TimeDelta::zero() ||
+      !metal_surface_->has_presented()) {
+    NotifyMetricsChanged();
+    return;
+  }
+  resize_waiting_ = true;
+  // 先把新尺寸交给引擎(windowDidResize 随后的通知会被去重), 再等它画出这个尺寸的帧。
+  NotifyMetricsChanged();
+  EventLoop* loop = EventLoop::Current();
+  const bool got_frame = metal_surface_->WaitForFrame(
+      physical_size(), wait, [loop] {
+        if (loop != nullptr) {
+          loop->RunDueTasksNested();
+        }
+      });
+  if (!got_frame) {
+    MOMO_LOG(VERBOSE) << "Live resize: no frame of the new size within the timeout; content is stretched.";
+  }
+  resize_waiting_ = false;
+}
 
 void MacWindow::NotifyMetricsChanged() {
   const platform::ViewportMetrics current = metrics();

@@ -87,7 +87,7 @@ TEST(SkiaSmokeTest, ParagraphLaysOutMixedScriptText) {
 class V8SmokeTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    ASSERT_TRUE(v8::V8::InitializeICU(MOMO_V8_ICU_DATA)) << "icudtl.dat: " << MOMO_V8_ICU_DATA;
+    ASSERT_TRUE(v8::V8::InitializeICU());  // ICU 数据编入 libnode
     platform_ = v8::platform::NewDefaultPlatform();
     v8::V8::InitializePlatform(platform_.get());
     ASSERT_TRUE(v8::V8::Initialize());

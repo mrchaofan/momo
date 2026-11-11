@@ -291,6 +291,8 @@ export interface WindowOptions {
    * 适合浮动的辅助窗口。仅在打开时生效。缺省 false。
    */
   panel?: boolean;
+  /** 用户能否拖动边框缩放窗口(打开时的初值;之后由 WindowChrome 的 resizable 修改)。缺省 true。 */
+  resizable?: boolean;
   /** 用户点了窗口的关闭按钮: 返回 false 取消关闭。 */
   onCloseRequested?: (() => boolean | void) | null;
   /** 窗口已打开(child 将在下一帧渲染进去)。适合在此把已有子树(GlobalKey)移进新窗口。 */
@@ -330,7 +332,7 @@ export class WindowState extends State<Window> {
   override initState(): void {
     const o = this.widget.opts;
     WidgetsBinding.instance.addViewsListener(this.#onViewsChanged);
-    createView({ title: o.title, width: o.width, height: o.height, minWidth: o.minWidth, minHeight: o.minHeight, x: o.x, y: o.y, panel: o.panel }).then(
+    createView({ title: o.title, width: o.width, height: o.height, minWidth: o.minWidth, minHeight: o.minHeight, x: o.x, y: o.y, panel: o.panel, resizable: o.resizable }).then(
       (view) => {
         if (this.#disposed) {
           view.close();  // 打开期间已被移除

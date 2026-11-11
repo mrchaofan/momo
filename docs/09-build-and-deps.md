@@ -2,7 +2,7 @@
 
 ## 1. 工具链
 
-- CMake ≥ 3.24 + Ninja;Windows: clang-cl(与 Skia/V8 预编译产物 ABI 匹配性最好)或 MSVC;macOS: Xcode clang,最低部署 macOS 12。
+- CMake ≥ 3.24 + Ninja;Windows: clang-cl(与 Skia/V8 预编译产物 ABI 匹配性最好)或 MSVC;macOS: Xcode clang,最低部署 macOS 13.5(Node 26 / libnode 的要求)。
 - C++20;全局 `-fno-exceptions -fno-rtti`(MSVC `/EHs-c- /GR-`),warning-as-error。
 - 尚未提供 `CMakePresets.json` 与 CI(规划:`win-x64-*`、`mac-arm64-*`、`headless-test`),目前直接用 `cmake -S . -B out/debug -G Ninja`。
 
@@ -27,22 +27,26 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
 | 依赖 | 版本 | 来源 | 形态 | 备注 |
 |---|---|---|---|---|
 | Skia | m144-e2e6623374-4 | JetBrains skia-pack release | 静态库(skia、skparagraph、skshaper、skunicode_icu、harfbuzz、icu…) | 系统 libc++(`std::__1`);ICU 符号带 `_skiko` 后缀, 不与 V8 的 ICU 冲突;含 Metal/GL 后端 |
-| V8 | 15.8.62.9 | Homebrew bottle(ghcr.io) | component 构建: `libv8*.dylib` 等 10 个 dylib + `icudtl.dat` | `use_custom_libcxx=false`(系统 libc++, 与我们 ABI 一致);pointer compression 开、sandbox 关 → 嵌入方需定义 `V8_COMPRESS_POINTERS`、`V8_31BIT_SMIS_ON_64BIT_ARCH` |
+| libnode(含 V8) | Node.js 26.13.0 LTS(V8 14.6.202.34、libuv 1.52.1、ICU 78) | 源码构建(`tools/build_libnode.py`;Node 官方不发布 libnode) | 单个 `libnode.147.dylib`(约 137 MB)+ 头文件 `include/node/{node.h, uv.h, v8*.h, v8-inspector*.h, libplatform/}` | 系统 libc++;Node 默认配置:pointer compression 关、sandbox 关(与 Node 原生插件 ABI 一致),嵌入方只需定义 `V8_PROMISE_INTERNAL_FIELD_COUNT=1`;ICU 完整数据编入二进制(无 `icudtl.dat`) |
 
 与原规划的差异与已知限制:
 
-- **V8 是 dylib 而非 monolith 静态库**。`fetch_deps.py` 解压后把 install name 改为 `@rpath/...` 并 ad-hoc 重签名;打包 `.app` 时需把 dylib 拷进 `Contents/Frameworks`、`icudtl.dat` 拷进 `Contents/Resources`(M1 接入 runtime 时实现)。
-- **V8 dylib 要求 macOS ≥ 13**,高于项目的部署目标 12(链接时有警告)。要么把最低系统提到 13,要么换自建的 V8 包。
-- **V8 不能用于 ASan/TSan 构建**:包内 partition_alloc 的 malloc shim 与 sanitizer 冲突。sanitizer 构建中 `momo::v8` 不可用(`cmake/momo_prebuilt.cmake` 自动关闭)。
-- Windows:Skia 已锁定 `windows-x64` 包;V8 尚无 Windows 预编译来源(需自建 CI 产出)。
+- **V8 来自 libnode,不另带一份**。嵌入 Node(docs/04 §1)要求 isolate 由 Node 自带的 V8 创建,所以 `momo::v8` 直接指向
+  libnode 的头文件与 dylib。`build_libnode.py` 校验源码包 SHA256 → `configure --shared --without-npm --ninja` → `ninja libnode`
+  → 安装头文件(Node 的 `tools/install.py --headers-only`,另补 V8 inspector 头)与 dylib(install name 改为 `@rpath/...`,
+  ad-hoc 重签名)→ 写戳记;已安装且版本/参数一致时跳过。首次构建约 20~40 分钟,需要 Python ≥ 3.10(Node 的 configure 要求,
+  脚本会在 PATH 与 uv 管理的解释器中查找)。打包 `.app` 时 dylib 拷进 `Contents/Frameworks`。
+- **最低 macOS 13.5**:Node 26 的构建目标,项目部署目标随之提高。
+- **libnode 不用于 ASan/TSan 构建**(未以 sanitizer 构建):sanitizer 构建中 `momo::v8` 不可用(`cmake/momo_prebuilt.cmake` 自动关闭)。
+- Windows:Skia 已锁定 `windows-x64` 包;libnode 尚未在 Windows 上构建(`build_libnode.py` 目前只支持 macOS)。
 
 ### 2.2 获取与接入
 
 ```bash
-python3 tools/fetch_deps.py            # 当前平台全部依赖 → third_party/prebuilt/{skia,v8}
+python3 tools/fetch_deps.py            # 当前平台全部依赖 → third_party/prebuilt/{skia,node}(node 从源码构建)
 ```
 
-下载器按块并行发 Range 请求(很多代理对单连接限速),支持断点续传,并做 SHA256 校验;解压前检查路径穿越,先解到全新空目录再整体替换。`cmake/momo_prebuilt.cmake` 根据 `third_party/prebuilt/<name>/.momo_dep.json` 戳记导出 `momo::skia`、`momo::v8`;缺包时只提示、不报错(`-DMOMO_REQUIRE_PREBUILT=ON` 时缺包即报错)。接入是否正确由 `momo_thirdparty_smoketest` 验证:Skia 光栅绘制与段落排版、V8 执行脚本与 Intl。
+下载器按块并行发 Range 请求(很多代理对单连接限速),支持断点续传,并做 SHA256 校验;解压前检查路径穿越,先解到全新空目录再整体替换。`cmake/momo_prebuilt.cmake` 根据 `third_party/prebuilt/<name>/.momo_dep.json` 戳记导出 `momo::skia`、`momo::v8`(指向 libnode);缺包时只提示、不报错(`-DMOMO_REQUIRE_PREBUILT=ON` 时缺包即报错)。接入是否正确由 `momo_thirdparty_smoketest` 验证:Skia 光栅绘制与段落排版、V8 执行脚本与 Intl。
 
 ## 3. 目标组织
 

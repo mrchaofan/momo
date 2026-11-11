@@ -64,6 +64,9 @@ class Shell final : public Object, private Engine::Delegate {
       (void)native_event_id;
       (void)action;
     }
+    virtual void OnEngineSetResizeOptions(const platform::WindowResizeOptions& options) {
+      (void)options;
+    }
     virtual void OnEngineSetTitleBar(bool hidden, double traffic_center_y) {
       (void)hidden;
       (void)traffic_center_y;
@@ -180,6 +183,8 @@ class Shell final : public Object, private Engine::Delegate {
                                    uint64_t native_event_id,
                                    platform::PlatformViewPointerAction action) override;
   void SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) override;
+  void SetWindowResizeOptions(platform::ViewId view,
+                              const platform::WindowResizeOptions& options) override;
   void SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects) override;
   void SetWindowPosition(platform::ViewId view, Point top_left) override;
   // 主窗口(视图 0)的兼容入口。

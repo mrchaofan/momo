@@ -10,9 +10,11 @@
 //     点击 momo 区域时内容视图取回第一响应者;平台视图获得焦点时经 delegate 通知引擎。
 // 线程约定: platform(主)线程;surface() 由 raster 线程使用(render_surface.h)。
 
+#include <chrono>
 #include <memory>
 #include <vector>
 
+#include "base/time.h"
 #include "embedder/common/engine_platform.h"
 #include "embedder/common/platform_window.h"
 
@@ -53,6 +55,8 @@ class MacWindow final : public PlatformWindow {
   void Activate() override;
   void CapturePointer() override;
   void SetTitleBar(bool hidden, double traffic_center_y) override;
+  void SetResizeOptions(const platform::WindowResizeOptions& options) override;
+  const platform::WindowResizeOptions& resize_options() const { return resize_options_; }
   void SetDragRegions(const std::vector<Rect>& rects) override;
   Rect screen_frame() const override;
   void SetPosition(Point top_left) override;
@@ -73,6 +77,10 @@ class MacWindow final : public PlatformWindow {
   MomoPlatformViews* platform_views() const { return platform_views_; }
   MomoPlatformViewInputRouter* input_router() const { return input_router_; }
   void NotifyMetricsChanged();
+  // 拖拽缩放中视图尺寸刚变化(platform 线程): 通知引擎新尺寸, 并等待一帧该尺寸的内容与新窗口尺寸同一事务提交
+  // (同 Flutter FlutterResizeSynchronizer)。等待上限由应用配置(WindowResizeOptions::live_resize_frame_wait_ms,
+  // 0 = 不等待), 超时则暂时拉伸旧内容。
+  void SynchronizeLiveResize();
 
  private:
   WindowDelegate* delegate_;
@@ -89,6 +97,9 @@ class MacWindow final : public PlatformWindow {
   MacMetalSurface* metal_surface_ = nullptr;  // 指向 surface_(若为 Metal)
   std::unique_ptr<MacTextInput> text_input_;
   platform::ViewportMetrics last_metrics_;
+  bool resize_waiting_ = false;
+  // 缩放行为(view.setResizeOptions;resizable 由 WindowSpec 初始化)。
+  platform::WindowResizeOptions resize_options_;
 };
 
 }  // namespace momo::embedder::macos

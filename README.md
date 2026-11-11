@@ -243,7 +243,8 @@ window.scheduleFrame();
 
 ## 调试
 
-- **Chrome DevTools**：`--dev` 启动时引擎在 `127.0.0.1:9229` 开启 V8 Inspector，启动日志会打印 DevTools 地址；也可以在 `chrome://inspect` 中添加 `localhost:9229`。支持断点、单步、console、性能分析。`--inspect-brk` 让引擎在执行 bundle 前等待调试器连接；`--inspect-port=<n>` 换端口。
+- **Chrome DevTools**：`--dev` 启动时引擎在 `127.0.0.1:9229` 开启 Node 的 inspector，启动日志（stderr）会打印 `Debugger listening on ws://…`；也可以在 `chrome://inspect` 中添加 `localhost:9229`。支持断点、单步、console、性能分析、堆快照。`--inspect-brk` 让引擎在执行 bundle 前等待调试器连接；`--inspect-port=<n>` 换端口。
+- **Node.js API**：JS 运行在嵌入的 Node.js 26 环境中，可以直接 `import` `node:fs`、`node:net`、`node:child_process` 等内置模块和 node_modules 里的 npm 包，`setTimeout`、`process.nextTick` 按 Node 语义工作（docs/04 §1）。
 - **日志**：`console.log/warn/error` 写入引擎日志，从终端启动 `Momo.app/Contents/MacOS/Momo` 即可看到；连上 DevTools 时也会出现在 DevTools 控制台（含调用栈）。
 - **异常**：build 中抛出的异常会让对应子树显示为 `ErrorWidget`；布局、指针/键盘事件处理中的异常会被报告并跳过。都不会让应用崩溃。
 - **软件渲染**：`MOMO_SOFTWARE_RENDERING=1` 强制使用 CPU 光栅（排查 GPU 相关问题）。没有可用的 Metal 设备时也会自动回退到软件渲染。
@@ -276,10 +277,9 @@ node tools/momo-cli/momo.mjs build my-app --out=out/apps --minify --dmg
 ```
 MyApp.app/Contents/
 ├── MacOS/Momo                   # 运行时可执行文件
-├── Frameworks/libv8*.dylib
+├── Frameworks/libnode.*.dylib     # Node.js(含 V8)
 └── Resources/
     ├── bundle.js                # 你的应用
-    ├── icudtl.dat
     ├── assets/                  # 来自 my-app/assets
     └── extensions/              # extensions.manifest + 原生扩展动态库
 ```

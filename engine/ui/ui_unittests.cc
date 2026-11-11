@@ -34,6 +34,10 @@ class FakeWindowClient final : public WindowClient {
     create_requests.emplace_back(request, options);
   }
   void CloseView(ViewId view) override { closed.push_back(view); }
+  void SetResizeOptions(ViewId, const platform::WindowResizeOptions& options) override {
+    resize_options.push_back(options);
+  }
+  std::vector<platform::WindowResizeOptions> resize_options;
   void DispatchPlatformViewPointer(ViewId view, int64_t platform_view_id, uint64_t native_event_id,
                                    platform::PlatformViewPointerAction action) override {
     platform_view_pointer.push_back({view, platform_view_id, native_event_id, action});
@@ -297,6 +301,27 @@ TEST_F(UiBindingsTest, HostObjectsAreCollected) {
 
 namespace momo::engine::ui {
 namespace {
+
+// view.setResizeOptions: 未给出的字段取默认值;border 可为数字(四边)或分边对象;负数按 0。
+TEST_F(UiBindingsTest, ResizeOptionsAreParsedWithDefaults) {
+  ASSERT_TRUE(Run("import { window } from 'momo:ui'; globalThis.window = window;").ok());
+  Eval("window.setResizeOptions({});");
+  Eval("window.setResizeOptions({ resizable: false, border: 3, liveResizeFrameWait: 0 });");
+  Eval("window.setResizeOptions({ border: { top: 0, left: 8, bottom: -2 } });");
+  ASSERT_EQ(client_.resize_options.size(), 3u);
+  const platform::WindowResizeOptions defaults;
+  EXPECT_TRUE(client_.resize_options[0].resizable);
+  EXPECT_EQ(client_.resize_options[0].border_top, defaults.border_top);
+  EXPECT_EQ(client_.resize_options[0].live_resize_frame_wait_ms, defaults.live_resize_frame_wait_ms);
+  EXPECT_FALSE(client_.resize_options[1].resizable);
+  EXPECT_EQ(client_.resize_options[1].border_left, 3);
+  EXPECT_EQ(client_.resize_options[1].border_bottom, 3);
+  EXPECT_EQ(client_.resize_options[1].live_resize_frame_wait_ms, 0);
+  EXPECT_EQ(client_.resize_options[2].border_top, 0);
+  EXPECT_EQ(client_.resize_options[2].border_left, 8);
+  EXPECT_EQ(client_.resize_options[2].border_bottom, 0) << "negative clamps to 0";
+  EXPECT_EQ(client_.resize_options[2].border_right, defaults.border_right) << "missing edge keeps the default";
+}
 
 // 平台视图输入(docs/05 §9): 指针包带原生事件 id 与滚动阶段;框架的处置经 dispatchPlatformViewPointer 回到宿主。
 TEST_F(UiBindingsTest, NativeEventIdsRoundTripToPlatformViews) {

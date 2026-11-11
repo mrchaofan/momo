@@ -55,6 +55,8 @@ const control: MockControl = {
   platformViewPointer: [],
   panelViews: new Set<number>(),
   titleBars: new Map<number, { style: string; center: number | null }>(),
+  resizeOptions: new Map<number, ResizeOptions>(),
+  lastCreateViewOptions: null,
   dragRegions: new Map<number, number[]>(),
 };
 export const __mock: MockControl = control;
@@ -482,6 +484,12 @@ export class SceneBuilder {
 
 export const POINTER_DATA_STRIDE = 17;
 
+export interface ResizeOptions {
+  resizable?: boolean;
+  border?: number | { left?: number; top?: number; right?: number; bottom?: number };
+  liveResizeFrameWait?: number;
+}
+
 export interface KeyData {
   type: "down" | "up" | "repeat"; timeStampUs: number; physicalKey: number; logicalKey: number; character: string; modifiers: number;
 }
@@ -508,6 +516,7 @@ interface MockView {
   setCapture(): boolean;
   dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void;
   setTitleBarStyle(style: "default" | "hidden", center?: number): void;
+  setResizeOptions(options: ResizeOptions): void;
   setDragRegions(rects: readonly number[]): void;
   screenFrame: { x: number; y: number; width: number; height: number };
   onFrameChanged: (() => void) | null;
@@ -552,6 +561,7 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
     setMinSize(): void {},
     setAlwaysOnTop(on: boolean): void { control.alwaysOnTop.set(id, on); },
     setTitleBarStyle(style: "default" | "hidden", center?: number): void { control.titleBars.set(id, { style, center: center ?? null }); },
+    setResizeOptions(options: ResizeOptions): void { control.resizeOptions.set(id, options); },
     setDragRegions(rects: readonly number[]): void { control.dragRegions.set(id, [...rects]); },
     screenFrame: { x: 0, y: 0, width: width / dpr, height: height / dpr },
     onFrameChanged: null,
@@ -599,7 +609,8 @@ export const window = win;
 export const views: ReadonlyMap<number, MockView> = viewMap;
 
 /** 宿主异步创建窗口: 先加入 views 并通知 onViewsChanged, 再解析 Promise(与真实引擎顺序一致)。 */
-export function createView(o: { title?: string; width: number; height: number; x?: number; y?: number; panel?: boolean }): Promise<MockView> {
+export function createView(o: { title?: string; width: number; height: number; x?: number; y?: number; panel?: boolean; resizable?: boolean }): Promise<MockView> {
+  control.lastCreateViewOptions = { ...o };
   return new Promise((resolve, reject) => {
     void Promise.resolve().then(() => {
       if (control.failNextCreateView) {

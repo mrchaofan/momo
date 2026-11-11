@@ -62,20 +62,14 @@ target_link_libraries(momo_engine_extension PRIVATE ${CMAKE_DL_LIBS})
 # sanitizer 构建没有 V8(docs/09 §2.1): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)。
 if(MOMO_HAVE_V8)
   add_library(momo_engine_runtime STATIC
-    runtime/inspector.cc
-    runtime/inspector_server.cc
-    runtime/inspector_wire.cc
     runtime/js_args.cc
     runtime/js_runtime.cc
     runtime/js_runtime_impl.cc
-    runtime/v8_platform.cc
+    runtime/node_bindings.cc
+    runtime/node_bindings_posix.cc
+    runtime/node_bootstrap.cc
     runtime/wrappable.cc)
   target_link_libraries(momo_engine_runtime PUBLIC momo_base momo::v8)
-  if(WIN32)
-    target_link_libraries(momo_engine_runtime PUBLIC ws2_32)  # Inspector 的 Winsock
-  endif()
-  # 构建树内的 ICU 数据(打包产物由宿主传入 Resources/icudtl.dat)。
-  target_compile_definitions(momo_engine_runtime PRIVATE MOMO_V8_ICU_DATA="${MOMO_V8_ICU_DATA}")
 
   add_library(momo_engine_ui STATIC
     ui/extension_bindings.cc
@@ -125,7 +119,7 @@ if(MOMO_BUILD_TESTS)
     shell/shell_unittests.cc
     shell/thread_host_unittests.cc)
   if(MOMO_HAVE_V8)
-    target_sources(momo_engine_unittests PRIVATE runtime/inspector_unittests.cc
+    target_sources(momo_engine_unittests PRIVATE
       runtime/runtime_unittests.cc ui/ui_unittests.cc extension/extension_unittests.cc)
     # 端到端加载真实的示例扩展动态库(extensions/examples, 只依赖 C ABI)。
     add_dependencies(momo_engine_unittests ext_hello ext_texture)

@@ -199,6 +199,15 @@ size_t EventLoop::RunUntilIdle() {
   return tasks_run;
 }
 
+size_t EventLoop::RunDueTasksNested() {
+  MOMO_DCHECK(RunsTasksOnCurrentThread()) << "EventLoop iterated off its thread";
+  size_t tasks_run = 0;
+  ++task_depth_;  // 嵌套: RunIteration 不在这里析构对象、不结束循环
+  RunIteration(&tasks_run);
+  --task_depth_;
+  return tasks_run;
+}
+
 TimePoint EventLoop::DoWork() {
   size_t ignored = 0;
   RunIteration(&ignored);

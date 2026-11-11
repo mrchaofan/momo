@@ -7,9 +7,9 @@
 //   --assets=<dir>      资源目录(缺省: <resources>/assets)
 //   --title=<text>      窗口标题
 //   --width=<px> --height=<px>  初始窗口逻辑尺寸
-//   --dev               开发模式: 开 V8 Inspector(默认端口 9229)、bundle 变化时 hot restart、
+//   --dev               开发模式: 开 Node inspector(默认端口 9229)、bundle 变化时 hot restart、
 //                       缺少 bundle 时以空引擎启动而非报错
-//   --inspect-port=<n>  Inspector 端口(0 = 系统分配;-1 = 不启动 Inspector)
+//   --inspect-port=<n>  inspector 端口(0 = 系统分配;-1 = 不启动 inspector)
 //   --inspect-brk       执行 bundle 前等待调试器连接(隐含 --dev)
 
 #include <filesystem>

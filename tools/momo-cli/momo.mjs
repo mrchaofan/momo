@@ -279,7 +279,7 @@ function verify({ positional, flags }) {
   const engineDeps = (() => {
     if (process.platform !== "darwin") return [];
     const out = execFileSync("otool", ["-L", library], { encoding: "utf8" });
-    return out.split("\n").filter((l) => /libv8|momo_engine|libskia/.test(l));
+    return out.split("\n").filter((l) => /libv8|libnode|momo_engine|libskia/.test(l));
   })();
   if (engineDeps.length) problems.push(`links engine-internal libraries (must use the C ABI only): ${engineDeps.join(", ")}`);
   if (flags.package) {

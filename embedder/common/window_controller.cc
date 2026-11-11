@@ -155,6 +155,12 @@ void WindowController::OnEngineSetAlwaysOnTop(bool on) {
   }
 }
 
+void WindowController::OnEngineSetResizeOptions(const platform::WindowResizeOptions& options) {
+  if (window_) {
+    window_->SetResizeOptions(options);
+  }
+}
+
 void WindowController::OnEngineSetTitleBar(bool hidden, double traffic_center_y) {
   if (window_) {
     window_->SetTitleBar(hidden, traffic_center_y);

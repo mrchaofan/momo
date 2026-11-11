@@ -366,6 +366,19 @@ declare module "momo:ui" {
     setTitleBarStyle(style: "default" | "hidden", trafficLightsCenterY?: number): void;
     /** 可拖动窗口的区域: [x, y, width, height, ...](逻辑像素, 左上原点);在其中拖动移动窗口, 双击缩放。 */
     setDragRegions(rects: readonly number[]): void;
+    /**
+     * 窗口的缩放行为。未给出的字段取默认值(即常规桌面窗口的行为):
+     *   resizable(true): 用户能否拖动边框缩放窗口。
+     *   border(5): 窗口内侧的系统缩放边框(逻辑点;数字为四边相同, 或分别给出 left/top/right/bottom)。在这里光标
+     *     显示为缩放形状、左键按下交给系统缩放, 优先于拖动区域与应用内容;0 = 该边没有内侧边框(应用内容收到这里的
+     *     全部输入, 系统在窗口外侧的缩放区仍可用)。
+     *   liveResizeFrameWait(100): 拖拽缩放时等待一帧新尺寸内容的上限(毫秒);0 = 不等待(松手前内容按旧帧拉伸)。
+     */
+    setResizeOptions(options: {
+      resizable?: boolean;
+      border?: number | { left?: number; top?: number; right?: number; bottom?: number };
+      liveResizeFrameWait?: number;
+    }): void;
     /** 移动窗口, 使内容区左上角位于屏幕位置 (x, y)(逻辑点, 主屏左上原点)。 */
     setPosition(x: number, y: number): void;
   }
@@ -390,7 +403,7 @@ declare module "momo:ui" {
    * panel: 面板(同 Electron 的 type: 'panel';macOS 为 NSPanel + NonactivatingPanel)——可成为 key window
    * 接收键盘, 但不成为 main window, 聚焦它也不激活应用(应用在后台时不被带到前台, 其他窗口保持原状)。缺省 false。
    */
-  export function createView(options: { title?: string; width: number; height: number; minWidth?: number; minHeight?: number; x?: number; y?: number; panel?: boolean }): Promise<View>;
+  export function createView(options: { title?: string; width: number; height: number; minWidth?: number; minHeight?: number; x?: number; y?: number; panel?: boolean; resizable?: boolean }): Promise<View>;
 }
 
 // 消息通道(docs/04 §5): 异步、字节流、双向。平台服务与扩展共用。

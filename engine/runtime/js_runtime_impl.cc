@@ -1,18 +1,17 @@
 #include "engine/runtime/js_runtime_impl.h"
 
-#include <cstdio>
-#include <cstring>
-#include <fstream>
 #include <mutex>
-#include <sstream>
-#include <system_error>
+#include <string>
 #include <utility>
 #include <vector>
 
 #include "base/logging.h"
 #include "engine/runtime/js_args.h"
-#include "engine/runtime/v8_platform.h"
+#include "engine/runtime/node_bindings.h"
+#include "engine/runtime/node_bootstrap.h"
 #include "engine/runtime/wrappable.h"
+#include "node.h"
+#include "uv.h"
 
 namespace momo::engine::runtime {
 
@@ -21,85 +20,37 @@ namespace {
 constexpr uint32_t kIsolateSlotRuntime = 0;
 
 // ---------------------------------------------------------------------------
-// V8 进程级初始化: V8 要求每进程恰好一次, 且不能在 Dispose 后重新初始化。
-// 这是 docs/10「禁全局可变状态」的必要例外: 只在这里、只写一次、永不释放。
+// Node 进程级初始化: 每进程恰好一次(InitializeOncePerProcess 内含 V8 平台、V8、ICU、OpenSSL 的初始化),
+// 之后不能重新初始化。这是 docs/10「禁全局可变状态」的必要例外: 只在这里、只写一次、永不释放。
+//   - 不改动 stdio 与 TTY 状态、不安装 Node 的信号处理(宿主应用自己管理);
+//   - 不读 NODE_OPTIONS(用户机器上的环境变量不应改变应用行为);
+//   - inspector(--inspect)是进程级选项: 以第一次创建运行时时的 Options 为准。
 
-struct V8Process {
-  bool icu_ok = false;
+struct NodeProcess {
+  std::shared_ptr<node::InitializationResult> result;
 };
 
-V8Process& InitializeV8Once(const std::filesystem::path& icu_data) {
+NodeProcess& InitializeNodeOnce(const std::vector<std::string>& extra_args) {
   static std::once_flag once;
-  static V8Process* process = nullptr;  // 有意泄漏: 进程退出前 V8 不可 Dispose
-  std::call_once(once, [&icu_data] {
-    process = new V8Process();
-    std::filesystem::path icu = icu_data;
-    std::error_code ec;
-#ifdef MOMO_V8_ICU_DATA
-    if (icu.empty() || !std::filesystem::is_regular_file(icu, ec)) {
-      icu = MOMO_V8_ICU_DATA;  // 构建树内的预编译包(开发/测试)
+  static NodeProcess* process = nullptr;  // 有意泄漏: 进程退出前不可拆除
+  std::call_once(once, [&extra_args] {
+    process = new NodeProcess();
+    std::vector<std::string> args = {"momo"};
+    args.insert(args.end(), extra_args.begin(), extra_args.end());
+    process->result = node::InitializeOncePerProcess(
+        args, {node::ProcessInitializationFlags::kNoStdioInitialization,
+               node::ProcessInitializationFlags::kNoDefaultSignalHandling,
+               node::ProcessInitializationFlags::kDisableNodeOptionsEnv,
+               node::ProcessInitializationFlags::kNoPrintHelpOrVersionOutput});
+    for (const std::string& error : process->result->errors()) {
+      MOMO_LOG(ERROR) << "Node initialization: " << error;
     }
-#endif
-    process->icu_ok = !icu.empty() && std::filesystem::is_regular_file(icu, ec) &&
-                      v8::V8::InitializeICU(icu.string().c_str());
-    if (!process->icu_ok) {
-      MOMO_LOG(WARNING) << "V8 ICU data not loaded (" << icu.string() << "); Intl is unavailable.";
-    }
-    // 前台任务走 isolate 归属线程的 EventLoop, 后台任务走 base::WorkerPool(见 v8_platform.h)。
-    v8::V8::InitializePlatform(&V8Platform::Get());
-    MOMO_CHECK(v8::V8::Initialize()) << "V8 initialization failed";
-    MOMO_LOG(INFO) << "V8 " << v8::V8::GetVersion() << " initialized.";
+    MOMO_CHECK(process->result->exit_code() == 0 && process->result->platform() != nullptr)
+        << "Node initialization failed";
+    MOMO_LOG(INFO) << "Node " << NODE_VERSION << " (V8 " << v8::V8::GetVersion() << ", libuv "
+                   << uv_version_string() << ") initialized.";
   });
   return *process;
-}
-
-std::string ReadFile(const std::filesystem::path& path, bool* ok) {
-  std::ifstream in(path, std::ios::binary);
-  if (!in) {
-    *ok = false;
-    return {};
-  }
-  std::stringstream ss;
-  ss << in.rdbuf();
-  *ok = true;
-  return ss.str();
-}
-
-// ---- console ----
-
-void ConsoleLog(const Args& args, LogSeverity severity) {
-  v8::Isolate* isolate = args.GetIsolate();
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  std::string line;
-  for (int i = 0; i < args.Length(); ++i) {
-    if (i > 0) {
-      line += ' ';
-    }
-    v8::Local<v8::Value> v = args[i];
-    if (v->IsObject() && !v->IsFunction() && !v->IsNativeError()) {
-      v8::Local<v8::String> json;
-      if (v8::JSON::Stringify(context, v).ToLocal(&json)) {
-        line += ToUtf8(isolate, json);
-        continue;
-      }
-    }
-    line += ToUtf8(isolate, v);
-  }
-  if (::momo::LogMessage::ShouldLog(severity)) {
-    ::momo::LogMessage(severity, "js", 0, nullptr).stream() << line;
-  }
-  // 转发给 V8 内建的同名 console 方法(函数 data): 挂了 Inspector 时由它把消息(含调用栈)送到
-  // DevTools;没有 Inspector 时内建实现是空操作。
-  v8::Local<v8::Value> builtin = args.Data();
-  if (!builtin.IsEmpty() && builtin->IsFunction()) {
-    std::vector<v8::Local<v8::Value>> argv;
-    argv.reserve(static_cast<size_t>(args.Length()));
-    for (int i = 0; i < args.Length(); ++i) {
-      argv.push_back(args[i]);
-    }
-    v8::TryCatch try_catch(isolate);
-    (void)builtin.As<v8::Function>()->Call(context, args.This(), args.Length(), argv.data());
-  }
 }
 
 }  // namespace
@@ -107,36 +58,86 @@ void ConsoleLog(const Args& args, LogSeverity severity) {
 // ---------------------------------------------------------------------------
 // 创建与销毁
 
+JsRuntimeImpl::JsRuntimeImpl() = default;
+
 StatusOr<std::unique_ptr<JsRuntimeImpl>> JsRuntimeImpl::Create(
-    const std::filesystem::path& icu_data, std::shared_ptr<TaskRunner> task_runner) {
+    std::shared_ptr<TaskRunner> task_runner, const Options& options,
+    const std::vector<std::string>& node_args) {
   MOMO_CHECK(task_runner != nullptr);
-  InitializeV8Once(icu_data);
+  NodeProcess& process = InitializeNodeOnce(node_args);
   std::unique_ptr<JsRuntimeImpl> impl(new JsRuntimeImpl());
-  impl->allocator_ = v8::ArrayBuffer::Allocator::NewDefaultAllocator();
-  v8::Isolate::CreateParams params;
-  params.array_buffer_allocator = impl->allocator_;
-  // 先分配再注册前台 runner, 最后初始化: V8 在 Initialize 期间就会取前台 runner。
-  v8::Isolate* isolate = v8::Isolate::Allocate();
-  if (isolate == nullptr) {
-    return InternalError("v8::Isolate::Allocate failed");
+
+  std::vector<std::string> errors;
+  impl->setup_ = node::CommonEnvironmentSetup::Create(
+      process.result->platform(), &errors, process.result->args(), process.result->exec_args(),
+      node::EnvironmentFlags::kDefaultFlags);
+  if (impl->setup_ == nullptr) {
+    std::string message = "failed to create the Node.js environment";
+    for (const std::string& error : errors) {
+      message += "; " + error;
+    }
+    return InternalError(message);
   }
-  JsRuntimeImpl* raw = impl.get();
-  V8Platform::Get().RegisterIsolate(isolate, std::move(task_runner),
-                                    [raw] { raw->DrainMicrotasks(); });
+  v8::Isolate* isolate = impl->setup_->isolate();
   impl->isolate_ = isolate;
-  v8::Isolate::Initialize(isolate, params);
-  isolate->SetData(kIsolateSlotRuntime, impl.get());
-  isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
-  isolate->SetPromiseRejectCallback(&JsRuntimeImpl::OnPromiseReject);
-  // ui 线程独占本 isolate: 整个生命周期保持进入状态, 免去每次调用的 Isolate::Scope。
+  impl->env_ = impl->setup_->env();
+  // ui 线程独占本 isolate: 整个生命周期持锁并保持进入状态, 免去每次调用的 Locker / Isolate::Scope。
+  impl->locker_ = std::make_unique<v8::Locker>(isolate);
   isolate->Enter();
+  isolate->SetData(kIsolateSlotRuntime, impl.get());
+  impl->code_cache_ = !options.code_cache_dir.empty();
 
   v8::HandleScope handle_scope(isolate);
-  v8::Local<v8::Context> context = v8::Context::New(isolate);
+  v8::Local<v8::Context> context = impl->setup_->context();
   impl->context_.Reset(isolate, context);
-  v8::Context::Scope context_scope(context);  // Object::New 等需要当前 context
-  impl->InstallConsole(context);
+  v8::Context::Scope context_scope(context);
+
+  // uv 循环接到 ui 线程(Electron NodeBindings::PrepareEmbedThread → LoadEnvironment → StartPolling)。
+  impl->bindings_ =
+      std::make_unique<NodeBindings>(impl->env_, impl->setup_->event_loop(), std::move(task_runner));
+  impl->bindings_->PrepareEmbedThread();
+
+  JsRuntimeImpl* raw = impl.get();
+  const std::string cache_dir = options.code_cache_dir.string();
+  v8::TryCatch try_catch(isolate);
+  if (node::LoadEnvironment(
+          impl->env_,
+          // 入口不在这里执行: 由 RunModule 经 Node 的 ESM 加载器执行(见 node_bootstrap.cc)。
+          [isolate](const node::StartExecutionCallbackInfo&) -> v8::MaybeLocal<v8::Value> {
+            return v8::Undefined(isolate);
+          },
+          [raw, cache_dir](node::Environment*, v8::Local<v8::Value> process,
+                           v8::Local<v8::Value> require) {
+            raw->RunBootstrap(process, require, cache_dir);
+          })
+          .IsEmpty() ||
+      impl->host_.IsEmpty()) {
+    return try_catch.HasCaught() ? impl->ExceptionToStatus(try_catch, "Node.js bootstrap")
+                                 : InternalError("Node.js bootstrap failed");
+  }
+  impl->bindings_->StartPolling();
   return impl;
+}
+
+void JsRuntimeImpl::RunBootstrap(v8::Local<v8::Value> process, v8::Local<v8::Value> require,
+                                 const std::string& code_cache_dir) {
+  v8::Isolate* isolate = isolate_;
+  v8::Local<v8::Context> context = this->context();
+  v8::Local<v8::String> params[] = {V8String(isolate, "process"), V8String(isolate, "require"),
+                                    V8String(isolate, "codeCacheDir")};
+  v8::ScriptOrigin origin(V8String(isolate, "momo:bootstrap"));
+  v8::ScriptCompiler::Source source(V8String(isolate, kNodeBootstrapSource), origin);
+  v8::Local<v8::Function> fn;
+  if (!v8::ScriptCompiler::CompileFunction(context, &source, 3, params).ToLocal(&fn)) {
+    return;  // 异常留给 LoadEnvironment 的调用方
+  }
+  v8::Local<v8::Value> args[] = {process, require,
+                                 code_cache_dir.empty() ? v8::Local<v8::Value>(v8::Null(isolate))
+                                                        : V8String(isolate, code_cache_dir)};
+  v8::Local<v8::Value> host;
+  if (fn->Call(context, v8::Null(isolate), 3, args).ToLocal(&host) && host->IsObject()) {
+    host_.Reset(isolate, host.As<v8::Object>());
+  }
 }
 
 JsRuntimeImpl::~JsRuntimeImpl() {
@@ -149,50 +150,23 @@ JsRuntimeImpl::~JsRuntimeImpl() {
     while (!wrappables_.empty()) {
       delete *wrappables_.begin();  // 析构会 Untrack
     }
-    synthetic_exports_.clear();
-    module_urls_.clear();
-    modules_.clear();
     class_templates_.clear();
+    host_.Reset();
     context_.Reset();
   }
+  // 先停 poll 线程(其保活句柄在 FreeEnvironment 运行循环时完成关闭), 再拆环境。
+  bindings_->Stop();
+  isolate_->SetData(kIsolateSlotRuntime, nullptr);
   isolate_->Exit();
-  isolate_->Dispose();
-  // Dispose 期间 V8 仍可能取前台 runner, 所以之后才注销;尚未执行的前台任务随之作废。
-  V8Platform::Get().UnregisterIsolate(isolate_);
+  locker_.reset();
+  // FreeEnvironment → FreeIsolateData → 注销并销毁 isolate → 关闭 uv 循环(CommonEnvironmentSetup 析构)。
+  setup_.reset();
+  bindings_.reset();
   isolate_ = nullptr;
-  delete allocator_;
 }
 
 JsRuntimeImpl* JsRuntimeImpl::From(v8::Isolate* isolate) {
   return static_cast<JsRuntimeImpl*>(isolate->GetData(kIsolateSlotRuntime));
-}
-
-void JsRuntimeImpl::InstallConsole(v8::Local<v8::Context> context) {
-  v8::Isolate* isolate = isolate_;
-  // 就地覆盖 V8 内建 console 的常用方法(其余如 table/time/group 保留内建实现), 原方法作为函数
-  // data 保存并在写完引擎日志后转发 —— Inspector(engine/runtime/inspector.h)靠内建实现接收 console 消息。
-  v8::Local<v8::Object> console;
-  v8::Local<v8::Value> existing;
-  if (context->Global()->Get(context, V8String(isolate, "console")).ToLocal(&existing) &&
-      existing->IsObject()) {
-    console = existing.As<v8::Object>();
-  } else {
-    console = v8::Object::New(isolate);
-  }
-  auto add = [&](const char* name, v8::FunctionCallback cb) {
-    v8::Local<v8::String> key = V8String(isolate, name);
-    v8::Local<v8::Value> builtin;
-    if (!console->Get(context, key).ToLocal(&builtin) || !builtin->IsFunction()) {
-      builtin = v8::Undefined(isolate);
-    }
-    console->Set(context, key, v8::Function::New(context, cb, builtin).ToLocalChecked()).Check();
-  };
-  add("log", [](const Args& a) { ConsoleLog(a, LogSeverity::kInfo); });
-  add("info", [](const Args& a) { ConsoleLog(a, LogSeverity::kInfo); });
-  add("debug", [](const Args& a) { ConsoleLog(a, LogSeverity::kVerbose); });
-  add("warn", [](const Args& a) { ConsoleLog(a, LogSeverity::kWarning); });
-  add("error", [](const Args& a) { ConsoleLog(a, LogSeverity::kError); });
-  context->Global()->Set(context, V8String(isolate, "console"), console).Check();
 }
 
 // ---------------------------------------------------------------------------
@@ -223,25 +197,6 @@ Status JsRuntimeImpl::ExceptionToStatus(v8::TryCatch& try_catch, std::string_vie
   return InternalError(message);
 }
 
-void JsRuntimeImpl::OnPromiseReject(v8::PromiseRejectMessage message) {
-  if (message.GetEvent() != v8::kPromiseRejectWithNoHandler) {
-    return;
-  }
-  v8::Isolate* isolate = v8::Isolate::GetCurrent();
-  v8::Local<v8::Value> value = message.GetValue();
-  std::string text = value.IsEmpty() ? "undefined" : ToUtf8(isolate, value);
-  if (!value.IsEmpty() && value->IsNativeError()) {
-    v8::Local<v8::Value> stack;
-    if (value.As<v8::Object>()
-            ->Get(isolate->GetCurrentContext(), V8String(isolate, "stack"))
-            .ToLocal(&stack) &&
-        stack->IsString()) {
-      text = ToUtf8(isolate, stack);
-    }
-  }
-  MOMO_LOG(ERROR) << "Unhandled promise rejection: " << text;
-}
-
 StatusOr<v8::Local<v8::Value>> JsRuntimeImpl::Call(v8::Local<v8::Function> fn,
                                                    v8::Local<v8::Value> receiver, int argc,
                                                    v8::Local<v8::Value> argv[],
@@ -257,7 +212,16 @@ StatusOr<v8::Local<v8::Value>> JsRuntimeImpl::Call(v8::Local<v8::Function> fn,
   return scope.Escape(result);
 }
 
-void JsRuntimeImpl::DrainMicrotasks() { isolate_->PerformMicrotaskCheckpoint(); }
+void JsRuntimeImpl::DrainMicrotasks() {
+  v8::HandleScope handle_scope(isolate_);
+  v8::Context::Scope context_scope(context());
+  {
+    // 空的 CallbackScope 在关闭时按 Node 语义排空: process.nextTick 队列与 microtask(含未处理拒绝的处理)。
+    node::CallbackScope scope(env_, v8::Object::New(isolate_), {0, 0});
+  }
+  // 刚执行的 JS 可能新增了定时器/IO: 让 poll 线程按新状态重新等待(见 node_bindings.h)。
+  bindings_->WakeupEmbedThread();
+}
 
 // ---------------------------------------------------------------------------
 // 经典脚本
@@ -283,237 +247,81 @@ StatusOr<std::string> JsRuntimeImpl::EvalToString(std::string_view source, std::
 // 模块
 
 void JsRuntimeImpl::RegisterNativeModule(std::string specifier, NativeModuleFactory factory) {
-  native_factories_[std::move(specifier)] = std::move(factory);
+  auto [it, inserted] = native_factories_.insert_or_assign(std::move(specifier), std::move(factory));
+  if (inserted) {
+    // 绑定在 import 时(process._linkedBinding)才初始化;Node 持有名字与 priv 指针, 二者在 map 中地址稳定。
+    node::AddLinkedBinding(env_, it->first.c_str(), &JsRuntimeImpl::InitLinkedBinding, &*it);
+  }
 }
 
-std::filesystem::path JsRuntimeImpl::CodeCachePath(std::string_view source) const {
-  uint64_t h = 1469598103934665603ULL;  // FNV-1a(源码) ^ V8 版本/flag 标签
-  for (const char c : source) {
-    h ^= static_cast<uint8_t>(c);
-    h *= 1099511628211ULL;
-  }
-  h ^= static_cast<uint64_t>(v8::ScriptCompiler::CachedDataVersionTag()) << 1;
-  char name[32];
-  std::snprintf(name, sizeof(name), "%016llx.v8c", static_cast<unsigned long long>(h));
-  return code_cache_dir_ / name;
+// static
+void JsRuntimeImpl::InitLinkedBinding(v8::Local<v8::Object> exports, v8::Local<v8::Value>,
+                                      v8::Local<v8::Context> context, void* priv) {
+  auto* entry = static_cast<std::pair<const std::string, NativeModuleFactory>*>(priv);
+  entry->second(v8::Isolate::GetCurrent(), context, exports);
 }
 
-v8::MaybeLocal<v8::Module> JsRuntimeImpl::CompileModule(std::string_view source,
-                                                        const std::string& url) {
-  v8::EscapableHandleScope scope(isolate_);
-  v8::ScriptOrigin origin(V8String(isolate_, url), 0, 0, false, -1, v8::Local<v8::Value>(), false,
-                          false, /*is_module=*/true);
-  // 只缓存文件模块(绝对路径), 测试/eval 片段不缓存。
-  const bool cacheable = !code_cache_dir_.empty() && std::filesystem::path(url).is_absolute();
-  std::filesystem::path cache_path;
-  v8::ScriptCompiler::CachedData* cached = nullptr;
-  if (cacheable) {
-    cache_path = CodeCachePath(source);
-    bool ok = false;
-    const std::string bytes = ReadFile(cache_path, &ok);
-    if (ok && !bytes.empty()) {
-      auto* buffer = new uint8_t[bytes.size()];  // 所有权交给 CachedData(BufferOwned)
-      std::memcpy(buffer, bytes.data(), bytes.size());
-      cached = new v8::ScriptCompiler::CachedData(buffer, static_cast<int>(bytes.size()),
-                                                   v8::ScriptCompiler::CachedData::BufferOwned);
-    }
-  }
-  // Source 析构时释放 cached。
-  v8::ScriptCompiler::Source script_source(V8String(isolate_, source), origin, cached);
-  v8::Local<v8::Module> module;
-  const auto options = cached != nullptr ? v8::ScriptCompiler::kConsumeCodeCache
-                                         : v8::ScriptCompiler::kNoCompileOptions;
-  if (!v8::ScriptCompiler::CompileModule(isolate_, &script_source, options).ToLocal(&module)) {
-    return {};
-  }
-  if (cacheable) {
-    if (cached != nullptr && !script_source.GetCachedData()->rejected) {
-      code_cache_stats_.hits++;
-    } else {
-      if (cached != nullptr) {
-        code_cache_stats_.rejected++;
-      }
-      pending_code_caches_.emplace_back(v8::Global<v8::Module>(isolate_, module), cache_path);
-    }
-  }
-  module_urls_.emplace(module->GetIdentityHash(),
-                       std::make_pair(v8::Global<v8::Module>(isolate_, module), url));
-  return scope.Escape(module);
+Status JsRuntimeImpl::PromiseToStatus(v8::Local<v8::Promise> promise, std::string_view what) {
+  v8::TryCatch try_catch(isolate_);
+  isolate_->ThrowException(promise->Result());
+  return ExceptionToStatus(try_catch, what);
 }
 
-v8::MaybeLocal<v8::Module> JsRuntimeImpl::LoadFileModule(const std::filesystem::path& path) {
-  std::error_code ec;
-  const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
-  const std::string key = (ec ? path : canonical).string();
-  if (auto it = modules_.find(key); it != modules_.end()) {
-    return it->second.Get(isolate_);
-  }
-  bool ok = false;
-  const std::string source = ReadFile(key, &ok);
-  if (!ok) {
-    ThrowError(isolate_, "Cannot find module '" + key + "'");
-    return {};
-  }
-  v8::Local<v8::Module> module;
-  if (!CompileModule(source, key).ToLocal(&module)) {
-    return {};
-  }
-  modules_.emplace(key, v8::Global<v8::Module>(isolate_, module));
-  return module;
-}
-
-v8::MaybeLocal<v8::Module> JsRuntimeImpl::LoadNativeModule(const std::string& specifier) {
-  if (auto it = modules_.find(specifier); it != modules_.end()) {
-    return it->second.Get(isolate_);
-  }
-  auto factory = native_factories_.find(specifier);
-  if (factory == native_factories_.end()) {
-    ThrowError(isolate_, "Unknown native module '" + specifier + "'");
-    return {};
-  }
-  v8::EscapableHandleScope scope(isolate_);
-  v8::Local<v8::Context> context = this->context();
-  v8::Local<v8::Object> exports = v8::Object::New(isolate_);
-  factory->second(isolate_, context, exports);
-
-  v8::Local<v8::Array> keys = exports->GetOwnPropertyNames(context).ToLocalChecked();
-  std::vector<v8::Local<v8::String>> names;
-  for (uint32_t i = 0; i < keys->Length(); ++i) {
-    names.push_back(keys->Get(context, i).ToLocalChecked().As<v8::String>());
-  }
-  v8::Local<v8::Module> module = v8::Module::CreateSyntheticModule(
-      isolate_, V8String(isolate_, specifier),
-      std::span<const v8::Local<v8::String>>(names.data(), names.size()),
-      &JsRuntimeImpl::EvaluateSyntheticModule);
-  synthetic_exports_.emplace(module->GetIdentityHash(),
-                             std::make_pair(v8::Global<v8::Module>(isolate_, module),
-                                            v8::Global<v8::Object>(isolate_, exports)));
-  modules_.emplace(specifier, v8::Global<v8::Module>(isolate_, module));
-  return scope.Escape(module);
-}
-
-v8::MaybeLocal<v8::Promise> JsRuntimeImpl::EvaluateSyntheticModule(v8::Local<v8::Context> context,
-                                                                   v8::Local<v8::Module> module) {
-  v8::Isolate* isolate = v8::Isolate::GetCurrent();
-  JsRuntimeImpl* self = From(isolate);
-  auto [begin, end] = self->synthetic_exports_.equal_range(module->GetIdentityHash());
-  for (auto it = begin; it != end; ++it) {
-    if (it->second.first.Get(isolate) != module) {
-      continue;
-    }
-    v8::Local<v8::Object> exports = it->second.second.Get(isolate);
-    v8::Local<v8::Array> keys = exports->GetOwnPropertyNames(context).ToLocalChecked();
-    for (uint32_t i = 0; i < keys->Length(); ++i) {
-      v8::Local<v8::String> name = keys->Get(context, i).ToLocalChecked().As<v8::String>();
-      v8::Local<v8::Value> value = exports->Get(context, name).ToLocalChecked();
-      if (module->SetSyntheticModuleExport(isolate, name, value).IsNothing()) {
-        return {};
-      }
-    }
-    break;
-  }
-  v8::Local<v8::Promise::Resolver> resolver = v8::Promise::Resolver::New(context).ToLocalChecked();
-  resolver->Resolve(context, v8::Undefined(isolate)).Check();
-  return resolver->GetPromise();
-}
-
-v8::MaybeLocal<v8::Module> JsRuntimeImpl::ResolveModule(v8::Local<v8::Context> context,
-                                                        v8::Local<v8::String> specifier,
-                                                        v8::Local<v8::FixedArray> /*attributes*/,
-                                                        v8::Local<v8::Module> referrer) {
-  v8::Isolate* isolate = v8::Isolate::GetCurrent();
-  JsRuntimeImpl* self = From(isolate);
-  const std::string spec = ToUtf8(isolate, specifier);
-  if (spec.rfind("momo:", 0) == 0 || spec.rfind("ext:", 0) == 0) {
-    return self->LoadNativeModule(spec);
-  }
-  // 文件模块: 相对路径基于引用方所在目录(引用方为源码片段时用 current_base_dir_)。
-  std::filesystem::path base = self->current_base_dir_;
-  auto [begin, end] = self->module_urls_.equal_range(referrer->GetIdentityHash());
-  for (auto it = begin; it != end; ++it) {
-    if (it->second.first.Get(isolate) == referrer) {
-      const std::filesystem::path referrer_path(it->second.second);
-      if (referrer_path.is_absolute()) {
-        base = referrer_path.parent_path();
-      }
-      break;
-    }
-  }
-  std::filesystem::path target(spec);
-  if (spec.rfind("./", 0) == 0 || spec.rfind("../", 0) == 0) {
-    target = base / target;
-  } else if (!target.is_absolute()) {
-    ThrowError(isolate, "Cannot resolve module '" + spec +
-                            "' (only momo:*, ext:*, relative and absolute paths are supported)");
-    return {};
-  }
-  return self->LoadFileModule(target.lexically_normal());
-}
-
-Status JsRuntimeImpl::RunModule(std::string_view source, const std::string& url,
+Status JsRuntimeImpl::RunModule(const std::string& url, const std::string* source,
                                 const std::filesystem::path& base_dir) {
   v8::HandleScope handle_scope(isolate_);
   v8::Local<v8::Context> context = this->context();
   v8::Context::Scope context_scope(context);
   v8::TryCatch try_catch(isolate_);
-  current_base_dir_ = base_dir;
+  const std::string what = "run module " + url;
 
-  v8::Local<v8::Module> module;
-  if (!CompileModule(source, url).ToLocal(&module)) {
-    return ExceptionToStatus(try_catch, "compile " + url);
+  v8::Local<v8::Object> host = host_.Get(isolate_);
+  v8::Local<v8::Value> import_fn;
+  if (!host->Get(context, V8String(isolate_, "importModule")).ToLocal(&import_fn) ||
+      !import_fn->IsFunction()) {
+    return InternalError("Node.js bootstrap host is missing importModule");
   }
-  if (std::filesystem::path(url).is_absolute()) {
-    modules_.emplace(url, v8::Global<v8::Module>(isolate_, module));
+  v8::Local<v8::Value> args[] = {
+      V8String(isolate_, url),
+      source != nullptr ? v8::Local<v8::Value>(V8String(isolate_, *source))
+                        : v8::Local<v8::Value>(v8::Undefined(isolate_)),
+      V8String(isolate_, base_dir.string())};
+  v8::Local<v8::Value> result;
+  if (!import_fn.As<v8::Function>()->Call(context, host, 3, args).ToLocal(&result) ||
+      !result->IsPromise()) {
+    return try_catch.HasCaught() ? ExceptionToStatus(try_catch, what)
+                                 : InternalError(what + ": importModule did not return a Promise");
   }
-  if (!module->InstantiateModule(context, &JsRuntimeImpl::ResolveModule).FromMaybe(false)) {
-    return ExceptionToStatus(try_catch, "link " + url);
+  v8::Local<v8::Promise> promise = result.As<v8::Promise>();
+
+  // 入口经 uv_run 推进(同 Electron NodeBindings::JoinAppCode): 加载模块图(文件读取在 uv 线程池完成)、
+  // 顶层 await 的 Node IO 都在这里完成。保活句柄不计入存活: uv 无事可做时停止泵送——剩下的求值
+  // (如顶层 await 等待 momo 的平台通道)继续异步进行, 失败时作为未处理的拒绝记录。
+  uv_loop_t* loop = bindings_->loop();
+  bindings_->SetKeepAlive(false);
+  while (true) {
+    DrainMicrotasks();
+    if (promise->State() != v8::Promise::kPending || !uv_loop_alive(loop)) {
+      break;
+    }
+    uv_run(loop, UV_RUN_ONCE);
   }
-  v8::Local<v8::Promise> promise;
-  if (!module->Evaluate(context).ToLocal(&promise)) {
-    return ExceptionToStatus(try_catch, "evaluate " + url);
-  }
-  DrainMicrotasks();
+  bindings_->SetKeepAlive(true);
+
   if (promise->State() == v8::Promise::kRejected) {
-    // 顶层抛出或拒绝: 用拒绝值构造错误。
-    try_catch.Reset();
-    isolate_->ThrowException(promise->Result());
-    promise->MarkAsHandled();
-    pending_code_caches_.clear();  // 出错的 bundle 不缓存
-    return ExceptionToStatus(try_catch, "evaluate " + url);
+    return PromiseToStatus(promise, what);
   }
-  FlushCodeCaches();
+  if (promise->State() == v8::Promise::kPending) {
+    MOMO_LOG(VERBOSE) << url << ": top-level await still pending; evaluation continues asynchronously.";
+  }
+  if (code_cache_) {
+    v8::Local<v8::Value> flush;
+    if (host->Get(context, V8String(isolate_, "flushCompileCache")).ToLocal(&flush) &&
+        flush->IsFunction()) {
+      (void)flush.As<v8::Function>()->Call(context, host, 0, nullptr);
+    }
+  }
   return Status::Ok();
-}
-
-void JsRuntimeImpl::FlushCodeCaches() {
-  if (pending_code_caches_.empty()) {
-    return;
-  }
-  std::error_code ec;
-  std::filesystem::create_directories(code_cache_dir_, ec);
-  for (auto& [global, path] : pending_code_caches_) {
-    v8::HandleScope scope(isolate_);
-    v8::Local<v8::Module> module = global.Get(isolate_);
-    std::unique_ptr<v8::ScriptCompiler::CachedData> data(
-        v8::ScriptCompiler::CreateCodeCache(module->GetUnboundModuleScript()));
-    if (data == nullptr || data->length <= 0) {
-      continue;
-    }
-    // 先写临时文件再改名: 并发启动的另一个进程不会读到半个文件。
-    const std::filesystem::path tmp = path.string() + ".tmp";
-    {
-      std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-      out.write(reinterpret_cast<const char*>(data->data), data->length);
-      if (!out) {
-        continue;  // 缓存目录不可写: 静默放弃(只是失去优化)
-      }
-    }
-    std::filesystem::rename(tmp, path, ec);
-    if (!ec) {
-      code_cache_stats_.written++;
-    }
-  }
-  pending_code_caches_.clear();
 }
 
 // ---------------------------------------------------------------------------

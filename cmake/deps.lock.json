@@ -20,22 +20,20 @@
         }
       }
     },
-    "v8": {
-      "version": "15.8.62.9",
-      "source": "Homebrew bottle (component build: use_custom_libcxx=false, v8_enable_sandbox=false, i18n + 内置 ICU)",
-      "platforms": {
-        "macos-arm64": {
-          "url": "https://ghcr.io/v2/homebrew/core/v8/blobs/sha256:7326c67e8a80c620ea611c4d7b0eecde97cc495bee7fcb175ab00fc08afbc3be",
-          "sha256": "7326c67e8a80c620ea611c4d7b0eecde97cc495bee7fcb175ab00fc08afbc3be",
-          "size": 22024266,
-          "archive": "tar.gz",
-          "http_headers": {
-            "Authorization": "Bearer QQ=="
-          },
-          "strip_prefix": "v8/15.8.62.9",
-          "post_extract": "homebrew_relocate"
-        }
-      }
+    "node": {
+      "version": "26.13.0",
+      "source": "Node.js 源码构建 libnode(官方不发布 libnode 二进制;tools/build_libnode.py)。自带 V8 14.6.202.34、libuv 1.52.1、完整 ICU 78(数据编入二进制)。pointer compression 关、sandbox 关(Node 默认, 与原生插件 ABI 一致)",
+      "build": "tools/build_libnode.py",
+      "source_archive": {
+        "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.xz",
+        "sha256": "263f639ecfa7a17b49438d76cdbf9aff73179e3c7cb789da69b900718427fa2e"
+      },
+      "configure_flags": [
+        "--shared",
+        "--without-npm",
+        "--ninja"
+      ],
+      "platforms": {}
     }
   }
 }

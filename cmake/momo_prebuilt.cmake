@@ -1,4 +1,4 @@
-# 预编译三方依赖: Skia、V8(docs/09 §2)。
+# 预编译三方依赖: Skia、libnode(含 V8)(docs/09 §2)。
 # 包由 tools/fetch_deps.py 按 cmake/deps.lock.json 下载到 third_party/prebuilt/<name>/。
 # 找到时导出 IMPORTED/INTERFACE target `momo::skia`、`momo::v8`;缺失时不报错, 只是不提供
 # (现有不依赖它们的 target 照常构建)。MOMO_REQUIRE_PREBUILT=ON 时缺失即报错。
@@ -64,40 +64,37 @@ else()
 endif()
 
 # ---------------------------------------------------------------------------
-# V8 (macOS: Homebrew bottle, component 构建 —— 多个 dylib + icudtl.dat;
-#     use_custom_libcxx=false 与系统 libc++ ABI 一致;pointer compression 开、sandbox 关)
+# V8: 来自 libnode(Node.js 26 LTS, tools/build_libnode.py 从源码构建)。momo 只使用 Node 内置的 V8,
+# 不另带一份 V8: 嵌入 Node(docs/04 §1)要求 isolate 由同一份 V8 创建。
+# V8 配置跟随 Node 默认: pointer compression 关、sandbox 关, 嵌入方不定义 V8_COMPRESS_POINTERS 等;
+# ICU 完整数据编入 libnode(无 icudtl.dat)。头文件: include/node/{node.h, uv.h, v8*.h, libplatform/}。
 
-set(_v8_root "${MOMO_PREBUILT_DIR}/v8")
-set(_v8_libexec "${_v8_root}/libexec")
+set(_node_root "${MOMO_PREBUILT_DIR}/node")
+file(GLOB _node_dylib "${_node_root}/lib/libnode.*.dylib")
 if(MOMO_ENABLE_ASAN OR MOMO_ENABLE_TSAN)
-  # 该预编译包含 partition_alloc 的 malloc shim, 与 ASan/TSan 的 malloc 拦截冲突(进程启动即崩溃)。
-  # sanitizer 构建不提供 momo::v8;依赖 V8 的目标与测试需在普通构建中验证。
+  # libnode 未以 sanitizer 构建: sanitizer 构建不提供 momo::v8;依赖 V8 的目标与测试需在普通构建中验证。
   set(MOMO_HAVE_V8 OFF)
-  message(STATUS "V8 prebuilt disabled under ASan/TSan (partition_alloc malloc shim conflicts)")
-elseif(APPLE AND EXISTS "${_v8_root}/.momo_dep.json" AND EXISTS "${_v8_libexec}/libv8.dylib")
+  message(STATUS "libnode disabled under ASan/TSan (not built with sanitizers)")
+elseif(APPLE AND EXISTS "${_node_root}/.momo_dep.json" AND _node_dylib)
   add_library(momo_v8 INTERFACE)
-  target_include_directories(momo_v8 SYSTEM INTERFACE "${_v8_libexec}/include")
+  target_include_directories(momo_v8 SYSTEM INTERFACE "${_node_root}/include/node")
   # 必须与 V8 构建配置一致, 否则 V8::Initialize 报 "Embedder-vs-V8 build configuration mismatch"。
-  target_compile_definitions(momo_v8 INTERFACE V8_COMPRESS_POINTERS V8_31BIT_SMIS_ON_64BIT_ARCH)
-  target_link_libraries(momo_v8 INTERFACE
-    "${_v8_libexec}/libv8.dylib"
-    "${_v8_libexec}/libv8_libplatform.dylib"
-    "${_v8_libexec}/libv8_libbase.dylib")
+  # Node 默认配置下唯一影响嵌入方的是 Promise 的内部字段数(features.gypi)。
+  target_compile_definitions(momo_v8 INTERFACE V8_PROMISE_INTERNAL_FIELD_COUNT=1)
+  target_link_libraries(momo_v8 INTERFACE "${_node_dylib}")
   add_library(momo::v8 ALIAS momo_v8)
-  # 运行期需要: dylib 目录(rpath / 打包进 .app/Contents/Frameworks)与 ICU 数据文件。
-  set(MOMO_V8_RUNTIME_DIR "${_v8_libexec}" CACHE INTERNAL "")
-  set(MOMO_V8_ICU_DATA "${_v8_libexec}/icudtl.dat" CACHE INTERNAL "")
+  # 运行期需要: dylib 目录(rpath / 打包进 .app/Contents/Frameworks)。
+  set(MOMO_V8_RUNTIME_DIR "${_node_root}/lib" CACHE INTERNAL "")
   set(MOMO_HAVE_V8 ON)
-  message(STATUS "V8 prebuilt: ${_v8_libexec}")
+  message(STATUS "V8 (libnode) prebuilt: ${_node_dylib}")
 else()
   set(MOMO_HAVE_V8 OFF)
-  _momo_prebuilt_missing(v8)
+  _momo_prebuilt_missing(node)
 endif()
 
 # 给使用 V8 的可执行目标设置运行期查找路径(构建树内直接运行)。
 function(momo_target_use_v8_runtime target)
   if(MOMO_HAVE_V8)
     set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "${MOMO_V8_RUNTIME_DIR}")
-    target_compile_definitions(${target} PRIVATE MOMO_V8_ICU_DATA="${MOMO_V8_ICU_DATA}")
   endif()
 endfunction()

@@ -1,7 +1,10 @@
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include "base/testing/scoped_test_event_loop.h"
 #include "engine/runtime/js_args.h"
@@ -25,6 +28,30 @@ class JsRuntimeTest : public ::testing::Test {
     auto result = runtime_->EvalToString(source);
     EXPECT_TRUE(result.ok()) << result.status();
     return result.ok() ? *result : std::string();
+  }
+
+  // 驱动 ui 线程的 EventLoop(uv 事件由 poll 线程投递到这里)直到 done 成立或超时。
+  bool RunUntil(const std::function<bool()>& done,
+                std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+      loop_.RunUntilIdle();
+      if (done()) {
+        return true;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return done();
+  }
+
+  // 临时目录(每个测试独立)。
+  std::filesystem::path TempDir(const std::string& name) {
+    const auto dir = std::filesystem::temp_directory_path() /
+                     ("momo_runtime_" + name + "_" +
+                      std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
   }
 
   momo::testing::ScopedTestEventLoop loop_;  // JsRuntime 归属当前(ui)线程
@@ -111,9 +138,9 @@ TEST_F(JsRuntimeTest, MicrotasksAreDrainedAfterModuleRun) {
   EXPECT_EQ(Eval("order.join(',')"), "sync,micro");
 }
 
-// V8 投递到 isolate 前台 runner 的任务(此处为 FinalizationRegistry 清理)必须在归属的
-// ui EventLoop 上执行, 且执行后排空 microtask。
-TEST_F(JsRuntimeTest, ForegroundTasksRunOnOwnerEventLoop) {
+// V8 前台任务(此处为 FinalizationRegistry 清理)经 Node 平台的 uv 句柄, 由 poll 线程交给 ui 线程执行;
+// 不在 GC 内同步执行。
+TEST_F(JsRuntimeTest, ForegroundTasksRunOnTheUiThreadThroughUv) {
   Eval("globalThis.cleaned = [];\n"
        "globalThis.registry = new FinalizationRegistry(v => {\n"
        "  cleaned.push(v);\n"
@@ -122,8 +149,100 @@ TEST_F(JsRuntimeTest, ForegroundTasksRunOnOwnerEventLoop) {
        "(() => { registry.register({}, 'held'); })();");
   runtime_->impl().isolate()->LowMemoryNotification();  // 完整 GC: 回收对象并投递清理任务
   EXPECT_EQ(Eval("cleaned.join(',')"), "") << "cleanup must not run synchronously inside GC";
-  loop_.RunUntilIdle();
-  EXPECT_EQ(Eval("cleaned.join(',')"), "held,micro");
+  EXPECT_TRUE(RunUntil([&] { return Eval("cleaned.join(',')") == "held,micro"; }))
+      << Eval("cleaned.join(',')");
+}
+
+// ---- Node.js 集成(docs/04 §1;对照 Electron NodeBindings)----
+
+// Node 的定时器: 由 poll 线程等到期, 在 ui 线程执行(不需要任何 momo 事件触发)。
+TEST_F(JsRuntimeTest, NodeTimersFireOnTheUiThread) {
+  ASSERT_TRUE(runtime_
+                  ->RunModuleSource("globalThis.fired = [];\n"
+                                    "setTimeout(() => fired.push('timeout'), 20);\n"
+                                    "setImmediate(() => fired.push('immediate'));",
+                                    "timers.mjs")
+                  .ok());
+  EXPECT_TRUE(RunUntil([&] { return Eval("fired.join(',')") == "immediate,timeout"; }))
+      << Eval("fired.join(',')");
+}
+
+// 从 momo 进入 JS(此处为 EvalToString)时新增的定时器: poll 线程被唤醒并按新超时等待
+// (Electron 靠 libuv 补丁 uv_loop_interrupt, momo 在 DrainMicrotasks 后唤醒)。
+TEST_F(JsRuntimeTest, TimersAddedFromMomoCallbacksWakeThePollThread) {
+  Eval("globalThis.late = false; setTimeout(() => { late = true; }, 10); 0");
+  EXPECT_TRUE(RunUntil([&] { return Eval("String(late)") == "true"; }, std::chrono::seconds(2)));
+}
+
+// Node 的异步 IO: fs.promises 在 uv 线程池完成, 回调在 ui 线程。
+TEST_F(JsRuntimeTest, NodeFsPromisesComplete) {
+  const auto dir = TempDir("fs");
+  std::ofstream(dir / "data.txt") << "hello from fs";
+  ASSERT_TRUE(runtime_
+                  ->RunModuleSource("import { readFile } from 'node:fs/promises';\n"
+                                    "globalThis.text = null;\n"
+                                    "readFile(" + std::string("'") + (dir / "data.txt").string() +
+                                        "', 'utf8').then(t => { text = t; });",
+                                    "fs.mjs")
+                  .ok());
+  EXPECT_TRUE(RunUntil([&] { return Eval("String(text)") == "hello from fs"; }));
+  std::filesystem::remove_all(dir);
+}
+
+// 从 momo 进入 JS 之后按 Node 语义排空: process.nextTick 先于 Promise 微任务。
+TEST_F(JsRuntimeTest, DrainRunsNextTicksBeforeMicrotasks) {
+  Eval("globalThis.order = [];\n"
+       "Promise.resolve().then(() => order.push('promise'));\n"
+       "process.nextTick(() => order.push('tick'));\n"
+       "order.push('sync'); 0");
+  EXPECT_EQ(Eval("order.join(',')"), "sync,tick,promise");
+}
+
+// 顶层 await 等待 Node IO: 入口经 uv_run 泵送, 返回时求值已完成。
+TEST_F(JsRuntimeTest, EntryTopLevelAwaitIsPumpedThroughUv) {
+  ASSERT_TRUE(runtime_
+                  ->RunModuleSource("import { setTimeout as sleep } from 'node:timers/promises';\n"
+                                    "await sleep(20);\n"
+                                    "globalThis.done = 'yes';",
+                                    "tla.mjs")
+                  .ok());
+  EXPECT_EQ(Eval("String(globalThis.done)"), "yes");
+}
+
+// 顶层 await 等待 uv 之外的事(这里是永不 resolve 的 Promise): uv 无事可做时停止泵送, 不卡住启动。
+TEST_F(JsRuntimeTest, EntryWaitingOnNonUvWorkDoesNotBlock) {
+  ASSERT_TRUE(runtime_->RunModuleSource("globalThis.started = true; await new Promise(() => {});",
+                                        "pending.mjs")
+                  .ok());
+  EXPECT_EQ(Eval("String(started)"), "true");
+}
+
+// npm 包: 按 Node 规则从 node_modules 解析(CJS 包以默认导出导入)。
+TEST_F(JsRuntimeTest, ImportsPackagesFromNodeModules) {
+  const auto dir = TempDir("pkg");
+  std::filesystem::create_directories(dir / "node_modules" / "greet");
+  std::ofstream(dir / "node_modules" / "greet" / "package.json")
+      << R"({"name":"greet","version":"1.0.0","main":"index.js"})";
+  std::ofstream(dir / "node_modules" / "greet" / "index.js")
+      << "module.exports = (n) => 'hi ' + n;\n";
+  std::ofstream(dir / "main.js") << "import greet from 'greet';\n"
+                                    "import { createRequire } from 'node:module';\n"
+                                    "const require = createRequire(import.meta.url);\n"
+                                    "globalThis.out = greet('momo') + '/' + require('greet')('cjs');\n";
+  ASSERT_TRUE(runtime_->RunMainModule(dir / "main.js").ok());
+  EXPECT_EQ(Eval("out"), "hi momo/hi cjs");
+  std::filesystem::remove_all(dir);
+}
+
+// 未捕获的异常(uv 回调里抛出)只记录, 不退出进程, 之后的定时器照常执行。
+TEST_F(JsRuntimeTest, UncaughtExceptionsDoNotKillTheProcess) {
+  ASSERT_TRUE(runtime_
+                  ->RunModuleSource("globalThis.after = false;\n"
+                                    "setTimeout(() => { throw new Error('boom in timer'); }, 1);\n"
+                                    "setTimeout(() => { after = true; }, 30);",
+                                    "throw.mjs")
+                  .ok());
+  EXPECT_TRUE(RunUntil([&] { return Eval("String(after)") == "true"; }));
 }
 
 }  // namespace
@@ -132,8 +251,8 @@ TEST_F(JsRuntimeTest, ForegroundTasksRunOnOwnerEventLoop) {
 namespace momo::engine::runtime {
 namespace {
 
-// 冷启动优化: 第二次运行同一文件模块时使用 V8 code cache;源码变化后缓存失效重建。
-TEST(JsRuntimeCodeCacheTest, SecondRunUsesCodeCache) {
+// Node 编译缓存(module.enableCompileCache): 第一次运行后写入缓存目录, 第二次运行照常。
+TEST(JsRuntimeCodeCacheTest, CompileCacheIsWritten) {
   momo::testing::ScopedTestEventLoop loop;
   const std::filesystem::path dir =
       std::filesystem::temp_directory_path() /
@@ -141,36 +260,37 @@ TEST(JsRuntimeCodeCacheTest, SecondRunUsesCodeCache) {
   std::filesystem::remove_all(dir);
   std::filesystem::create_directories(dir);
   const std::filesystem::path main = dir / "main.js";
-  const std::filesystem::path lib = dir / "lib.js";
-  std::ofstream(lib) << "export function f(x) { return x * 2; }\n";
+  std::ofstream(dir / "lib.js") << "export function f(x) { return x * 2; }\n";
   std::ofstream(main) << "import { f } from './lib.js'; globalThis.r = f(21);\n";
   JsRuntime::Options options;
   options.code_cache_dir = dir / "cache";
-  {
+  for (int run = 0; run < 2; ++run) {
     auto rt = JsRuntime::Create(options);
-    ASSERT_TRUE(rt.ok());
-    ASSERT_TRUE((*rt)->RunMainModule(main).ok());
-    EXPECT_EQ((*rt)->impl().code_cache_stats().hits, 0);
-    EXPECT_EQ((*rt)->impl().code_cache_stats().written, 2);
-  }
-  {
-    auto rt = JsRuntime::Create(options);
-    ASSERT_TRUE(rt.ok());
+    ASSERT_TRUE(rt.ok()) << rt.status();
     ASSERT_TRUE((*rt)->RunMainModule(main).ok());
     EXPECT_EQ(*(*rt)->EvalToString("r"), "42");
-    EXPECT_EQ((*rt)->impl().code_cache_stats().hits, 2);
-    EXPECT_EQ((*rt)->impl().code_cache_stats().written, 0);
   }
-  std::ofstream(lib) << "export function f(x) { return x * 3; }\n";
-  {
-    auto rt = JsRuntime::Create(options);
-    ASSERT_TRUE(rt.ok());
-    ASSERT_TRUE((*rt)->RunMainModule(main).ok());
-    EXPECT_EQ(*(*rt)->EvalToString("r"), "63");
-    EXPECT_EQ((*rt)->impl().code_cache_stats().hits, 1);  // main 未变
-    EXPECT_EQ((*rt)->impl().code_cache_stats().written, 1);
+  size_t files = 0;
+  for (const auto& entry : std::filesystem::recursive_directory_iterator(dir / "cache")) {
+    files += entry.is_regular_file() ? 1 : 0;
   }
+  EXPECT_GT(files, 0u) << "Node should have written its compile cache";
   std::filesystem::remove_all(dir);
+}
+
+// 反复创建/销毁运行时(hot restart): 每次都是全新的 Node 环境, poll 线程与 uv 循环干净退出。
+TEST(JsRuntimeLifecycleTest, RepeatedCreateAndDestroy) {
+  momo::testing::ScopedTestEventLoop loop;
+  for (int i = 0; i < 3; ++i) {
+    auto rt = JsRuntime::Create({});
+    ASSERT_TRUE(rt.ok()) << rt.status();
+    ASSERT_TRUE((*rt)->RunModuleSource("setInterval(() => {}, 5); globalThis.v = " +
+                                           std::to_string(i) + ";",
+                                       "loop.mjs")
+                    .ok());
+    EXPECT_EQ(*(*rt)->EvalToString("String(v)"), std::to_string(i));
+    loop.RunUntilIdle();
+  }
 }
 
 }  // namespace

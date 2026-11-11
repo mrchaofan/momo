@@ -11,6 +11,13 @@
 
 另有 `WorkerPool`(base):CPU 密集一次性任务(扩展可用),不保证顺序。
 
+Node.js(docs/04 §1)另带几类线程,都不执行 JS、不碰 momo 对象:
+- **uv poll 线程**("momo.uv.poll",每个 JS 运行时一个):只在 `uv_backend_fd` 上等待,有事件时向 ui 投递 `UvRunOnce`;
+  与 ui 以 `uv_sem` 严格交替(Electron NodeBindings 的模型)。libuv 的回调全部在 ui 线程执行。
+- **libuv 线程池**(fs、dns、zlib、crypto 等):完成后经 uv 循环回到 ui 线程。
+- **Node 平台线程池**:V8 后台任务(并发编译、GC);V8 前台任务经 uv 句柄回到 ui 线程。
+- **inspector IO 线程**(`--dev`):收发 DevTools 消息,经平台任务交给 ui 线程。
+
 ## 2. EventLoop、MessagePump 与 TaskRunner
 
 **每个线程(含 OS 主线程)都运行同一种 `momo::EventLoop`**(base/event_loop.h,docs/12),差别只在 `MessagePump`(等待/唤醒策略):

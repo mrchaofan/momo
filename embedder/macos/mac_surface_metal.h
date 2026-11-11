@@ -20,11 +20,17 @@
 //   全部 drawable 呈现"投递到主线程的同一个 CATransaction(layer.presentsWithTransaction = YES), 使原生
 //   视图与 momo 画面同帧生效。退出合成后, 主线程仍有待呈现的帧时普通帧也经主线程呈现, 保证顺序;
 //   之后切回命令缓冲 presentDrawable。
+// 窗口拖拽缩放(live resize, 同 Flutter FlutterResizeSynchronizer / Chromium 的 resize 同步): 窗口尺寸的变化在
+//   主线程的 CATransaction 里提交, raster 线程异步 present 的帧与之不同步——窗口服务器拿到新尺寸时内容仍是旧帧
+//   (被 contentsGravity 拉伸), 直到松手。live resize 期间全部帧改经主线程的呈现队列(presentsWithTransaction),
+//   内容视图每次尺寸变化后 WaitForFrame: 主线程等待一帧新尺寸的帧, 在同一事务里与新尺寸一起提交。
 // 生命周期: 由 MacWindow 拥有;Shell 解绑(raster 停用)之后才析构(render_surface.h)。
 
 #include <atomic>
+#include <functional>
 #include <memory>
 
+#include "base/time.h"
 #include "embedder/common/engine_platform.h"
 #include "embedder/macos/mac_surface_software.h"
 #include "engine/platform/render_surface.h"
@@ -61,6 +67,15 @@ class MacMetalSurface final : public platform::RenderSurface {
   // platform 线程, 绑定 raster 之前: 平台视图宿主(弱引用;为空则不支持平台视图)。
   void SetPlatformViews(MomoPlatformViews* views);
 
+  // platform 线程: 窗口开始/结束拖拽缩放。期间全部帧经主线程呈现队列、与窗口尺寸同一事务提交。
+  void SetLiveResizing(bool resizing);
+  // platform 线程(拖拽缩放中视图尺寸刚变化, 已通知引擎新尺寸): 等待一帧 physical_size 尺寸的帧并在当前
+  // CATransaction 内呈现(连同之前排队的帧, 按序)。等待期间以 pump 执行平台线程任务——vsync 请求、平台视图
+  // 呈现等要经过主线程, 不执行会死锁。超时返回 false(内容暂时被拉伸, 帧到达后照常呈现)。
+  bool WaitForFrame(Size physical_size, TimeDelta timeout, const std::function<void()>& pump);
+  // 是否已呈现过帧(引擎在出帧;没有帧时等待只会超时)。
+  bool has_presented() const { return has_presented_->load(std::memory_order_acquire); }
+
  private:
   MacMetalSurface(NSView* view, id<MTLDevice> device, id<MTLCommandQueue> queue);
 
@@ -83,6 +98,10 @@ class MacMetalSurface final : public platform::RenderSurface {
   bool presents_with_transaction_ = false;
   // 已投递到主线程、尚未呈现的帧数(raster 写 +1, 主线程 -1)。
   std::shared_ptr<std::atomic<int>> pending_main_presents_ = std::make_shared<std::atomic<int>>(0);
+  // 主线程呈现队列(raster 入队, 主线程按序执行;见 mac_surface_metal.mm)。
+  std::shared_ptr<class MainThreadPresenter> presenter_;
+  std::atomic<bool> live_resizing_{false};
+  std::shared_ptr<std::atomic<bool>> has_presented_ = std::make_shared<std::atomic<bool>>(false);
 };
 
 }  // namespace momo::embedder::macos

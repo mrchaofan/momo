@@ -41,10 +41,4 @@ StatusOr<ResolvedAssets> AssetResolver::Resolve(const AppConfig& config) const {
   return out;
 }
 
-std::filesystem::path AssetResolver::IcuDataPath() const {
-  std::error_code ec;
-  const std::filesystem::path path = resources_dir_ / kIcuDataFileName;
-  return std::filesystem::is_regular_file(path, ec) ? path : std::filesystem::path();
-}
-
 }  // namespace momo::embedder
