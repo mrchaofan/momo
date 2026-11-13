@@ -2,13 +2,13 @@ import {
   Center, Column, Container, Colors, ElevatedButton, Expanded, FocusManager, FocusNode, Focus, ListView, LogicalKeyboardKey,
   PhysicalKeyboardKey, RenderListViewport, ScrollController, SingleChildScrollView, SizedBox, Text, ValueKey, Offset, Row,
   Shortcuts, Actions, SingleActivator, Intent, CallbackAction, KeyModifier, AnimatedOpacity, Opacity, RenderOpacity,
-  type Widget, Theme, ThemeData, GestureDetector,
+  type View, Theme, ThemeData, GestureDetector,
 } from "../packages/momo/src/index";
 import { expect, group } from "./harness";
 import { Kind } from "./tester";
-import { testWidgets } from "./util";
+import { testViews } from "./util";
 
-const item = (i: number): Widget => new Container({ key: new ValueKey(i), height: 50, color: Colors.grey200, child: new Text(`item ${i}`) });
+const item = (i: number): View => new Container({ key: new ValueKey(i), height: 50, color: Colors.grey200, child: new Text(`item ${i}`) });
 
 const keys = {
   tab: { logical: LogicalKeyboardKey.tab.keyId, physical: PhysicalKeyboardKey.tab.keyId },
@@ -18,10 +18,10 @@ const keys = {
 };
 
 group("scrolling", () => {
-  testWidgets("ListView.builder builds lazily and scrolls with the wheel", async (t) => {
+  testViews("ListView.builder builds lazily and scrolls with the wheel", async (t) => {
     const controller = new ScrollController();
     let built = 0;
-    await t.pumpWidget(ListView.builder({
+    await t.pumpView(ListView.builder({
       controller,
       itemCount: 1000,
       cacheExtent: 0,
@@ -49,9 +49,9 @@ group("scrolling", () => {
     expect.equal(controller.offset, 1000 * 50 - 600);
   });
 
-  testWidgets("touch drag scrolls and flings; mouse drag does not", async (t) => {
+  testViews("touch drag scrolls and flings; mouse drag does not", async (t) => {
     const controller = new ScrollController();
-    await t.pumpWidget(new ListView({ controller, children: Array.from({ length: 100 }, (_, i) => item(i)) }));
+    await t.pumpView(new ListView({ controller, children: Array.from({ length: 100 }, (_, i) => item(i)) }));
     await t.drag(new Offset(400, 400), new Offset(0, -200), { kind: Kind.touch, steps: 10, stepMs: 10 });
     const afterDrag = controller.offset;
     expect.isTrue(afterDrag > 150 && afterDrag <= 200, `after drag ${afterDrag}`);
@@ -62,9 +62,9 @@ group("scrolling", () => {
     expect.equal(controller.offset, before);
   });
 
-  testWidgets("animateTo and SingleChildScrollView clipping", async (t) => {
+  testViews("animateTo and SingleChildScrollView clipping", async (t) => {
     const controller = new ScrollController();
-    await t.pumpWidget(new SingleChildScrollView({
+    await t.pumpView(new SingleChildScrollView({
       controller,
       child: new Column({ children: Array.from({ length: 30 }, (_, i) => item(i)) }),
     }));
@@ -75,10 +75,10 @@ group("scrolling", () => {
     expect.equal(t.rectOf(t.one(t.byText("item 10"))).top, 0);
   });
 
-  testWidgets("nested scrollables: innermost consumes the wheel", async (t) => {
+  testViews("nested scrollables: innermost consumes the wheel", async (t) => {
     const outer = new ScrollController();
     const inner = new ScrollController();
-    await t.pumpWidget(new ListView({
+    await t.pumpView(new ListView({
       controller: outer,
       children: [
         new SizedBox({ height: 200, child: new ListView({ controller: inner, children: Array.from({ length: 20 }, (_, i) => item(i)) }) }),
@@ -91,10 +91,10 @@ group("scrolling", () => {
     expect.deepEqual([inner.offset, outer.offset], [50, 50]);
   });
 
-  testWidgets("ListView updates items when data changes", async (t) => {
-    await t.pumpWidget(new ListView({ children: [item(1), item(2), item(3)] }));
+  testViews("ListView updates items when data changes", async (t) => {
+    await t.pumpView(new ListView({ children: [item(1), item(2), item(3)] }));
     expect.equal(t.byText("item 2").length, 1);
-    await t.pumpWidget(new ListView({ children: [item(1), item(3)] }));
+    await t.pumpView(new ListView({ children: [item(1), item(3)] }));
     expect.equal(t.byText("item 2").length, 0);
     expect.equal(t.rectOf(t.one(t.byText("item 3"))).top, 50);
   });
@@ -103,10 +103,10 @@ group("scrolling", () => {
 class IncIntent extends Intent {}
 
 group("focus & shortcuts", () => {
-  testWidgets("Tab / Shift+Tab traverse in reading order; Enter activates", async (t) => {
+  testViews("Tab / Shift+Tab traverse in reading order; Enter activates", async (t) => {
     const pressed: string[] = [];
     const nodes = ["a", "b", "c"].map((n) => new FocusNode({ debugLabel: n }));
-    await t.pumpWidget(new Theme({
+    await t.pumpView(new Theme({
       data: new ThemeData(),
       child: new Column({
         children: [
@@ -138,11 +138,11 @@ group("focus & shortcuts", () => {
     expect.isTrue(nodes[2]!.hasFocus);
   });
 
-  testWidgets("key events bubble from the primary focus; Shortcuts map to Actions", async (t) => {
+  testViews("key events bubble from the primary focus; Shortcuts map to Actions", async (t) => {
     let count = 0;
     const seen: string[] = [];
     const inner = new FocusNode({ debugLabel: "inner" });
-    await t.pumpWidget(new Shortcuts({
+    await t.pumpView(new Shortcuts({
       shortcuts: new Map([[new SingleActivator(LogicalKeyboardKey.keyK, { control: true }), new IncIntent()]]),
       child: new Actions({
         actions: new Map([[IncIntent, new CallbackAction<IncIntent>({ onInvoke: () => count++ })]]),
@@ -163,32 +163,32 @@ group("focus & shortcuts", () => {
     expect.isTrue(seen.length >= 2 && seen[0]!.startsWith("outer:"));
   });
 
-  testWidgets("unfocus returns focus to the scope; removed node loses focus", async (t) => {
+  testViews("unfocus returns focus to the scope; removed node loses focus", async (t) => {
     const node = new FocusNode({ debugLabel: "n" });
     let show = true;
-    const build = (): Widget => new Center({ child: show ? new Focus({ focusNode: node, child: new SizedBox({ width: 5, height: 5 }) }) : new SizedBox() });
-    await t.pumpWidget(build());
+    const build = (): View => new Center({ child: show ? new Focus({ focusNode: node, child: new SizedBox({ width: 5, height: 5 }) }) : new SizedBox() });
+    await t.pumpView(build());
     node.requestFocus();
     expect.isTrue(node.hasPrimaryFocus);
     node.unfocus();
     expect.isFalse(node.hasFocus);
     node.requestFocus();
     show = false;
-    await t.pumpWidget(build());
+    await t.pumpView(build());
     expect.isFalse(node.hasFocus);
     expect.notNull(FocusManager.instance.primaryFocus);
   });
 });
 
 group("implicit animation", () => {
-  testWidgets("AnimatedOpacity animates and composites with an OpacityLayer", async (t) => {
+  testViews("AnimatedOpacity animates and composites with an OpacityLayer", async (t) => {
     let target = 1;
-    const build = (): Widget => new Center({ child: new AnimatedOpacity({ opacity: target, duration: 200, child: new Container({ width: 10, height: 10, color: Colors.red }) }) });
-    await t.pumpWidget(build());
+    const build = (): View => new Center({ child: new AnimatedOpacity({ opacity: target, duration: 200, child: new Container({ width: 10, height: 10, color: Colors.red }) }) });
+    await t.pumpView(build());
     const ro = (): RenderOpacity => t.one(t.byType(Opacity)).findRenderObject() as RenderOpacity;
     expect.equal(ro().opacity, 1);
     target = 0;
-    await t.pumpWidget(build());
+    await t.pumpView(build());
     await t.pump(100);
     const mid = ro().opacity;
     expect.isTrue(mid > 0.3 && mid < 0.7, `mid ${mid}`);

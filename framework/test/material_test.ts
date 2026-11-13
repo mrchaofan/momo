@@ -1,21 +1,21 @@
 import {
   AlertDialog, AppBar, Builder, Center, Checkbox, ElevatedButton, FloatingActionButton, InputDecoration, LogicalKeyboardKey,
-  MaterialApp, Offset, PhysicalKeyboardKey, Scaffold, State, StatefulWidget, Text, TextButton, TextField, ThemeData, showDialog,
-  closeDialog, FocusNode, ButtonState, StatefulElement, type BuildContext, type Widget, Container, TextEditingController,
+  MaterialApp, Offset, PhysicalKeyboardKey, Scaffold, State, StatefulView, Text, TextButton, TextField, ThemeData, showDialog,
+  closeDialog, FocusNode, ButtonState, StatefulElement, type BuildContext, type View, Container, TextEditingController,
 } from "../packages/momo/src/index";
 import { expect, group } from "./harness";
-import { testWidgets } from "./util";
+import { testViews } from "./util";
 
-const app = (home: Widget): Widget => new MaterialApp({ title: "test", theme: new ThemeData(), home });
+const app = (home: View): View => new MaterialApp({ title: "test", theme: new ThemeData(), home });
 
-class CheckHost extends StatefulWidget {
+class CheckHost extends StatefulView {
   createState(): State {
     return new CheckHostState();
   }
 }
 class CheckHostState extends State<CheckHost> {
   value = false;
-  build(): Widget {
+  build(): View {
     return new Center({ child: new Checkbox({ value: this.value, onChanged: (v) => this.setState(() => (this.value = v)) }) });
   }
 }
@@ -26,14 +26,14 @@ function buttonState(t: { allElements(): import("../packages/momo/src/index").El
 }
 
 group("material", () => {
-  testWidgets("MaterialApp sets the window title", async (_t, ctx) => {
-    await _t.pumpWidget(app(new Text("x")));
+  testViews("MaterialApp sets the window title", async (_t, ctx) => {
+    await _t.pumpView(app(new Text("x")));
     expect.equal(ctx.host.mock!.title, "test");
   }, { mockOnly: true });
 
-  testWidgets("ElevatedButton: hover / pressed states, onPressed, disabled", async (t) => {
+  testViews("ElevatedButton: hover / pressed states, onPressed, disabled", async (t) => {
     let presses = 0;
-    await t.pumpWidget(app(new Center({ child: new ElevatedButton({ onPressed: () => presses++, child: new Text("Go") }) })));
+    await t.pumpView(app(new Center({ child: new ElevatedButton({ onPressed: () => presses++, child: new Text("Go") }) })));
     const btn = t.one(t.byType(ElevatedButton));
     const s = buttonState(t);
     await t.hover(t.centerOf(btn));
@@ -48,13 +48,13 @@ group("material", () => {
     expect.equal(presses, 1);
     await t.hover(new Offset(1, 1));
     expect.isFalse(s.hovered);
-    await t.pumpWidget(app(new Center({ child: new ElevatedButton({ onPressed: null, child: new Text("Go") }) })));
+    await t.pumpView(app(new Center({ child: new ElevatedButton({ onPressed: null, child: new Text("Go") }) })));
     await t.tap(t.one(t.byType(ElevatedButton)));
     expect.equal(presses, 1);
   });
 
-  testWidgets("Checkbox toggles by tap and by Space when focused", async (t) => {
-    await t.pumpWidget(app(new CheckHost()));
+  testViews("Checkbox toggles by tap and by Space when focused", async (t) => {
+    await t.pumpView(app(new CheckHost()));
     const host = t.allElements().find((e) => e instanceof StatefulElement && e.state instanceof CheckHostState) as StatefulElement;
     const st = host.state as CheckHostState;
     await t.tap(t.one(t.byType(Checkbox)));
@@ -64,12 +64,12 @@ group("material", () => {
     expect.isFalse(st.value);
   });
 
-  testWidgets("TextField: hint, typing via IME commit, onChanged", async (t) => {
+  testViews("TextField: hint, typing via IME commit, onChanged", async (t) => {
     t.recordMethodCalls("momo/textinput");
     const changes: string[] = [];
     const node = new FocusNode();
     const controller = new TextEditingController();
-    await t.pumpWidget(app(new Center({ child: new Container({ width: 300, child: new TextField({ controller, focusNode: node, decoration: new InputDecoration({ hintText: "Type here" }), onChanged: (s) => changes.push(s) }) }) })));
+    await t.pumpView(app(new Center({ child: new Container({ width: 300, child: new TextField({ controller, focusNode: node, decoration: new InputDecoration({ hintText: "Type here" }), onChanged: (s) => changes.push(s) }) }) })));
     expect.equal(t.byText("Type here").length, 1);
     await t.tap(t.one(t.byType(TextField)));
     expect.isTrue(node.hasFocus);
@@ -80,8 +80,8 @@ group("material", () => {
     expect.equal(t.byText("Type here").length, 0);
   });
 
-  testWidgets("Scaffold: app bar and FAB placement", async (t) => {
-    await t.pumpWidget(app(new Scaffold({
+  testViews("Scaffold: app bar and FAB placement", async (t) => {
+    await t.pumpView(app(new Scaffold({
       appBar: new AppBar({ title: new Text("Title") }),
       body: new Center({ child: new Text("body") }),
       floatingActionButton: new FloatingActionButton({ onPressed: () => {}, child: new Text("+") }),
@@ -92,9 +92,9 @@ group("material", () => {
     expect.deepEqual([fab.right, fab.bottom], [784, 584]);
   });
 
-  testWidgets("showDialog: open, close with result, barrier dismiss, Escape", async (t) => {
+  testViews("showDialog: open, close with result, barrier dismiss, Escape", async (t) => {
     let ctxRef: BuildContext | null = null;
-    await t.pumpWidget(app(new Builder({ builder: (c) => {
+    await t.pumpView(app(new Builder({ builder: (c) => {
       ctxRef = c;
       return new Center({ child: new Text("home") });
     } })));

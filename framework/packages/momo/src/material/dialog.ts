@@ -5,19 +5,19 @@ import { BoxDecoration, BoxShadow } from "../painting/decoration";
 import { EdgeInsets } from "../painting/edge_insets";
 import { Offset } from "../painting/geometry";
 import { BoxConstraints } from "../rendering/box_constraints";
-import { Actions, CallbackAction, DismissIntent } from "../widgets/actions";
-import { Center, Column, ConstrainedBox, Padding, Row, SizedBox, Stack, Positioned } from "../widgets/basic";
-import { Container } from "../widgets/container";
-import { FocusManager, type FocusNode } from "../widgets/focus_manager";
-import { FocusScope } from "../widgets/focus_scope";
-import { InheritedWidget, StatelessWidget, type BuildContext, type Widget } from "../widgets/framework";
-import { GestureDetector } from "../widgets/gesture_detector";
-import { Overlay, OverlayEntry } from "../widgets/overlay";
-import { DefaultTextStyle } from "../widgets/text";
+import { Actions, CallbackAction, DismissIntent } from "../views/actions";
+import { Center, Column, ConstrainedBox, Padding, Row, SizedBox, Stack, Positioned } from "../views/basic";
+import { Container } from "../views/container";
+import { FocusManager, type FocusNode } from "../views/focus_manager";
+import { FocusScope } from "../views/focus_scope";
+import { InheritedView, StatelessView, type BuildContext, type View } from "../views/framework";
+import { GestureDetector } from "../views/gesture_detector";
+import { Overlay, OverlayEntry } from "../views/overlay";
+import { DefaultTextStyle } from "../views/text";
 import { Theme } from "./theme";
 
-class DialogScope extends InheritedWidget {
-  constructor(readonly close: (result?: unknown) => void, child: Widget) {
+class DialogScope extends InheritedView {
+  constructor(readonly close: (result?: unknown) => void, child: View) {
     super({ child });
   }
   updateShouldNotify(old: DialogScope): boolean {
@@ -27,7 +27,7 @@ class DialogScope extends InheritedWidget {
 
 /** 关闭最近的对话框(对应 Navigator.pop)。返回是否找到对话框。 */
 export function closeDialog(context: BuildContext, result?: unknown): boolean {
-  const scope = context.getInheritedWidgetOfExactType(DialogScope);
+  const scope = context.getInheritedViewOfExactType(DialogScope);
   if (scope === null) return false;
   scope.close(result);
   return true;
@@ -39,7 +39,7 @@ export function closeDialog(context: BuildContext, result?: unknown): boolean {
  */
 export function showDialog<T = unknown>(o: {
   context: BuildContext;
-  builder: (context: BuildContext, close: (result?: T) => void) => Widget;
+  builder: (context: BuildContext, close: (result?: T) => void) => View;
   barrierDismissible?: boolean;
   barrierColor?: Color;
 }): Promise<T | undefined> {
@@ -84,15 +84,15 @@ export function showDialog<T = unknown>(o: {
 }
 
 /** 对话框外壳。 */
-export class Dialog extends StatelessWidget {
-  readonly child: Widget | null;
+export class Dialog extends StatelessView {
+  readonly child: View | null;
   readonly backgroundColor: Color | null;
-  constructor(o: { key?: Key | null; child?: Widget | null; backgroundColor?: Color | null } = {}) {
+  constructor(o: { key?: Key | null; child?: View | null; backgroundColor?: Color | null } = {}) {
     super(o.key);
     this.child = o.child ?? null;
     this.backgroundColor = o.backgroundColor ?? null;
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     return new ConstrainedBox({
       constraints: BoxConstraints.from({ minWidth: 280, maxWidth: 560 }),
@@ -109,19 +109,19 @@ export class Dialog extends StatelessWidget {
 }
 
 /** 标题 + 内容 + 操作按钮的对话框。 */
-export class AlertDialog extends StatelessWidget {
-  readonly title: Widget | null;
-  readonly content: Widget | null;
-  readonly actions: readonly Widget[];
-  constructor(o: { key?: Key | null; title?: Widget | null; content?: Widget | null; actions?: readonly Widget[] } = {}) {
+export class AlertDialog extends StatelessView {
+  readonly title: View | null;
+  readonly content: View | null;
+  readonly actions: readonly View[];
+  constructor(o: { key?: Key | null; title?: View | null; content?: View | null; actions?: readonly View[] } = {}) {
     super(o.key);
     this.title = o.title ?? null;
     this.content = o.content ?? null;
     this.actions = o.actions ?? [];
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
-    const children: Widget[] = [];
+    const children: View[] = [];
     if (this.title !== null) children.push(new DefaultTextStyle({ style: theme.textTheme.headlineMedium.copyWith({ fontSize: 24 }), child: this.title }));
     if (this.content !== null) {
       if (children.length > 0) children.push(new SizedBox({ height: 16 }));
@@ -129,7 +129,7 @@ export class AlertDialog extends StatelessWidget {
     }
     if (this.actions.length > 0) {
       children.push(new SizedBox({ height: 24 }));
-      const row: Widget[] = [];
+      const row: View[] = [];
       this.actions.forEach((a, i) => {
         if (i > 0) row.push(new SizedBox({ width: 8 }));
         row.push(a);

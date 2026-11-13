@@ -1,6 +1,6 @@
 // momo:ui 的纯 TS mock(Node 宿主下替代引擎原生模块)。
 // - Canvas/SceneBuilder 记录调用;
-// - window 可模拟 vsync(由 WidgetTester 直接调用 onBeginFrame/onDrawFrame);
+// - window 可模拟 vsync(由 ViewTester 直接调用 onBeginFrame/onDrawFrame);
 // - Paragraph 采用 Ahem 固定宽度字形模型:每个 UTF-16 码元宽 = 字号, 行高 = 字号 × height(默认 1),
 //   ascent = 0.8 × 字号, descent = 0.2 × 字号;按空格/换行贪心折行。
 import type { MockControl, RecordedOp } from "../host";
@@ -46,23 +46,27 @@ const control: MockControl = {
   hasView(id: number): boolean {
     return viewMap.has(id);
   },
-  async requestCloseView(id: number): Promise<boolean> {
-    if (!viewMap.has(id)) return false;
-    const reply = await __mockServices.deliver("momo/window", codec.encodeMethodCall(new MethodCall("closeRequested", { view: id })));
-    let allow = true;
-    if (reply !== null) {
-      try {
-        allow = codec.decodeEnvelope(reply) !== false;
-      } catch {
-        allow = true;
-      }
-    }
-    if (allow) removeView(id);
-    return allow;
+  requestCloseView(id: number): Promise<boolean> {
+    return hostRequestClose(id);
   },
-  async requestAppExit(): Promise<boolean> {
-    const reply = await __mockServices.deliver("momo/app", codec.encodeMethodCall(new MethodCall("requestExit", null)));
-    return reply === null || codec.decodeEnvelope(reply) !== false;
+  requestQuit(): Promise<boolean> {
+    return hostQuit();
+  },
+  exitCode: null,
+  appCalls: [],
+  setWindowState(id, state): void {
+    setState(id, state);
+  },
+  windowStates: new Map(),
+  setWindowFocus(id, focused): void {
+    const v = viewMap.get(id);
+    if (v === undefined) return;
+    v.focused = focused;
+    v.onFocusChanged?.(focused);
+    notify("focusChanged", { view: id, focused });
+  },
+  reopen(hasVisibleWindows: boolean): void {
+    notifyApp("activate", { hasVisibleWindows });
   },
   failNextCreateView: false,
   alwaysOnTop: new Map<number, boolean>(),
@@ -83,10 +87,28 @@ const control: MockControl = {
   debugRestoreImplicitView(): void {
     captureView = null;
     activeSequence = 0;
-    if (viewMap.has(0)) return;
+    control.exitCode = null;
+    control.appCalls = [];
+    quitting = false;
+    // 测试之间不留窗口: 静默移除其他视图(框架侧的 Widget 对象由 Widget.debugReset 作废)。
+    for (const id of [...viewMap.keys()]) {
+      if (id === 0) continue;
+      viewMap.delete(id);
+      control.sceneOpsByView.delete(id);
+      control.frames.delete(id);
+      control.windowStates.delete(id);
+      firstFrame.delete(id);
+    }
+    const startup = viewMap.get(0);
+    if (startup !== undefined) {
+      startup.visible = true;
+      control.windowStates.set(0, { ...kShown });
+      return;
+    }
     viewMap.set(0, makeView(0, 800, 600, 1));
     control.frames.set(0, { x: 0, y: 0, width: 800, height: 600 });
-    win.onViewsChanged?.();
+    control.windowStates.set(0, { ...kShown });
+    win.onViewportsChanged?.();
   },
 };
 export const __mock: MockControl = control;
@@ -521,23 +543,25 @@ export interface KeyData {
 
 export type SystemCursor = "basic" | "text" | "click" | "precise" | "resizeLeftRight" | "resizeUpDown" | "forbidden" | "none";
 
-/** momo:ui View 的 mock: 只有引擎职责(画面、尺寸、输入、捕获)。窗口管理由下方的宿主 mock(momo/window)提供。 */
+/** momo:ui RootView 的 mock: 只有引擎职责(画面、尺寸、输入、捕获)。窗口管理由下方的宿主 mock(momo/window)提供。 */
 interface MockView {
   readonly id: number;
   devicePixelRatio: number;
   physicalSize: { width: number; height: number };
   focused: boolean;
+  visible: boolean;
   onMetricsChanged: (() => void) | null;
   onPointerPacket: ((data: Float64Array, count: number) => void) | null;
   onKeyData: ((data: KeyData) => boolean | void) | null;
   onFocusChanged: ((focused: boolean) => void) | null;
+  onVisibilityChanged: ((visible: boolean) => void) | null;
   render(scene: Scene): void;
 }
 
 interface MockWindow {
   onBeginFrame: ((frameTimeMs: number) => void) | null;
   onDrawFrame: (() => void) | null;
-  onViewsChanged: (() => void) | null;
+  onViewportsChanged: (() => void) | null;
   scheduleFrame(): void;
 }
 
@@ -550,13 +574,21 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
     devicePixelRatio: dpr,
     physicalSize: { width, height },
     focused: id === 0,
+    visible: true,
     onMetricsChanged: null,
     onPointerPacket: null,
     onKeyData: null,
     onFocusChanged: null,
+    onVisibilityChanged: null,
     render(scene: Scene): void {
       if (!viewMap.has(id)) return;
+      // 引擎: 不可见的视图提交的画面被丢弃。
+      if (!this.visible) return;
       control.sceneOpsByView.set(id, scene.ops);
+      if (!firstFrame.has(id)) {
+        firstFrame.add(id);
+        notify("readyToShow", { view: id });
+      }
       if (id === 0) {
         control.renderedScenes++;
         control.lastSceneOps = scene.ops;
@@ -578,21 +610,50 @@ function removeView(id: number): void {
   control.sceneOpsByView.delete(id);
   control.frames.delete(id);
   control.moveLoops.delete(id);
-  // 宿主异步通知(真实引擎经 ui 线程任务): 用 microtask 模拟。
-  void Promise.resolve().then(() => win.onViewsChanged?.());
+  control.windowStates.delete(id);
+  firstFrame.delete(id);
+  const last = viewMap.size === 0;
+  // 宿主异步通知(真实引擎经 ui 线程任务): 用 microtask 模拟。视图先移除, 再发 closed;最后一个窗口关闭时
+  // (不在退出流程中)发 windowAllClosed, 应用继续运行。
+  void Promise.resolve().then(() => {
+    win.onViewportsChanged?.();
+    notify("closed", { view: id });
+    if (last && !quitting && viewMap.size === 0) notifyApp("windowAllClosed", {});
+  });
+}
+
+const kShown = { visible: true, minimized: false, maximized: false, fullscreen: false };
+/** 已呈现过画面的视图(宿主据此发 readyToShow)。 */
+const firstFrame = new Set<number>();
+
+/** 宿主改变窗口状态: 上报 stateChanged;可见性(显示且未最小化)同步给视图。 */
+function setState(view: number, change: Partial<typeof kShown>): void {
+  const old = control.windowStates.get(view);
+  const v = viewMap.get(view);
+  if (old === undefined || v === undefined) return;
+  const next = { ...old, ...change };
+  if (JSON.stringify(next) === JSON.stringify(old)) return;
+  control.windowStates.set(view, next);
+  notify("stateChanged", { view, state: next });
+  const visible = next.visible && !next.minimized;
+  if (visible !== v.visible) {
+    v.visible = visible;
+    v.onVisibilityChanged?.(visible);
+  }
 }
 
 const win: MockWindow = {
   onBeginFrame: null,
   onDrawFrame: null,
-  onViewsChanged: null,
+  onViewportsChanged: null,
   scheduleFrame(): void { control.frameRequests++; },
 };
 viewMap.set(0, makeView(0, 800, 600, 1));
 control.frames.set(0, { x: 0, y: 0, width: 800, height: 600 });
+control.windowStates.set(0, { ...kShown });
 
-export const window = win;
-export const views: ReadonlyMap<number, MockView> = viewMap;
+export const platformDispatcher = win;
+export const viewports: ReadonlyMap<number, MockView> = viewMap;
 
 // ---------------------------------------------------------------------------
 // 宿主 mock: momo/window(真实实现见 embedder/common/window_channel.cc)。处理器同步执行(状态在调用时即更新),
@@ -602,6 +663,51 @@ const codec = StandardMethodCodec.instance;
 
 function notify(method: string, args: Record<string, unknown>): void {
   void __mockServices.deliver("momo/window", codec.encodeMethodCall(new MethodCall(method, args)));
+}
+
+function notifyApp(method: string, args: Record<string, unknown>): void {
+  void __mockServices.deliver("momo/app", codec.encodeMethodCall(new MethodCall(method, args)));
+}
+
+/** 宿主 → JS 的询问(回复 bool;无处理器或出错视为允许)。 */
+async function ask(channel: string, method: string, args: Record<string, unknown>): Promise<boolean> {
+  const reply = await __mockServices.deliver(channel, codec.encodeMethodCall(new MethodCall(method, args)));
+  if (reply === null) return true;
+  try {
+    return codec.decodeEnvelope(reply) !== false;
+  } catch {
+    return true;
+  }
+}
+
+/** 用户点了关闭按钮(或 requestClose): 询问 JS, 允许则关闭。 */
+async function hostRequestClose(view: number): Promise<boolean> {
+  if (!viewMap.has(view)) return false;
+  const allow = await ask("momo/window", "closeRequested", { view });
+  if (allow) removeView(view);
+  return allow;
+}
+
+let quitting = false;
+/** 退出流程(同 embedder/common/application.cc 的 Quit)。 */
+async function hostQuit(): Promise<boolean> {
+  if (quitting || control.exitCode !== null) return false;
+  quitting = true;
+  try {
+    if (!(await ask("momo/app", "beforeQuit", {}))) return false;
+    const results = await Promise.all([...viewMap.keys()].map((id) => hostRequestClose(id)));
+    if (results.includes(false)) return false;
+    if (!(await ask("momo/app", "willQuit", {}))) return false;
+    hostExit(0);
+    return true;
+  } finally {
+    quitting = false;
+  }
+}
+
+function hostExit(code: number): void {
+  control.exitCode = code;
+  notifyApp("stateChanged", { state: "terminating" });
 }
 
 function setFrame(view: number, frame: { x: number; y: number; width: number; height: number }): void {
@@ -681,7 +787,8 @@ function handleWindowCall(call: MethodCall): unknown {
     if (typeof a["title"] === "string" && a["title"] !== "") control.titles.set(id, a["title"]);
     if (a["nonActivating"] === true) control.panelViews.add(id);
     if (a["resizable"] === false) control.resizable.set(id, false);
-    win.onViewsChanged?.();  // 视图先加入(真实宿主: AddView 先于回复到达 ui 线程)
+    control.windowStates.set(id, { ...kShown, visible: a["show"] !== false });
+    win.onViewportsChanged?.();  // 视图先加入(真实宿主: AddView 先于回复到达 ui 线程)
     return id;
   }
   const view = Number(a["view"]);
@@ -689,14 +796,36 @@ function handleWindowCall(call: MethodCall): unknown {
     removeView(view);
     return null;
   }
+  if (call.method === "requestClose") {
+    void hostRequestClose(view);
+    return null;
+  }
   if (!viewMap.has(view)) throw new PlatformException("notFound", `no window for view ${view}`);
   switch (call.method) {
     case "getState": {
       const f = control.frames.get(view)!;
       return {
-        frame: [f.x, f.y, f.width, f.height], controls: controlsOf(view),
-        capabilities: ["alwaysOnTop", "position", "resizeOptions", "hiddenTitleBar", "windowDrag", "moveLoop", "pointerCapture", "platformViews", "nonActivating"],
+        frame: [f.x, f.y, f.width, f.height], controls: controlsOf(view), state: control.windowStates.get(view),
+        capabilities: ["alwaysOnTop", "position", "resizeOptions", "hiddenTitleBar", "windowDrag", "moveLoop", "pointerCapture",
+                       "platformViews", "nonActivating", "visibility", "minMax"],
       };
+    }
+    case "show":
+      setState(view, { visible: true, minimized: false });
+      return null;
+    case "hide":
+      setState(view, { visible: false });
+      return null;
+    case "minimize":
+      setState(view, { minimized: true });
+      return null;
+    case "maximize":
+      setState(view, { maximized: true, minimized: false });
+      return null;
+    case "restore": {
+      const st = control.windowStates.get(view)!;
+      setState(view, st.minimized ? { minimized: false } : { maximized: false });
+      return null;
     }
     case "setTitle":
       control.titles.set(view, String(a["title"]));
@@ -759,6 +888,39 @@ __mockServices.setNativeHandler("momo/window", (data) => {
   }
   try {
     return codec.encodeSuccessEnvelope(handleWindowCall(call) ?? null);
+  } catch (e) {
+    if (e instanceof PlatformException) return codec.encodeErrorEnvelope(e.code, e.platformMessage);
+    return codec.encodeErrorEnvelope("error", String(e));
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 宿主 mock: momo/app(真实实现见 embedder/common/app_channel.cc)。
+
+function handleAppCall(call: MethodCall): unknown {
+  const a = (call.args ?? {}) as Record<string, unknown>;
+  control.appCalls.push(call.method);
+  switch (call.method) {
+    case "quit":
+      void hostQuit();
+      return null;
+    case "exit":
+      hostExit(typeof a["code"] === "number" ? a["code"] : 0);
+      return null;
+    case "hide":
+    case "show":
+    case "focus":
+      return null;
+    case "getState":
+      return { state: control.exitCode !== null ? "terminating" : "running", active: true, capabilities: ["hide", "activate"] };
+    default:
+      throw new PlatformException("unimplemented", `momo/app: unknown method ${call.method}`);
+  }
+}
+
+__mockServices.setNativeHandler("momo/app", (data) => {
+  try {
+    return codec.encodeSuccessEnvelope(handleAppCall(codec.decodeMethodCall(data)) ?? null);
   } catch (e) {
     if (e instanceof PlatformException) return codec.encodeErrorEnvelope(e.code, e.platformMessage);
     return codec.encodeErrorEnvelope("error", String(e));

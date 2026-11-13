@@ -10,6 +10,7 @@
 #include "base/status.h"
 #include "embedder/common/display.h"
 #include "embedder/common/engine_platform.h"
+#include "embedder/common/platform_app.h"
 #include "embedder/common/platform_window.h"
 #include "embedder/common/platform_services.h"
 #include "engine/platform/vsync_source.h"
@@ -25,6 +26,8 @@ class PlatformIntegration {
   // 返回的 platform::VsyncSource 归属 platform 线程(momo::Object), 释放即 DeleteLater。
   virtual StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource(const PlatformWindow& window) = 0;
   virtual PlatformServices& services() = 0;
+  // 应用级能力(隐藏/显示/激活)。
+  virtual PlatformApp& app() = 0;
   virtual std::vector<DisplayInfo> displays() const = 0;
   // OS 主线程的原生消息循环。embedder 用 NativeMessagePump 在其上运行 platform EventLoop。
   virtual NativeLoop& native_loop() = 0;

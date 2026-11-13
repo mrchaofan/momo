@@ -806,16 +806,19 @@ bool MomoPointerSequenceActive() { return Dispatcher().has_sequence(); }
   _owner->NotifyMetricsChanged();
   _owner->NotifyFrameChanged();
   _owner->NotifyControlsChanged();
+  _owner->NotifyStateChanged();  // 缩放(zoom)
 }
 - (void)windowDidMove:(NSNotification*)notification {
   _owner->NotifyFrameChanged();
 }
 - (void)windowDidEnterFullScreen:(NSNotification*)notification {
   _owner->NotifyControlsChanged();  // 全屏时红绿灯不占用内容区
+  _owner->NotifyStateChanged();
 }
 - (void)windowDidExitFullScreen:(NSNotification*)notification {
   _owner->LayoutTrafficLights();
   _owner->NotifyControlsChanged();
+  _owner->NotifyStateChanged();
 }
 - (void)windowDidChangeBackingProperties:(NSNotification*)notification {
   _owner->NotifyMetricsChanged();
@@ -830,10 +833,10 @@ bool MomoPointerSequenceActive() { return Dispatcher().has_sequence(); }
   _owner->delegate()->OnFocusChanged(false);
 }
 - (void)windowDidMiniaturize:(NSNotification*)notification {
-  _owner->delegate()->OnVisibilityChanged(false);
+  _owner->NotifyStateChanged();
 }
 - (void)windowDidDeminiaturize:(NSNotification*)notification {
-  _owner->delegate()->OnVisibilityChanged(true);
+  _owner->NotifyStateChanged();
 }
 @end
 
@@ -953,6 +956,7 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate) : delegat
     [window_ center];
   }
   last_metrics_ = metrics();
+  last_state_ = state();  // 尚未显示
 }
 
 MacWindow::~MacWindow() {
@@ -976,10 +980,61 @@ void MacWindow::Show() {
     // 面板: 带到最前并成为 key, 但不激活应用(其他窗口保持原状)。
     [window_ orderFrontRegardless];
     [window_ makeKeyWindow];
+  } else {
+    [window_ makeKeyAndOrderFront:nil];
+    [NSApp activateIgnoringOtherApps:YES];
+  }
+  NotifyStateChanged();
+}
+
+WindowStateFlags MacWindow::state() const {
+  WindowStateFlags s;
+  s.minimized = window_.miniaturized;
+  s.visible = window_.visible || s.minimized;  // 最小化的窗口 isVisible 为 NO, 但没有被隐藏
+  s.fullscreen = (window_.styleMask & NSWindowStyleMaskFullScreen) != 0;
+  s.maximized = !s.fullscreen && resize_options_.resizable && window_.zoomed;
+  return s;
+}
+
+void MacWindow::NotifyStateChanged() {
+  const WindowStateFlags s = state();
+  if (s == last_state_) {
     return;
   }
-  [window_ makeKeyAndOrderFront:nil];
-  [NSApp activateIgnoringOtherApps:YES];
+  last_state_ = s;
+  delegate_->OnWindowStateChanged(s);
+}
+
+Status MacWindow::Hide() {
+  [window_ orderOut:nil];
+  NotifyStateChanged();
+  return Status::Ok();
+}
+
+Status MacWindow::Minimize() {
+  [window_ miniaturize:nil];  // windowDidMiniaturize 上报状态
+  return Status::Ok();
+}
+
+Status MacWindow::Maximize() {
+  if (window_.miniaturized) {
+    [window_ deminiaturize:nil];
+  }
+  if (!window_.zoomed) {
+    [window_ zoom:nil];
+  }
+  NotifyStateChanged();
+  return Status::Ok();
+}
+
+Status MacWindow::Restore() {
+  if (window_.miniaturized) {
+    [window_ deminiaturize:nil];
+  } else if (window_.zoomed) {
+    [window_ zoom:nil];
+  }
+  NotifyStateChanged();
+  return Status::Ok();
 }
 
 void MacWindow::SetTitle(std::string_view title) { window_.title = ToNSString(title); }
@@ -1017,7 +1072,8 @@ TextInputConnection& MacWindow::text_input() { return *text_input_; }
 uint32_t MacWindow::capabilities() const {
   return kCapabilityAlwaysOnTop | kCapabilityPosition | kCapabilityResizeOptions |
          kCapabilityHiddenTitleBar | kCapabilityWindowDrag | kCapabilityMoveLoop |
-         kCapabilityPointerCapture | kCapabilityPlatformViews | kCapabilityNonActivating;
+         kCapabilityPointerCapture | kCapabilityPlatformViews | kCapabilityNonActivating |
+         kCapabilityVisibility | kCapabilityMinMax;
 }
 
 void* MacWindow::native_handle() const { return (__bridge void*)view_; }

@@ -1,8 +1,8 @@
 import type { Key } from "../foundation/key";
 import { Color, Colors } from "../painting/color";
 import { TextStyle, FontWeight } from "../painting/text_style";
-import { InheritedWidget, StatelessWidget, type BuildContext, type Widget } from "../widgets/framework";
-import { DefaultTextStyle } from "../widgets/text";
+import { InheritedView, StatelessView, type BuildContext, type View } from "../views/framework";
+import { DefaultTextStyle } from "../views/text";
 
 /** 明暗。 */
 export type Brightness = "light" | "dark";
@@ -95,8 +95,8 @@ export class ThemeData {
 
 const defaultTheme = new ThemeData();
 
-class InheritedTheme extends InheritedWidget {
-  constructor(readonly data: ThemeData, child: Widget) {
+class InheritedTheme extends InheritedView {
+  constructor(readonly data: ThemeData, child: View) {
     super({ child });
   }
   updateShouldNotify(old: InheritedTheme): boolean {
@@ -105,18 +105,18 @@ class InheritedTheme extends InheritedWidget {
 }
 
 /** 向子树提供主题(并设置默认文本样式)。 */
-export class Theme extends StatelessWidget {
+export class Theme extends StatelessView {
   readonly data: ThemeData;
-  readonly child: Widget;
-  constructor(o: { key?: Key | null; data: ThemeData; child: Widget }) {
+  readonly child: View;
+  constructor(o: { key?: Key | null; data: ThemeData; child: View }) {
     super(o.key);
     this.data = o.data;
     this.child = o.child;
   }
   static of(context: BuildContext): ThemeData {
-    return context.dependOnInheritedWidgetOfExactType(InheritedTheme)?.data ?? defaultTheme;
+    return context.dependOnInheritedViewOfExactType(InheritedTheme)?.data ?? defaultTheme;
   }
-  build(): Widget {
+  build(): View {
     return new InheritedTheme(this.data, new DefaultTextStyle({ style: this.data.textTheme.bodyMedium, child: this.child }));
   }
 }

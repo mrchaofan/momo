@@ -12,6 +12,7 @@
 // 线程约定: momo::Object, 归属 raster 线程(创建时的当前 EventLoop), 仅在该线程调用与析构。
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 
@@ -51,6 +52,11 @@ class Rasterizer final : public Object {
   void Setup(platform::RenderSurface* surface) { Setup(platform::kImplicitViewId, surface); }
   void Teardown() { Teardown(platform::kImplicitViewId); }
 
+  // 视图(每次 Setup 之后)的第一帧呈现成功时回调(raster 线程)。
+  void SetFirstFrameCallback(std::function<void(platform::ViewId)> callback) {
+    on_first_frame_ = std::move(callback);
+  }
+
   // 消费 Pipeline 中全部已入队的帧(深度有限, 通常 1 个)。
   void Draw(LayerTreePipeline& pipeline);
   // 重绘视图最近一帧(resize 后 / 首帧预热, docs/05 §5)。没有时返回 false。
@@ -72,16 +78,20 @@ class Rasterizer final : public Object {
     bool logged_no_platform_views = false;
     // 上一帧走了合成路径且含平台视图: 下一帧即使没有平台视图也要走一次合成, 让 surface 隐藏它们。
     bool composing = false;
+    bool first_frame_reported = false;  // 本次 Setup 后是否已报告第一帧
   };
 
   const ViewState* Find(platform::ViewId view_id) const;
   void CreateBackend(ViewState& view);
+  // 画进视图的 surface;本次 Setup 后第一次呈现成功时报告 on_first_frame_。
+  void DrawAndReport(platform::ViewId view_id, ViewState& view, graphics::LayerTree& layer_tree);
   void DrawToSurface(ViewState& view, graphics::LayerTree& layer_tree);
   // 平台视图合成路径(docs/05 §9)。
   void DrawComposited(ViewState& view, graphics::LayerTree& layer_tree);
 
   std::map<platform::ViewId, ViewState> views_;
   Stats stats_;
+  std::function<void(platform::ViewId)> on_first_frame_;
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(Rasterizer);
 };

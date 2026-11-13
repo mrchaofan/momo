@@ -58,7 +58,12 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   TextInputConnection& text_input() override;
   void* native_handle() const override;
   void Activate() override;
+  WindowStateFlags state() const override;
   uint32_t capabilities() const override;
+  Status Hide() override;
+  Status Minimize() override;
+  Status Maximize() override;
+  Status Restore() override;
   Status SetAlwaysOnTop(bool on) override;
   StatusOr<bool> CapturePointer(int64_t sequence_id) override;
   void ReleasePointerCapture() override;
@@ -72,6 +77,8 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   Rect screen_frame() const override;
   Status SetPosition(Point top_left) override;
   void NotifyFrameChanged();
+  // 窗口状态(显示、最小化、缩放、全屏)可能变化: 有变化时通知 delegate。
+  void NotifyStateChanged();
   // 系统窗口控制按钮(红绿灯)的占用范围可能变化(标题栏样式、尺寸、全屏): 有变化时通知 delegate。
   void NotifyControlsChanged();
   // 隐藏标题栏时把红绿灯垂直居中到应用标题栏高度内(尺寸变化、退出全屏后重新布局)。
@@ -112,6 +119,7 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   int64_t sequence_down_id_ = 0;
   bool non_activating_ = false;  // NSPanel(非激活面板): 显示/激活时不激活应用
   Rect last_frame_;
+  WindowStateFlags last_state_;
   TitleBarOptions title_bar_;
   std::optional<Rect> last_controls_;
   std::unique_ptr<platform::RenderSurface> surface_;

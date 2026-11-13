@@ -98,6 +98,8 @@ class WinPlatformIntegration final : public PlatformIntegration {
   }
 
   PlatformServices& services() override { return services_; }
+  // 应用级能力: Windows 暂无应用整体隐藏/激活的实现(全部回复 unimplemented)。
+  PlatformApp& app() override { return app_; }
 
   std::vector<DisplayInfo> displays() const override {
     std::vector<HMONITOR> monitors;
@@ -121,6 +123,7 @@ class WinPlatformIntegration final : public PlatformIntegration {
  private:
   WinNativeLoop native_loop_;  // 先于 services_ 构造(services_ 使用其消息窗口)
   WinServices services_;
+  PlatformApp app_;
   bool com_initialized_ = false;
 };
 

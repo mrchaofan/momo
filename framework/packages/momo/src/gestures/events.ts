@@ -23,7 +23,7 @@ export interface PointerEventInit {
   down?: boolean;
   /** 触控板惯性滚动阶段。 */
   momentum?: boolean;
-  /** 屏幕位置(逻辑点, 主屏左上原点;与 WindowService.frameOf 同一坐标系)。缺省为零点(来源未提供)。 */
+  /** 屏幕位置(逻辑点, 主屏左上原点;与 Widget.bounds 同一坐标系)。缺省为零点(来源未提供)。 */
   screenPosition?: Offset;
   /** 宿主的按下序列 id(0 = 不在序列内)。 */
   sequenceId?: number;
@@ -46,13 +46,13 @@ export abstract class PointerEvent {
   readonly down: boolean;
   readonly momentum: boolean;
   /**
-   * 指针的屏幕位置(逻辑点, 主屏左上原点, 与 WindowService.frameOf 同一坐标系)。
+   * 指针的屏幕位置(逻辑点, 主屏左上原点, 与 Widget.bounds 同一坐标系)。
    * 不随窗口移动而变化: 跨窗口交互(如把标签拖出成窗口、拖动窗口本身)用它计算。
    */
   readonly screenPosition: Offset;
   /**
    * 宿主的按下序列 id(首个按下到最后一个抬起相同, > 0;不在序列内为 0)。调用依赖进行中序列的窗口能力时
-   * 回送给宿主校验: WindowService.startDrag(业务层的拖动区域)、PointerCapture.moveToView。
+   * 回送给宿主校验: Widget.startDrag(业务层的拖动区域)、PointerCapture.moveToView。
    */
   readonly sequenceId: number;
   /**

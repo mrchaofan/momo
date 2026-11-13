@@ -46,6 +46,8 @@ class JsRuntimeImpl {
   struct Options {
     // Node 编译缓存目录(module.enableCompileCache;空 = 不缓存)。
     std::filesystem::path code_cache_dir;
+    // process.exit(code) 的去向(见 JsRuntime::Options::on_process_exit)。
+    std::function<void(int exit_code)> on_process_exit;
   };
 
   // task_runner: isolate 归属线程(ui)的 runner, uv 事件在这里处理;须在该线程调用。

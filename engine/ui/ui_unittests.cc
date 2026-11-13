@@ -87,10 +87,10 @@ TEST_F(UiBindingsTest, NotImportedMeansNoCallbacks) {
 
 TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, PictureRecorder, Paint, SceneBuilder } from 'momo:ui';
+    import { platformDispatcher, viewports, PictureRecorder, Paint, SceneBuilder } from 'momo:ui';
     globalThis.calls = [];
-    window.onBeginFrame = (t) => { calls.push(typeof t); };
-    window.onDrawFrame = () => {
+    platformDispatcher.onBeginFrame = (t) => { calls.push(typeof t); };
+    platformDispatcher.onDrawFrame = () => {
       calls.push('draw');
       const recorder = new PictureRecorder();
       const canvas = recorder.beginRecording();
@@ -99,9 +99,9 @@ TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
       canvas.drawRect(10, 10, 20, 20, paint);
       const builder = new SceneBuilder();
       builder.pushOffset(5, 5).addPicture(0, 0, recorder.endRecording()).pop();
-      views.get(0).render(builder.build());
+      viewports.get(0).render(builder.build());
     };
-    window.scheduleFrame();
+    platformDispatcher.scheduleFrame();
   )JS").ok());
   EXPECT_TRUE(bindings_->is_imported());
   EXPECT_EQ(client_.scheduled, 1);
@@ -122,8 +122,8 @@ TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
 // drawPath 共享路径快照: 之后修改 Path 不影响已记录的内容(写时复制)。
 TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, PictureRecorder, Paint, Path, SceneBuilder } from 'momo:ui';
-    window.onDrawFrame = () => {
+    import { platformDispatcher, viewports, PictureRecorder, Paint, Path, SceneBuilder } from 'momo:ui';
+    platformDispatcher.onDrawFrame = () => {
       const recorder = new PictureRecorder();
       const canvas = recorder.beginRecording();
       const paint = new Paint();
@@ -134,7 +134,7 @@ TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
       canvas.drawPath(path, paint);
       const builder = new SceneBuilder();
       builder.addPicture(0, 0, recorder.endRecording());
-      views.get(0).render(builder.build());
+      viewports.get(0).render(builder.build());
     };
   )JS").ok());
   bindings_->DrawFrame();
@@ -148,8 +148,8 @@ TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
 // JS 画出的验收画面必须与 C++ 直接构建的 golden(graphics_unittests)逐像素一致。
 TEST_F(UiBindingsTest, JsAcceptanceSceneMatchesGolden) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
-    window.onDrawFrame = () => {
+    import { platformDispatcher, viewports, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
+    platformDispatcher.onDrawFrame = () => {
       const recorder = new PictureRecorder();
       const c = recorder.beginRecording();
       c.drawColor(0xFFF5F5F7);
@@ -189,7 +189,7 @@ TEST_F(UiBindingsTest, JsAcceptanceSceneMatchesGolden) {
 
       const builder = new SceneBuilder();
       builder.addPicture(0, 0, recorder.endRecording());
-      views.get(0).render(builder.build());
+      viewports.get(0).render(builder.build());
     };
   )JS").ok());
   bindings_->DrawFrame();
@@ -216,7 +216,7 @@ TEST_F(UiBindingsTest, ArgumentAndStateErrorsThrow) {
                 .find("no longer recording"),
             std::string::npos);
   EXPECT_NE(ErrorOf("new ui.SceneBuilder().pop()").find("nothing to pop"), std::string::npos);
-  EXPECT_NE(ErrorOf("ui.views.get(0).render({})").find("must be a Scene"), std::string::npos);
+  EXPECT_NE(ErrorOf("ui.viewports.get(0).render({})").find("must be a Scene"), std::string::npos);
   EXPECT_EQ(ErrorOf("new ui.Path().moveTo(0, 0).lineTo(1, 1).close()"), "");
 }
 
@@ -232,19 +232,19 @@ TEST_F(UiBindingsTest, PaintPropertiesRoundTrip) {
             "true");
 }
 
-// window 只有全局职责(帧调度与帧回调);视图的尺寸与事件在 views 里(隐式视图 0 也一样)。
+// platformDispatcher 只有全局职责(帧调度与帧回调);视图的尺寸与事件在 viewports 里(隐式视图 0 也一样)。
 TEST_F(UiBindingsTest, MetricsReachTheView) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views } from 'momo:ui';
-    globalThis.window = window;
-    globalThis.view = views.get(0);
+    import { platformDispatcher, viewports } from 'momo:ui';
+    globalThis.platformDispatcher = platformDispatcher;
+    globalThis.view = viewports.get(0);
     globalThis.metricsCalls = 0;
     view.onMetricsChanged = () => { metricsCalls++; };
   )JS").ok());
   EXPECT_EQ(Eval("view.physicalSize.width + 'x' + view.physicalSize.height + '@' +"
                  " view.devicePixelRatio"),
             "400x270@1");
-  EXPECT_EQ(Eval("[typeof window.render, typeof window.physicalSize, typeof window.title,"
+  EXPECT_EQ(Eval("[typeof platformDispatcher.render, typeof platformDispatcher.physicalSize, typeof platformDispatcher.title,"
                  " typeof view.close, typeof view.setCursor].join()"),
             "undefined,undefined,undefined,undefined,undefined")
       << "window management is not part of momo:ui";
@@ -274,9 +274,9 @@ namespace {
 // 指针包带按下序列 id 与手势字段。
 TEST_F(UiBindingsTest, PointerPacketsCarrySequenceIdsAndGestures) {
   ASSERT_TRUE(Run(R"JS(
-    import { views, POINTER_DATA_STRIDE } from 'momo:ui';
+    import { viewports, POINTER_DATA_STRIDE } from 'momo:ui';
     globalThis.log = [];
-    views.get(0).onPointerPacket = (data, count) => {
+    viewports.get(0).onPointerPacket = (data, count) => {
       for (let i = 0; i < count; i++) {
         const o = i * POINTER_DATA_STRIDE;
         log.push(`${POINTER_DATA_STRIDE}:${data[o + 12]}:${data[o + 13]}:${data[o + 14]}:${data[o + 15]}:${data[o + 16]}`);
@@ -297,8 +297,8 @@ TEST_F(UiBindingsTest, PointerPacketsCarrySequenceIdsAndGestures) {
 
 TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
   ASSERT_TRUE(Run(R"JS(
-    import { views, POINTER_DATA_STRIDE } from 'momo:ui';
-    const view = globalThis.view = views.get(0);
+    import { viewports, POINTER_DATA_STRIDE } from 'momo:ui';
+    const view = globalThis.view = viewports.get(0);
     globalThis.log = [];
     view.onPointerPacket = (data, count) => {
       for (let i = 0; i < count; i++) {
@@ -376,8 +376,8 @@ TEST_F(UiBindingsTest, ServicesChannelRoundTrips) {
 
 TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, ParagraphBuilder, PictureRecorder, SceneBuilder } from 'momo:ui';
-    globalThis.window = window;
+    import { platformDispatcher, viewports, ParagraphBuilder, PictureRecorder, SceneBuilder } from 'momo:ui';
+    globalThis.platformDispatcher = platformDispatcher;
     globalThis.ParagraphBuilder = ParagraphBuilder;
     const b = new ParagraphBuilder({ textAlign: 'left', maxLines: 3, ellipsis: '…',
                                      textStyle: { fontSize: 20, color: 0xFF000000 } });
@@ -395,14 +395,14 @@ TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
     globalThis.endPos = pos.offset;
     const wb = p.getWordBoundary(1);
     globalThis.word = wb.start + '-' + wb.end;
-    window.onDrawFrame = () => {
+    platformDispatcher.onDrawFrame = () => {
       const r = new PictureRecorder();
       const c = r.beginRecording();
       c.drawColor(0xFFFFFFFF);
       c.drawParagraph(p, 10, 10);
       const sb = new SceneBuilder();
       sb.addPicture(0, 0, r.endRecording());
-      views.get(0).render(sb.build());
+      viewports.get(0).render(sb.build());
     };
   )JS").ok());
   EXPECT_EQ(Eval("info"), "true,true,1,false");
@@ -427,9 +427,9 @@ TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
 
 TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, decodeImage, loadAsset, imageFromPixels, instantiateCodec,
+    import { platformDispatcher, viewports, decodeImage, loadAsset, imageFromPixels, instantiateCodec,
              PictureRecorder, SceneBuilder, Paint } from 'momo:ui';
-    globalThis.window = window;
+    globalThis.platformDispatcher = platformDispatcher;
     globalThis.state = 'pending';
     const red = imageFromPixels(new Uint8Array([255, 0, 0, 255, 255, 0, 0, 255,
                                                 255, 0, 0, 255, 255, 0, 0, 255]), 2, 2);
@@ -444,7 +444,7 @@ TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
       .then((codec) => codec.getNextFrame().then((f) => {
         globalThis.codecInfo = codec.frameCount + ':' + f.image.width;
       }));
-    window.onDrawFrame = () => {
+    platformDispatcher.onDrawFrame = () => {
       const r = new PictureRecorder();
       const c = r.beginRecording();
       c.drawImageRect(red, 0, 0, 2, 2, 0, 0, 50, 50, null);
@@ -453,7 +453,7 @@ TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
       c.drawImage(globalThis.img, 100, 0, p);
       const sb = new SceneBuilder();
       sb.addPicture(0, 0, r.endRecording());
-      views.get(0).render(sb.build());
+      viewports.get(0).render(sb.build());
     };
   )JS").ok());
   EXPECT_EQ(Eval("redSize"), "2x2");
@@ -473,8 +473,8 @@ TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
 // addPlatformView: 只记录占位层(视图由宿主合成), 并标记层树含平台视图;无效参数被忽略。
 TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, SceneBuilder } from 'momo:ui';
-    globalThis.window = window;
+    import { platformDispatcher, viewports, SceneBuilder } from 'momo:ui';
+    globalThis.platformDispatcher = platformDispatcher;
     globalThis.draw = (withView) => {
       const sb = new SceneBuilder();
       sb.pushOffset(10, 20);
@@ -482,12 +482,12 @@ TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
       sb.addPlatformView(0, 0, 0, 10, 10);   // id 0: 忽略
       sb.addPlatformView(8, 0, 0, 0, 10);    // 空尺寸: 忽略
       sb.pop();
-      views.get(0).render(sb.build());
+      viewports.get(0).render(sb.build());
     };
   )JS").ok());
-  Eval("window.onDrawFrame = () => draw(true)");
+  Eval("platformDispatcher.onDrawFrame = () => draw(true)");
   bindings_->DrawFrame();
-  Eval("window.onDrawFrame = () => draw(false)");
+  Eval("platformDispatcher.onDrawFrame = () => draw(false)");
   bindings_->DrawFrame();
   ASSERT_EQ(client_.rendered.size(), 2u);
   EXPECT_TRUE(client_.rendered[0]->has_platform_views());
@@ -501,31 +501,31 @@ TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
   EXPECT_EQ(view->rect(), (Rect{0, 0, 300, 200}));
 }
 
-// 多视图: 宿主绑定的视图出现在 views 里(onViewsChanged);按视图 render;移除后 render 为空操作。
+// 多视图: 宿主绑定的视图出现在 viewports 里(onViewportsChanged);按视图 render;移除后 render 为空操作。
 // 视图的创建与关闭由宿主决定(momo/window 通道), 不经 momo:ui。
 TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, SceneBuilder } from 'momo:ui';
-    globalThis.window = window;
-    globalThis.views = views;
+    import { platformDispatcher, viewports, SceneBuilder } from 'momo:ui';
+    globalThis.platformDispatcher = platformDispatcher;
+    globalThis.viewports = viewports;
     globalThis.changes = 0;
-    window.onViewsChanged = () => { globalThis.changes++; };
+    platformDispatcher.onViewportsChanged = () => { globalThis.changes++; };
     globalThis.draw = () => {
-      for (const v of views.values()) v.render(new SceneBuilder().build());
+      for (const v of viewports.values()) v.render(new SceneBuilder().build());
     };
   )JS").ok());
-  EXPECT_EQ(Eval("String(views.get(0) !== window && views.size === 1)"), "true");
+  EXPECT_EQ(Eval("String(viewports.get(0) !== platformDispatcher && viewports.size === 1)"), "true");
 
   client_.view_ids = {0, 5};
   bindings_->ViewAdded(5);
-  Eval("globalThis.created = views.get(5)");
+  Eval("globalThis.created = viewports.get(5)");
   EXPECT_EQ(Eval("String(created.id)"), "5");
-  EXPECT_EQ(Eval("String(views.size)"), "2");
+  EXPECT_EQ(Eval("String(viewports.size)"), "2");
   EXPECT_EQ(Eval("String(changes)"), "1");
   EXPECT_EQ(Eval("String(created.physicalSize.width)"), "300");  // extra_metrics
 
   // 一帧里每个视图各提交一棵树, 带各自的 view id 与尺寸。
-  Eval("window.onDrawFrame = () => draw()");
+  Eval("platformDispatcher.onDrawFrame = () => draw()");
   bindings_->DrawFrame();
   ASSERT_EQ(client_.rendered.size(), 2u);
   EXPECT_EQ(client_.rendered[0]->view_id(), 0);
@@ -533,7 +533,7 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
   EXPECT_EQ(client_.rendered[1]->frame_size(), (Size{300, 200}));
 
   // 按视图的事件只到达该视图的处理器。
-  Eval("globalThis.got = []; created.onFocusChanged = (f) => got.push('5:' + f); views.get(0).onFocusChanged = (f) => got.push('0:' + f)");
+  Eval("globalThis.got = []; created.onFocusChanged = (f) => got.push('5:' + f); viewports.get(0).onFocusChanged = (f) => got.push('0:' + f)");
   bindings_->FocusChanged(5, true);
   EXPECT_EQ(Eval("got.join()"), "5:true");
 
@@ -541,7 +541,7 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
   client_.view_ids = {};
   bindings_->ViewRemoved(5);
   bindings_->ViewRemoved(0);
-  EXPECT_EQ(Eval("String(views.size)"), "0");
+  EXPECT_EQ(Eval("String(viewports.size)"), "0");
   EXPECT_EQ(Eval("String(changes)"), "3");
   // 已移除视图的 render 为空操作。
   client_.rendered.clear();
@@ -555,8 +555,8 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
 // 关闭的视图: 引擎只弱持有, JS 不再引用时绑定被回收;JS 仍持有旧对象/旧方法时调用安全且为空操作。
 TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
   ASSERT_TRUE(Run(R"JS(
-    import { views } from 'momo:ui';
-    globalThis.views = views;
+    import { viewports } from 'momo:ui';
+    globalThis.viewports = viewports;
   )JS").ok());
   v8::Isolate* isolate = runtime_->impl().isolate();
   std::vector<ViewId> ids;
@@ -565,16 +565,16 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
     bindings_->ViewAdded(id);
     ids.push_back(id);
   }
-  EXPECT_EQ(Eval("String(views.size)"), "6");
+  EXPECT_EQ(Eval("String(viewports.size)"), "6");
   // 保留其中一个视图的旧方法与另一个视图对象, 并挂上事件回调。
-  Eval("globalThis.oldRender = views.get(10).render; globalThis.keep = views.get(11);"
+  Eval("globalThis.oldRender = viewports.get(10).render; globalThis.keep = viewports.get(11);"
        "keep.onFocusChanged = () => {}; 'ok'");
   client_.view_ids = {platform::kImplicitViewId};
   for (ViewId id : ids) bindings_->ViewRemoved(id);
-  EXPECT_EQ(Eval("String(views.size)"), "1");
+  EXPECT_EQ(Eval("String(viewports.size)"), "1");
   EXPECT_EQ(Eval("String(keep.onFocusChanged)"), "null") << "handlers are cleared on removal";
   isolate->LowMemoryNotification();
-  EXPECT_EQ(bindings_->detached_view_count_for_testing(), 2u) << "only views still referenced by JS survive";
+  EXPECT_EQ(bindings_->detached_view_count_for_testing(), 2u) << "only viewports still referenced by JS survive";
 
   // 旧方法/旧对象仍可安全调用(空操作)。
   client_.rendered.clear();
@@ -600,8 +600,8 @@ TEST_F(UiBindingsTest, TexturesAndNewLayersComposite) {
   }
   ASSERT_TRUE(texture->UpdateRgba(blue.data(), 4, 4, 16).ok());
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, SceneBuilder, PictureRecorder, Paint } from 'momo:ui';
-    globalThis.window = window;
+    import { platformDispatcher, viewports, SceneBuilder, PictureRecorder, Paint } from 'momo:ui';
+    globalThis.platformDispatcher = platformDispatcher;
     globalThis.draw = (id) => {
       const r = new PictureRecorder();
       const c = r.beginRecording();
@@ -611,11 +611,11 @@ TEST_F(UiBindingsTest, TexturesAndNewLayersComposite) {
       const sb = new SceneBuilder();
       sb.pushClipRRect(0, 0, 100, 100, 30).addPicture(0, 0, r.endRecording()).pop();
       sb.pushOpacity(128).addTexture(id, 200, 0, 50, 50).pop();
-      views.get(0).render(sb.build());
+      viewports.get(0).render(sb.build());
     };
   )JS").ok());
   const std::string id = std::to_string(texture->id());
-  Eval("window.onDrawFrame = () => draw(" + id + ")");
+  Eval("platformDispatcher.onDrawFrame = () => draw(" + id + ")");
   bindings_->DrawFrame();
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::OwnedPixelBuffer pixels(400, 270);

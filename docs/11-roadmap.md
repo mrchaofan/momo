@@ -46,15 +46,15 @@
 
 ## M4 · Framework 层(约 6-8 周,与 M3 部分并行)
 
-目标:Widget 写应用。
+目标:用 View 框架写应用。
 
 - [x] foundation/scheduler/painting(TextPainter)
 - [x] rendering:RenderBox 协议、常用 render 对象(flex/stack/padding/text/image)、hit test、RepaintBoundary
-- [x] widgets:Element diff、Stateful/Inherited、基础组件、runApp/WidgetsBinding
+- [x] views(原 widgets):Element diff、Stateful/Inherited、基础组件、runApp/ViewsBinding
 - [x] gestures:arena、tap/drag/scroll;桌面 hover/光标/滚轮
 - [x] animation;焦点与快捷键
 - [x] headless 运行器(`momo_headless`, 框架测试在真实引擎 99 过/13 跳过)+ hot restart(--dev 监视 bundle)
-- [x] 验收:counter 与 todo 全 Widget 实现;框架单测进 CTest(Node mock + 引擎 headless;CI 未建)
+- [x] 验收:counter 与 todo 全 View 实现;框架单测进 CTest(Node mock + 引擎 headless;CI 未建)
 
 ## M5 · 扩展机制(约 4 周)
 
@@ -74,9 +74,14 @@
 - [~] 打包:.app + DMG(`momo build --dmg`)✅;MSIX、崩溃上报、性能浮层/Perfetto ⬜
 - [x] 多窗口支持(Shell 多视图, macOS;docs/02 §2、docs/06 §2);Windows embedder 未实现
 - [x] 分层整理: 窗口外观与行为、剪贴板/URL/输入法移出 engine, 改为 embedder 注册的宿主通道(`momo/window`、`momo/app`…,
-      ARCHITECTURE §3.10);可选窗口能力显式声明(`WindowCapability`);所有窗口对等(视图 0 可关闭, `runWidget`);
+      ARCHITECTURE §3.10);可选窗口能力显式声明(`WindowCapability`);所有窗口对等(视图 0 可关闭, `runView`);
       标题栏改为"应用声明高度、宿主报告控制按钮区域";拖动区域改为命中测试 + 手势竞技场;窗口跟随指针改为宿主移动循环;
       指针序列的接收方固定(框架 `capturePointer` 定逻辑接收方, 宿主定原生接收窗口, 引擎不参与);`PointerEvent.viewId`。Windows 只实现了定位与指针捕获两项可选能力(未编译验证)
+- [x] 应用生命周期与窗口解耦: 应用状态只看应用本身(隐藏 = Suspended), 窗口可见性按视图(不可见的视图不出帧);
+      最后一个窗口关闭不退出(`windowAllClosed`);退出流程 `Quit`(beforeQuit → 窗口 close → willQuit)/ `Exit(code)`;
+      `Application` 与 `WindowManager` 拆分, 宿主通道统一为方法注册表(`HostChannel`);JS 侧 `app` / `Widget` 对象,
+      组件基类改名为 `View`(对齐 Chromium views)。Windows 侧的窗口状态与 PlatformApp 未编译验证, `WM_ACTIVATEAPP` /
+      `WM_QUERYENDSESSION` 尚未接入
 - [ ] 无障碍(语义树 → UIA/AX)——设计预留,独立立项(未做)
 
 ## M7 · 接入 Node.js(参照 Electron `NodeBindings`)
@@ -90,8 +95,9 @@ ui 线程:`uv_run(UV_RUN_NOWAIT)` 由 ui 线程执行,独立的 poll 线程只�
 - [x] P1:NodeBindings(uv 循环、poll 线程、`uv_sem`)、Node 平台替换 momo `V8Platform`、`node::Environment`、入口经
       Node ESM 加载器 + `uv_run` 泵送、UI 事件 `CallbackScope`、`momo:*` / `ext:*` 经 `module.registerHooks`、Node inspector
       (删除自研 inspector)、Node 编译缓存替换自研 code cache;文档 04/08、ARCHITECTURE
-- [ ] P2:Windows `PollEvents`(IOCP,参照 Electron `node_bindings_win.cc`)与 libnode 的 Windows 构建;`process.exit()` 改为
-      走应用的正常退出流程;Node 的 `AsyncLocalStorage` 上下文贯穿 momo 回调(`CallbackScope` 带 async context)
+- [x] P2a:`process.exit()` 走应用的有序退出(`node::SetProcessExitHandler` → `Application::Exit`)
+- [ ] P2:Windows `PollEvents`(IOCP,参照 Electron `node_bindings_win.cc`)与 libnode 的 Windows 构建;Node 的
+      `AsyncLocalStorage` 上下文贯穿 momo 回调(`CallbackScope` 带 async context)
 
 ## 风险清单(提前盯防)
 

@@ -1,4 +1,4 @@
-// @momo/framework 统一导出。也可按子包导入:@momo/framework/widgets 等。
+// @momo/framework 统一导出。也可按子包导入:@momo/framework/views 等。
 export * from "./foundation/index";
 export * from "./scheduler/index";
 export * from "./animation/index";
@@ -6,5 +6,5 @@ export * from "./painting/index";
 export * from "./services/index";
 export * from "./gestures/index";
 export * from "./rendering/index";
-export * from "./widgets/index";
+export * from "./views/index";
 export * from "./material/index";

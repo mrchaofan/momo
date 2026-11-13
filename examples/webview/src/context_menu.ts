@@ -5,8 +5,8 @@ import {
   AnimatedBuilder, AnimationController, Border, BorderSide, BorderRadius, BoxDecoration, BoxShadow, Color, ColoredBox,
   Column, Container, CurvedAnimation, Curves, EdgeInsets, Expanded, Focus, GestureDetector, KeyDownEvent,
   LogicalKeyboardKey, MediaQuery, MouseRegion, Offset, Opacity, OverlayEntry, Overlay, Positioned, Row, SizedBox, Stack,
-  State, StatefulWidget, Text, Transform, Matrix4,
-  type BuildContext, type Widget,
+  State, StatefulView, Text, Transform, Matrix4,
+  type BuildContext, type View,
 } from "@momo/framework";
 import { Palette, TextStyles } from "./style";
 
@@ -31,7 +31,7 @@ export function showContextMenu(context: BuildContext, position: Offset, o: { ti
   overlay.insert(entry);
 }
 
-class ContextMenu extends StatefulWidget {
+class ContextMenu extends StatefulView {
   constructor(readonly o: { position: Offset; title: string; items: MenuItem[]; onClosed: () => void }) {
     super();
   }
@@ -62,11 +62,11 @@ class ContextMenuState extends State<ContextMenu> {
     if (this.#closing) return;
     this.#closing = true;
     action?.();
-    void this.#controller.reverse().then(() => this.widget.o.onClosed());
+    void this.#controller.reverse().then(() => this.view.o.onClosed());
   };
 
-  build(context: BuildContext): Widget {
-    const { position, title, items } = this.widget.o;
+  build(context: BuildContext): View {
+    const { position, title, items } = this.view.o;
     const size = MediaQuery.of(context).size;
     const left = Math.max(8, Math.min(position.dx, size.width - kMenuWidth - 8));
     const top = position.dy + 6;
@@ -138,7 +138,7 @@ class ContextMenuState extends State<ContextMenu> {
   }
 }
 
-class MenuRow extends StatefulWidget {
+class MenuRow extends StatefulView {
   constructor(readonly o: { item: MenuItem; onTap: () => void }) {
     super();
   }
@@ -149,8 +149,8 @@ class MenuRow extends StatefulWidget {
 
 class MenuRowState extends State<MenuRow> {
   #hover = false;
-  build(_c: BuildContext): Widget {
-    const { item, onTap } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { item, onTap } = this.view.o;
     const enabled = item.onSelect !== null;
     return new MouseRegion({
       cursor: enabled ? "click" : "basic",

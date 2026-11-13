@@ -4,38 +4,39 @@
 //
 // 状态机: NotRunning → Launching → Running ⇄ Suspended → Terminating
 //                         └──────────(启动失败)──────────────┘
+// Suspended 只表示应用整体被隐藏(macOS Cmd+H / applicationDidHide):与窗口无关——窗口的最小化、隐藏只影响
+// 该窗口的视图是否出帧(引擎按视图处理)。没有窗口也是合法状态: JS 照常运行, 不出帧。
+//
 // 职责: 持有 PlatformIntegration、OS 主线程的 EventLoop(经 base::NativeMessagePump 跑原生消息循环)、
-//       ui/raster/io 线程、引擎 Shell 与全部窗口;注册宿主通道(momo/window、momo/app、平台服务,
-//       见 window_channel.h / platform_channels.h);向 JS 分发生命周期事件;处理退出请求(JS 可拦截);
-//       按 docs/01 §4 严格有序关闭。
+//       ui/raster/io 线程、引擎 Shell、窗口注册表(WindowManager);注册宿主通道(momo/app、momo/window、
+//       平台服务);退出状态机;按 docs/01 §4 严格有序关闭。
+// 退出:
+//   Quit()  —— Cmd+Q、菜单退出、JS app.quit():  beforeQuit → 逐个询问窗口 closeRequested → willQuit →
+//              有序关闭;任一步被 JS 取消即中止(同 Electron app.quit)。
+//   Exit(c) —— JS app.exit(c)、process.exit(c): 不询问, 有序关闭, 退出码 c。
+//   最后一个窗口关闭不退出: 只发 momo/app windowAllClosed, 由 JS 决定。
 // 线程约定: momo::Object, 归属 platform 线程(OS 主线程);除 state() 外所有方法仅在该线程调用。
 
-#include <map>
 #include <memory>
-#include <optional>
-#include <set>
 #include <string_view>
 
 #include "base/event_loop.h"
 #include "base/macros.h"
 #include "base/object.h"
 #include "base/status.h"
+#include "embedder/common/app_channel.h"
 #include "embedder/common/app_config.h"
 #include "embedder/common/platform_channels.h"
 #include "embedder/common/platform_integration.h"
 #include "embedder/common/window_channel.h"
-#include "embedder/common/window_controller.h"
+#include "embedder/common/window_manager.h"
 #include "engine/common/task_runners.h"
 #include "engine/shell/shell.h"
 #include "engine/shell/thread_host.h"
 
 namespace momo::embedder {
 
-// 窗口策略: 所有窗口对等。启动时创建的窗口是隐式视图 0(JS bundle 执行前即存在, 供 runApp 直接渲染),
-// 其他窗口由 JS 经 momo/window create 打开。任一窗口的关闭按钮先询问 JS(closeRequested), 允许后只关闭
-// 该窗口;最后一个窗口关闭后退出应用(同 Electron 的 window-all-closed 默认行为)。退出应用(Cmd+Q 等)
-// 先询问 JS(momo/app requestExit)。所有窗口都最小化(或应用隐藏)时进入 Suspended。
-class Application final : public Object, private WindowChannel::Host {
+class Application final : public Object, private WindowManager::Observer, private AppChannel::Host {
  public:
   enum class State { kNotRunning, kLaunching, kRunning, kSuspended, kTerminating };
 
@@ -62,7 +63,7 @@ class Application final : public Object, private WindowChannel::Host {
     // 资源根目录(Mac: NSBundle resourcePath;Win: exe 目录)。
     std::filesystem::path resources_dir;
     Observer* observer = nullptr;  // 非拥有, 必须比 Application 活得久
-    // 关闭请求发给 JS 后若在此时间内无回复(ui 线程卡死), 强制退出进程(无法有序关闭: 关闭需要
+    // 退出流程中每次询问 JS 后若在此时间内无回复(ui 线程卡死), 强制退出进程(无法有序关闭: 关闭需要
     // 与 ui 线程同步汇合)。<= 0 关闭超时机制。
     TimeDelta close_timeout = std::chrono::seconds(5);
     // 强制退出的实现(测试可替换);默认 std::_Exit。
@@ -76,35 +77,39 @@ class Application final : public Object, private WindowChannel::Host {
       Options options, std::unique_ptr<PlatformIntegration> platform);
   ~Application() override;  // 若尚未关闭则执行 Terminate()
 
-  // 启动时序第 4–5 步: 创建并显示主窗口 → 启动引擎(V8 + bundle)→ 绑定窗口。
+  // 启动时序第 4–5 步: 创建并显示启动窗口(config.startup_window)→ 启动引擎(V8 + bundle)→ 绑定窗口。
   // 失败时已完成有序清理, 状态为 Terminating。
   Status Launch();
 
   // 启动时序第 7 步: 运行 platform EventLoop(原生消息循环), 直到 Terminate 后排空。返回进程退出码。
   int Run();
 
-  // 用户/系统请求退出应用(Cmd+Q、系统注销): 先询问 JS, 允许后 Terminate。重复请求被合并。
-  void RequestTerminate();
+  // 请求退出(可被 JS 取消;重复请求合并)。
+  void Quit() override;
+  // 不询问, 在下一个安全点有序关闭(可能在宿主通道处理器的调用栈里被调用)。
+  void Exit(int exit_code) override;
   // 立即有序关闭并退出消息循环。幂等。
   void Terminate(int exit_code = 0);
 
-  // 应用整体隐藏/显示(Mac applicationDidHide/Unhide)。窗口最小化经 WindowController 进入。
+  // ---- 平台入口的应用级事件 ----
+  // 应用整体隐藏/显示(Mac applicationDidHide/Unhide): 隐藏即 Suspended。
   void OnAppVisibilityChanged(bool visible);
+  // 应用成为/不再是前台应用(Mac applicationDidBecomeActive/ResignActive, Win WM_ACTIVATEAPP)。
+  void OnAppActiveChanged(bool active);
+  // 用户重新激活应用(Mac 点击 Dock 图标:applicationShouldHandleReopen)。
+  void OnReopen(bool has_visible_windows);
 
   State state() const { return state_; }
+  bool is_active() const { return active_; }
+  bool is_quitting() const { return quitting_; }
   int exit_code() const { return exit_code_; }
   const engine::TaskRunners& task_runners() const { return task_runners_; }
   PlatformIntegration& platform() { return *platform_; }
   engine::Shell* shell() const { return shell_.get(); }
-  // 打开着的窗口(含隐式视图 0, 如果它还没被关闭)。
-  size_t window_count() const { return windows_.size(); }
-  WindowController* window(engine::platform::ViewId view_id) const;
-  // 任一打开着的窗口(优先隐式视图 0;没有窗口时为空)。用于"激活应用"一类不针对具体窗口的操作。
-  WindowController* front_window() const;
-  // 宿主通道(引擎运行期间存在)。
-  WindowChannel* window_channel() const { return window_channel_.get(); }
+  WindowManager& windows() { return *window_manager_; }
 
   static bool IsValidTransition(State from, State to);
+  // JS 可见的状态名: launching / running / suspended / terminating(未启动为 notRunning)。
   static std::string_view StateName(State state);
 
  private:
@@ -114,39 +119,38 @@ class Application final : public Object, private WindowChannel::Host {
   bool TransitionTo(State to);
   void UpdateSuspended();
   void NotifyShutdownStep(ShutdownStep step);
-  // 解析 bundle/资源 → 创建 Shell(同步等待 JS 运行时与 raster 就绪)→ 注册宿主通道 → 绑定隐式视图。
+  // 解析 bundle/资源 → 创建 Shell(同步等待 JS 运行时与 raster 就绪)→ 注册宿主通道 → 绑定窗口。
   Status LaunchEngine();
-  // --dev: 定时检查 bundle 修改时间, 变化时关闭旧 JS 打开的窗口(保证隐式视图存在)并 hot restart。
+  // --dev: 定时检查 bundle 修改时间, 变化时关闭旧 JS 打开的窗口(按配置保证启动窗口存在)并 hot restart。
   void PollBundleForChanges();
 
-  // 创建窗口(未显示、未绑定引擎)。
-  StatusOr<std::unique_ptr<WindowController>> NewWindow(engine::platform::ViewId view_id,
-                                                        const WindowSpec& spec);
-  // 显示窗口、绑定引擎并登记。
-  void OpenWindow(std::unique_ptr<WindowController> controller);
+  // ---- 退出流程(Quit) ----
+  void QuitCloseWindows();
+  void QuitWillQuit();
+  void AbortQuit(std::string_view reason);
+  // 每次询问 JS 开一轮看门狗: 超时未回复(ui 线程卡死)即强制退出。EndAsk 返回该回复是否仍有效。
+  uint64_t BeginAsk();
+  bool EndAsk(uint64_t serial);
 
-  // WindowChannel::Host(platform 线程)
-  StatusOr<engine::platform::ViewId> CreateWindow(const WindowOptions& options) override;
-  void CloseWindow(engine::platform::ViewId view_id) override;
-  PlatformWindow* FindWindow(engine::platform::ViewId view_id) override;
-  // 窗口的关闭按钮: 询问 JS 后关闭。
-  void RequestCloseWindow(engine::platform::ViewId view_id);
-  void OnWindowVisibilityChanged(engine::platform::ViewId view_id, bool visible);
-  void OnWindowFocusChanged(engine::platform::ViewId view_id, bool focused);
-  // IME 会话所在的连接: 获得焦点的窗口(没有则任一窗口)。
-  TextInputConnection* FocusedTextInput();
+  // WindowManager::Observer
+  void OnAllWindowsClosed() override;
+
+  // AppChannel::Host
+  Status HideApp() override;
+  Status ShowApp() override;
+  Status FocusApp(bool steal) override;
+  engine::EncodableValue GetAppState() override;
 
   Options options_;
   State state_ = State::kNotRunning;
   int exit_code_ = 0;
-  bool terminate_requested_ = false;
-  uint64_t close_request_serial_ = 0;  // 区分不同轮次的关闭请求(超时只针对仍未回复的那一轮)
+  bool app_visible_ = true;
+  bool active_ = false;
+  bool quitting_ = false;
+  uint64_t ask_serial_ = 0;
+  bool ask_pending_ = false;
   std::filesystem::path watched_bundle_;
   std::filesystem::file_time_type watched_bundle_mtime_;
-  bool app_visible_ = true;
-  std::set<engine::platform::ViewId> minimized_windows_;
-  engine::platform::ViewId next_view_id_ = engine::platform::kImplicitViewId + 1;
-  std::optional<engine::platform::ViewId> focused_window_;
 
   // 成员声明顺序即逆序析构顺序: platform_ 最后析构(platform_loop_ 的 pump 引用其 native loop;
   // pump 析构不再触碰它, 且循环结束后不再投递)。
@@ -154,10 +158,11 @@ class Application final : public Object, private WindowChannel::Host {
   std::shared_ptr<EventLoop> platform_loop_;  // 绑定 OS 主线程
   std::unique_ptr<engine::ThreadHost> thread_host_;  // ui/raster/io
   engine::TaskRunners task_runners_;
-  // 全部窗口(视图 id → 控制器)。启动时先创建隐式视图 0 的窗口, 引擎就绪后绑定。
-  std::map<engine::platform::ViewId, std::unique_ptr<WindowController>> windows_;
+  // 全部窗口。先于 shell_ 声明: 后于 Shell 析构(raster 停用 surface 之后才销毁窗口)。
+  std::unique_ptr<WindowManager> window_manager_;
   std::unique_ptr<engine::Shell> shell_;
-  // 宿主通道: Shell 创建后注册, Shell 关闭前移除(先于 shell_ 析构)。
+  // 宿主通道: Shell 创建时(JS bundle 执行前)注册, Shell 关闭前移除(先于 shell_ 析构)。
+  std::unique_ptr<AppChannel> app_channel_;
   std::unique_ptr<WindowChannel> window_channel_;
   std::unique_ptr<PlatformChannels> platform_channels_;
 

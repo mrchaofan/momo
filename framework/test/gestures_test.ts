@@ -1,16 +1,16 @@
 import {
   Align, Alignment, runApp, setErrorReporter, GestureDetector, MouseRegion, Offset, PointerEventConverter, PointerDownEvent, PointerMoveEvent,
   PointerUpEvent, PointerAddedEvent, PointerScrollEvent, Stack, Positioned, ValueKey, Center, Column,
-  GestureArenaManager, Container, Colors, GestureBinding, type PointerCapture, type Widget, type GestureArenaMember, type DragUpdateDetails, type DragEndDetails,
+  GestureArenaManager, Container, Colors, GestureBinding, type PointerCapture, type View, type GestureArenaMember, type DragUpdateDetails, type DragEndDetails,
 } from "../packages/momo/src/index";
 import { expect, group, test } from "./harness";
 import { Kind, Phase } from "./tester";
-import { testWidgets } from "./util";
+import { testViews } from "./util";
 
-const square = (k: string, size = 100): Widget => new Container({ key: new ValueKey(k), width: size, height: size, color: Colors.blue });
+const square = (k: string, size = 100): View => new Container({ key: new ValueKey(k), width: size, height: size, color: Colors.blue });
 
 group("gestures", () => {
-  testWidgets("pointer events before the first frame are ignored, not thrown", async (t) => {
+  testViews("pointer events before the first frame are ignored, not thrown", async (t) => {
     const errors: string[] = [];
     const old = setErrorReporter((e, ctx) => errors.push(`${ctx}: ${e instanceof Error ? e.message : String(e)}`));
     try {
@@ -111,11 +111,11 @@ group("gestures", () => {
     expect.deepEqual(log, ["a+"]);
   });
 
-  testWidgets("tap vs vertical drag: small movement taps, large movement drags", async (t) => {
+  testViews("tap vs vertical drag: small movement taps, large movement drags", async (t) => {
     const log: string[] = [];
     let dragged = 0;
     let velocity = 0;
-    await t.pumpWidget(new Center({
+    await t.pumpView(new Center({
       child: new GestureDetector({
         onTapDown: () => log.push("tapDown"),
         onTap: () => log.push("tap"),
@@ -141,18 +141,18 @@ group("gestures", () => {
     expect.isTrue(velocity > 100, `fling velocity ${velocity}`);
   });
 
-  testWidgets("pan with mouse uses precise slop", async (t) => {
+  testViews("pan with mouse uses precise slop", async (t) => {
     const deltas: number[] = [];
-    await t.pumpWidget(new Center({ child: new GestureDetector({ onPanUpdate: (d) => deltas.push(d.delta.dx), onTap: () => deltas.push(-1), child: square("p") }) }));
+    await t.pumpView(new Center({ child: new GestureDetector({ onPanUpdate: (d) => deltas.push(d.delta.dx), onTap: () => deltas.push(-1), child: square("p") }) }));
     await t.drag(t.one(t.byKey(new ValueKey("p"))), new Offset(10, 0), { kind: Kind.mouse, steps: 5 });
     expect.isFalse(deltas.includes(-1));
     expect.isTrue(deltas.length >= 3, `updates: ${deltas.length}`);
   });
 
   // 屏幕位置(跨窗口拖拽用)随拖动回调传出, 与窗口内位置独立。
-  testWidgets("drag details carry the pointer's screen position", async (t) => {
+  testViews("drag details carry the pointer's screen position", async (t) => {
     const screens: string[] = [];
-    await t.pumpWidget(new Center({ child: new GestureDetector({
+    await t.pumpView(new Center({ child: new GestureDetector({
       onPanDown: (d) => screens.push(`down ${d.screenPosition.dx},${d.screenPosition.dy}`),
       onPanStart: (d) => screens.push(`start ${d.screenPosition.dx},${d.screenPosition.dy}`),
       onPanUpdate: (d) => screens.push(`update ${d.screenPosition.dx},${d.screenPosition.dy}`),
@@ -175,11 +175,11 @@ group("gestures", () => {
 
   // 在拖动回调里捕获(典型用法): 原手势在当前事件分发完后收到取消, 之后这个指针的事件——不论来自哪个窗口——
   // 只交给捕获者, 不做命中测试、不更新悬停;松开后捕获结束, 悬停按松开处重新计算。
-  testWidgets("capturing a pointer fixes its receiver until release", async (t, ctx) => {
+  testViews("capturing a pointer fixes its receiver until release", async (t, ctx) => {
     const log: string[] = [];
     const routed: string[] = [];
     let capture: PointerCapture | null = null;
-    await t.pumpWidget(new Stack({ children: [
+    await t.pumpView(new Stack({ children: [
       new Positioned({ left: 0, top: 0, width: 100, height: 100, child: new GestureDetector({
         onPanStart: () => {
           log.push("start");
@@ -225,9 +225,9 @@ group("gestures", () => {
   }, { mockOnly: true });
 
   // 任何按下序列期间(不只是显式捕获)悬停都冻结: 在空白处按下拖过 MouseRegion, 不进入;松开后进入。
-  testWidgets("hover is frozen during any press", async (t) => {
+  testViews("hover is frozen during any press", async (t) => {
     const log: string[] = [];
-    await t.pumpWidget(new Stack({ children: [
+    await t.pumpView(new Stack({ children: [
       new Positioned({ left: 300, top: 0, width: 100, height: 100, child: new MouseRegion({
         onEnter: () => log.push("enter"), onExit: () => log.push("exit"), child: square("hover"),
       }) }),
@@ -247,8 +247,8 @@ group("gestures", () => {
     await t.pump();
   });
 
-  testWidgets("capturePointer needs a pressed pointer; release drops the rest of the sequence", async (t) => {
-    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => {}, child: square("c") }) }));
+  testViews("capturePointer needs a pressed pointer; release drops the rest of the sequence", async (t) => {
+    await t.pumpView(new Center({ child: new GestureDetector({ onTap: () => {}, child: square("c") }) }));
     expect.equal(GestureBinding.instance.capturePointer(() => {}), null, "no pointer is down");
     const routed: string[] = [];
     t.sendPointer(Phase.down, new Offset(400, 300));
@@ -260,14 +260,14 @@ group("gestures", () => {
     t.sendPointer(Phase.up, new Offset(420, 300), { buttons: 0 });
     expect.deepEqual(routed, ["PointerMoveEvent"], "events after release are dropped until the pointer is up");
     let taps = 0;
-    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => taps++, child: square("c") }) }));
+    await t.pumpView(new Center({ child: new GestureDetector({ onTap: () => taps++, child: square("c") }) }));
     await t.tap(new Offset(400, 300));
     expect.equal(taps, 1, "the next sequence is hit-tested normally");
   });
 
-  testWidgets("double tap wins over tap; single tap fires after timeout", async (t) => {
+  testViews("double tap wins over tap; single tap fires after timeout", async (t) => {
     const log: string[] = [];
-    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => log.push("tap"), onDoubleTap: () => log.push("double"), child: square("d") }) }));
+    await t.pumpView(new Center({ child: new GestureDetector({ onTap: () => log.push("tap"), onDoubleTap: () => log.push("double"), child: square("d") }) }));
     const target = t.one(t.byKey(new ValueKey("d")));
     await t.tap(target);
     await t.pump(50);
@@ -280,9 +280,9 @@ group("gestures", () => {
     expect.deepEqual(log, ["tap"]);
   });
 
-  testWidgets("long press after 500ms", async (t) => {
+  testViews("long press after 500ms", async (t) => {
     const log: string[] = [];
-    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => log.push("tap"), onLongPress: () => log.push("long"), child: square("l") }) }));
+    await t.pumpView(new Center({ child: new GestureDetector({ onTap: () => log.push("tap"), onLongPress: () => log.push("long"), child: square("l") }) }));
     const p = t.centerOf(t.one(t.byKey(new ValueKey("l"))));
     t.sendPointer(Phase.down, p);
     await t.pumpFor(600);
@@ -291,16 +291,16 @@ group("gestures", () => {
     expect.deepEqual(log, ["long"]);
   });
 
-  testWidgets("secondary button tap", async (t) => {
+  testViews("secondary button tap", async (t) => {
     const log: string[] = [];
-    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => log.push("primary"), onSecondaryTap: () => log.push("secondary"), child: square("s") }) }));
+    await t.pumpView(new Center({ child: new GestureDetector({ onTap: () => log.push("primary"), onSecondaryTap: () => log.push("secondary"), child: square("s") }) }));
     await t.tap(t.one(t.byKey(new ValueKey("s"))), { buttons: 2 });
     expect.deepEqual(log, ["secondary"]);
   });
 
-  testWidgets("MouseRegion enter/exit/hover and cursor", async (t) => {
+  testViews("MouseRegion enter/exit/hover and cursor", async (t) => {
     const log: string[] = [];
-    await t.pumpWidget(new Stack({
+    await t.pumpView(new Stack({
       children: [
         new Positioned({
           left: 0, top: 0, width: 200, height: 200,
@@ -328,8 +328,8 @@ group("gestures", () => {
     expect.equal(t.binding.mouseTracker.currentCursor, "basic");
   });
 
-  testWidgets("cursor is sent to window.setCursor", async (t, ctx) => {
-    await t.pumpWidget(new Column({ children: [new MouseRegion({ cursor: "resizeLeftRight", child: square("c") })] }));
+  testViews("cursor is sent to window.setCursor", async (t, ctx) => {
+    await t.pumpView(new Column({ children: [new MouseRegion({ cursor: "resizeLeftRight", child: square("c") })] }));
     await t.hover(new Offset(400, 50));
     expect.equal(ctx.host.mock!.cursor, "resizeLeftRight");
     await t.hover(new Offset(500, 500));

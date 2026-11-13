@@ -48,6 +48,8 @@ enum WindowCapability : uint32_t {
   kCapabilityPointerCapture = 1u << 6,   // CapturePointer / ReleasePointerCapture
   kCapabilityPlatformViews = 1u << 7,
   kCapabilityNonActivating = 1u << 8,
+  kCapabilityVisibility = 1u << 9,       // Hide(Show 总是支持)
+  kCapabilityMinMax = 1u << 10,          // Minimize / Maximize / Restore
 };
 
 class WindowDelegate {
@@ -58,8 +60,8 @@ class WindowDelegate {
   // 返回 false 拦截关闭(embedder 总是先拦截, 询问 JS 后再异步关闭)。
   virtual bool OnCloseRequested() = 0;
   virtual void OnFocusChanged(bool focused) = 0;
-  // 最小化/还原(Mac miniaturize, Win SIZE_MINIMIZED), 用于生命周期 Suspended。
-  virtual void OnVisibilityChanged(bool visible) = 0;
+  // 窗口状态变化(显示/隐藏、最小化、最大化、全屏)。不可见(shown() 为 false)的视图不出帧。
+  virtual void OnWindowStateChanged(const WindowStateFlags& state) = 0;
   // IME/文本输入事件(text_input.h), 仅在 TextInputConnection::Show 之后产生。
   virtual void OnTextInput(const TextInputEvent& event) = 0;
   // 内容区在屏幕上的位置或尺寸变化(逻辑点, 主屏左上原点)。
@@ -87,9 +89,17 @@ class PlatformWindow {
   virtual void* native_handle() const = 0;  // HWND / NSView*, 供扩展使用(docs/07)
   // 把窗口带到最前并成为 key window(最小化时先还原)。
   virtual void Activate() { Show(); }
+  // 当前状态(显示、最小化、最大化、全屏)。
+  virtual WindowStateFlags state() const { return {}; }
 
   // ---- 可选能力(WindowCapability;默认不支持, 返回 Unimplemented) ----
   virtual uint32_t capabilities() const { return 0; }
+  // 隐藏窗口(不销毁;Show 重新显示)。kCapabilityVisibility。
+  virtual Status Hide() { return Unsupported("hide"); }
+  // 最小化 / 最大化 / 还原(从最小化或最大化恢复)。kCapabilityMinMax。
+  virtual Status Minimize() { return Unsupported("minimize"); }
+  virtual Status Maximize() { return Unsupported("maximize"); }
+  virtual Status Restore() { return Unsupported("restore"); }
   // 浮在普通窗口之上(置顶)。
   virtual Status SetAlwaysOnTop(bool on) {
     (void)on;

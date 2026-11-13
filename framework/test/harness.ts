@@ -144,7 +144,7 @@ export const expect = {
   },
 };
 
-/** 正在运行测试的宿主(WidgetTester 经它以宿主身份投递事件)。 */
+/** 正在运行测试的宿主(ViewTester 经它以宿主身份投递事件)。 */
 export let currentHost: TestHost | null = null;
 
 /** 运行全部已注册测试。 */

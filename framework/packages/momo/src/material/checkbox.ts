@@ -4,11 +4,11 @@ import { BorderRadius, drawRRect } from "../painting/borders";
 import type { Color } from "../painting/color";
 import { Rect, Size } from "../painting/geometry";
 import { CustomPainter } from "../rendering/proxy_box";
-import { ActivateIntent, Actions, CallbackAction } from "../widgets/actions";
+import { ActivateIntent, Actions, CallbackAction } from "../views/actions";
 import { CustomPaint, MouseRegion, Padding, EdgeInsets } from "./internal";
-import { Focus } from "../widgets/focus_scope";
-import { GestureDetector } from "../widgets/gesture_detector";
-import { State, StatefulWidget, type BuildContext, type Widget } from "../widgets/framework";
+import { Focus } from "../views/focus_scope";
+import { GestureDetector } from "../views/gesture_detector";
+import { State, StatefulView, type BuildContext, type View } from "../views/framework";
 import { Theme } from "./theme";
 
 const paint = new Paint();
@@ -54,7 +54,7 @@ class CheckboxPainter extends CustomPainter {
 }
 
 /** 复选框。onChanged 为 null 时禁用。 */
-export class Checkbox extends StatefulWidget {
+export class Checkbox extends StatefulView {
   readonly value: boolean;
   readonly onChanged: ((value: boolean) => void) | null;
   readonly activeColor: Color | null;
@@ -73,16 +73,16 @@ class CheckboxState extends State<Checkbox> {
   #hovered = false;
   #focused = false;
   #toggle = (): void => {
-    this.widget.onChanged?.(!this.widget.value);
+    this.view.onChanged?.(!this.view.value);
   };
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     const cs = theme.colorScheme;
-    const enabled = this.widget.onChanged !== null;
-    const active = this.widget.activeColor ?? cs.primary;
+    const enabled = this.view.onChanged !== null;
+    const active = this.view.activeColor ?? cs.primary;
     const fill = enabled ? active : cs.onSurface.withOpacity(0.38);
     const border = enabled ? cs.onSurface.withOpacity(0.7) : cs.onSurface.withOpacity(0.38);
-    const halo = enabled && (this.#hovered || this.#focused) ? (this.widget.value ? active : cs.onSurface).withOpacity(this.#focused ? 0.12 : 0.08) : null;
+    const halo = enabled && (this.#hovered || this.#focused) ? (this.view.value ? active : cs.onSurface).withOpacity(this.#focused ? 0.12 : 0.08) : null;
     return new Actions({
       actions: new Map([[ActivateIntent, new CallbackAction<ActivateIntent>({ onInvoke: () => this.#toggle(), isEnabled: () => enabled })]]),
       child: new Focus({
@@ -97,7 +97,7 @@ class CheckboxState extends State<Checkbox> {
             onTap: enabled ? this.#toggle : null,
             child: new Padding({
               padding: EdgeInsets.all(3),
-              child: new CustomPaint({ size: new Size(34, 34), painter: new CheckboxPainter(this.widget.value, fill, border, cs.onPrimary, halo) }),
+              child: new CustomPaint({ size: new Size(34, 34), painter: new CheckboxPainter(this.view.value, fill, border, cs.onPrimary, halo) }),
             }),
           }),
         }),

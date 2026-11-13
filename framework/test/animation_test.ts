@@ -15,7 +15,7 @@ import {
 } from "../packages/momo/src/animation/index";
 import { Color } from "../packages/momo/src/painting/color";
 import { SchedulerBinding } from "../packages/momo/src/scheduler/index";
-import { State, type BuildContext, type Widget } from "../packages/momo/src/widgets/framework";
+import { State, type BuildContext, type View } from "../packages/momo/src/views/framework";
 import { expect, group, test as rawTest, type TestContext } from "./harness";
 
 let now = 100000;
@@ -161,7 +161,7 @@ group("animation", () => {
 
   test("State releases tickers disposed individually (no accumulation)", () => {
     class VsyncState extends State {
-      build(_context: BuildContext): Widget {
+      build(_context: BuildContext): View {
         throw new Error("not built");
       }
     }

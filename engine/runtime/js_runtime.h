@@ -10,6 +10,7 @@
 // DrainMicrotasks(按 Node 语义排空 nextTick 与 microtask)。
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -31,6 +32,8 @@ class JsRuntime final : public Object {
     bool enable_inspector = false;
     int inspector_port = 9229;      // 0 = 系统分配
     bool inspector_wait = false;    // 执行 bundle 前等待调试器连接(--inspect-wait)
+    // JS 调用 process.exit(code): 回调后停止 JS 执行(本线程调用;不调用 exit(), 进程由宿主有序结束)。
+    std::function<void(int exit_code)> on_process_exit;
   };
 
   static StatusOr<std::unique_ptr<JsRuntime>> Create(const Options& options);

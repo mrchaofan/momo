@@ -6,6 +6,7 @@
 // 不含 V8 类型。线程约定: 仅 ui 线程。
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -43,6 +44,8 @@ class WindowClient {
   virtual void Render(std::unique_ptr<graphics::LayerTree> layer_tree) = 0;
   virtual platform::ViewportMetrics metrics(ViewId view) const = 0;
   virtual bool focused(ViewId view) const = 0;
+  // 视图是否可见(窗口隐藏/最小化时为 false: 不出帧, 提交的画面被丢弃)。
+  virtual bool visible(ViewId view) const { (void)view; return true; }
   // 当前存在的视图(升序;可能为空: 全部窗口都已关闭)。
   virtual std::vector<ViewId> views() const { return {platform::kImplicitViewId}; }
 
@@ -61,6 +64,7 @@ class AppDriver {
   // 返回 true 表示应用已消费。
   virtual bool OnKeyData(ViewId, const platform::KeyData&) { return false; }
   virtual void OnFocusChanged(ViewId, bool) {}
+  virtual void OnVisibilityChanged(ViewId, bool) {}
   // 视图加入/移除(视图 0 在驱动创建前就存在, 不会通知加入)。
   virtual void OnViewAdded(ViewId) {}
   virtual void OnViewRemoved(ViewId) {}
@@ -73,6 +77,8 @@ struct AppHost {
   std::shared_ptr<MessageChannelHub> hub;     // momo:services
   ExtensionHost* extensions = nullptr;        // 扩展宿主(ext:* 模块、帧回调;可空)
   std::shared_ptr<graphics::TextureRegistry> textures;  // 外部纹理(可空)
+  // JS 调用 process.exit(code): 交给宿主做有序退出(ui 线程调用, 实现方自行投递;可空 = 只停止 JS)。
+  std::function<void(int exit_code)> request_exit;
 };
 
 // 尺寸变化即请求一帧, 每帧为每个视图提交一棵空 LayerTree(只清屏)。
@@ -82,6 +88,7 @@ class PlaceholderDriver final : public AppDriver {
   void OnMetricsChanged(ViewId) override { client_.ScheduleFrame(); }
   void BeginFrame(TimePoint) override {
     for (ViewId view : client_.views()) {
+      if (!client_.visible(view)) continue;
       const platform::ViewportMetrics m = client_.metrics(view);
       if (!m.physical_size.IsEmpty()) {
         auto tree = std::make_unique<graphics::LayerTree>(m.physical_size, m.device_pixel_ratio);

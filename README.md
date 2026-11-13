@@ -6,7 +6,7 @@ Momo 是一个面向 macOS 与 Windows 的**自绘**（self-rendered）桌面应
 
 ```
 应用代码（TS）  ──  runApp(new MaterialApp({ home: ... }))
-Framework（TS） ──  Widget / Element / RenderObject、布局、手势、动画、Material 控件
+Framework（TS） ──  View / Element / RenderObject、布局、手势、动画、Material 控件；app / Widget（应用与窗口）
 Engine（C++）   ──  V8 · momo:ui 绑定 · DisplayList / LayerTree · Skia（Metal / 软件）· 文本 · 扩展宿主
 Embedder（C++） ──  进程入口 · 消息循环 · 窗口 · 渲染表面 · VSync · 输入 / IME
 ```
@@ -17,7 +17,7 @@ Embedder（C++） ──  进程入口 · 消息循环 · 窗口 · 渲染表面
 
 - [快速开始](#快速开始)
 - [编写第一个应用](#编写第一个应用)
-- [两种写法：Widget 框架与 momo:ui 底层 API](#两种写法widget-框架与-momoui-底层-api)
+- [两种写法：View 框架与 momo:ui 底层 API](#两种写法view-框架与-momoui-底层-api)
 - [常用能力速查](#常用能力速查)
 - [调试](#调试)
 - [打包发布](#打包发布)
@@ -71,7 +71,7 @@ out/debug/embedder/Momo.app/Contents/MacOS/Momo
 cd framework && npm install
 ```
 
-### 4. 运行一个 Widget 示例
+### 4. 运行一个 View 示例
 
 ```bash
 node framework/scripts/build_example.mjs examples/counter/src/main.ts examples/counter/dist/main.js
@@ -115,10 +115,10 @@ my-app/
 ```ts
 import {
   Center, Column, ElevatedButton, MaterialApp, Scaffold, AppBar, SizedBox,
-  State, StatefulWidget, Text, runApp, type BuildContext, type Widget,
+  State, StatefulView, Text, runApp, type BuildContext, type View,
 } from "@momo/framework";
 
-class CounterPage extends StatefulWidget {
+class CounterPage extends StatefulView {
   createState(): State {
     return new CounterPageState();
   }
@@ -127,7 +127,7 @@ class CounterPage extends StatefulWidget {
 class CounterPageState extends State<CounterPage> {
   #count = 0;
 
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     return new Scaffold({
       appBar: new AppBar({ title: new Text("我的第一个 Momo 应用") }),
       body: new Center({
@@ -171,16 +171,16 @@ API 形状与 Flutter 基本一致，主要差异：
 - 构造参数用一个**选项对象**：`new Padding({ padding: EdgeInsets.all(8), child })`，而不是命名参数。
 - 枚举多用字符串字面量：`mainAxisSize: "min"`、`crossAxisAlignment: "start"`。
 - 颜色是 `new Color(0xff4285f4)` 或 `Colors.*`。
-- 没有 `runtimeType`：两个 Widget 可以复用同一 Element 的条件是**构造函数相同且 key 相等**。
+- 没有 `runtimeType`：两个 View 可以复用同一 Element 的条件是**构造函数相同且 key 相等**。
 - 运行环境里没有 DOM / Node API（没有 `fetch`、`setTimeout`），延迟任务请用 `SchedulerBinding.instance.scheduleDelayed(ms, fn)`，网络、文件等能力由扩展提供。
 
 ---
 
-## 两种写法：Widget 框架与 momo:ui 底层 API
+## 两种写法：View 框架与 momo:ui 底层 API
 
-绝大多数应用用 Widget 框架（上一节）。如果你要写游戏、可视化，或者想了解引擎边界，也可以绕开框架、直接用引擎提供的 `momo:ui` 模块画帧。它对标 Flutter 的 `dart:ui`，完整类型声明见 [framework/packages/momo/src/ui/momo-ui.d.ts](framework/packages/momo/src/ui/momo-ui.d.ts)。
+绝大多数应用用 View 框架（上一节）。如果你要写游戏、可视化，或者想了解引擎边界，也可以绕开框架、直接用引擎提供的 `momo:ui` 模块画帧。它对标 Flutter 的 `dart:ui`，完整类型声明见 [framework/packages/momo/src/ui/momo-ui.d.ts](framework/packages/momo/src/ui/momo-ui.d.ts)。
 
-`momo:ui` 只有引擎职责：`window` 是全局的帧调度与帧回调，`views` 是视图（窗口）的画面、尺寸与输入。窗口的标题、位置、标题栏等属于宿主，经宿主注册的 `momo/window` 通道设置（框架里是 `WindowService` 与 `Window` / `WindowChrome`）。
+`momo:ui` 只有引擎职责：`platformDispatcher` 是全局的帧调度与帧回调，`viewports` 是视图（窗口）的画面、尺寸与输入。应用生命周期与窗口的标题、位置、标题栏等属于宿主，经宿主注册的 `momo/app`、`momo/window` 通道操作（框架里是 `app` 与 `Widget` 对象，以及 `WindowChrome` / `Title`）。
 
 ```js
 import { window, views, PictureRecorder, Paint, SceneBuilder } from "momo:ui";
@@ -234,11 +234,11 @@ window.scheduleFrame();
 | 自定义绘制 | `CustomPaint`（拿到 `momo:ui` 的 `Canvas`） |
 | 剪贴板 | `await Clipboard.setData("text")`、`await Clipboard.getData()` |
 | 打开链接 | `await openUrl("https://example.com")` |
-| 生命周期 | `AppLifecycle.instance.addListener((state) => ...)`，`state` 为 `"resumed"` / `"suspended"` / `"terminating"`；窗口最小化或应用隐藏时为 `suspended`，期间不出帧 |
-| 拦截关闭 | 关窗：`WidgetsBinding.instance.addObserver({ didRequestClose: () => false })`（`runApp` 的窗口）或 `Window({ onCloseRequested })`；退出应用（Cmd+Q）：`didRequestAppExit`。返回 `false` 取消（例如提示"有未保存内容"）。最后一个窗口关闭后应用退出 |
-| 窗口 | `MaterialApp({ title })` 设置所在窗口的标题；多窗口用 `ViewAnchor({ views: [new Window({ title, width, height, minWidth, alwaysOnTop, resizable, ... })] })`；所有窗口对等的写法用 `runWidget` + `Window({ view: views.get(0) })` 接管启动窗口 |
+| 应用 | `app.quit()`（可被 `before-quit` / 窗口 `close` / `will-quit` 取消）、`app.exit(code)`（不询问）、`app.hide()` / `app.focus()`；事件 `app.on("window-all-closed" / "activate" / "state-changed", ...)`。**最后一个窗口关闭后应用不会自动退出**，单窗口应用写 `app.on("window-all-closed", () => app.quit())` |
+| 拦截关闭 | 关窗：`widget.on("close", (e) => e.preventDefault())`；退出应用（Cmd+Q）：`app.on("before-quit", (e) => e.preventDefault())`。需要异步确认时用 `e.waitUntil(promise)`（例如提示"有未保存内容"） |
+| 窗口 | `await Widget.create({ title, width, height, show, ... })` 打开窗口（`Widget.fromId(0)` 是启动窗口），内容用 `ViewAnchor({ views: [new RootView({ widget, child })] })` 渲染；`Title` / `MaterialApp({ title })` 设置所在窗口的标题；窗口方法 `close` / `destroy` / `show` / `hide` / `minimize` / `maximize` / `restore` / `focus` / `setPosition`，事件 `closed` / `focus` / `minimize` / `move` / `resize` / `ready-to-show`… |
 | 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`；`WindowDragArea` 声明可拖动窗口的区域 |
-| 其他窗口操作 | `WindowService.instance`：`setPosition`、`activate`、`frameOf`、`capabilitiesOf`（平台不支持的能力是空操作，可先查询） |
+| 窗口能力 | `widget.capabilities`、`widget.bounds`、`widget.state`（平台不支持的能力是空操作，可先查询） |
 | 与原生通信 | `new MethodChannel("acme/foo").invokeMethod("bar", args)`；对端由原生扩展注册（见下文） |
 
 完整用法可参考 `examples/counter`（按钮、主题、快捷键）、`examples/todo`（输入框、列表、勾选、删除、滚动），以及 `framework/test/` 下的测试用例。
@@ -250,7 +250,7 @@ window.scheduleFrame();
 - **Chrome DevTools**：`--dev` 启动时引擎在 `127.0.0.1:9229` 开启 Node 的 inspector，启动日志（stderr）会打印 `Debugger listening on ws://…`；也可以在 `chrome://inspect` 中添加 `localhost:9229`。支持断点、单步、console、性能分析、堆快照。`--inspect-brk` 让引擎在执行 bundle 前等待调试器连接；`--inspect-port=<n>` 换端口。
 - **Node.js API**：JS 运行在嵌入的 Node.js 26 环境中，可以直接 `import` `node:fs`、`node:net`、`node:child_process` 等内置模块和 node_modules 里的 npm 包，`setTimeout`、`process.nextTick` 按 Node 语义工作（docs/04 §1）。
 - **日志**：`console.log/warn/error` 写入引擎日志，从终端启动 `Momo.app/Contents/MacOS/Momo` 即可看到；连上 DevTools 时也会出现在 DevTools 控制台（含调用栈）。
-- **异常**：build 中抛出的异常会让对应子树显示为 `ErrorWidget`；布局、指针/键盘事件处理中的异常会被报告并跳过。都不会让应用崩溃。
+- **异常**：build 中抛出的异常会让对应子树显示为 `ErrorView`；布局、指针/键盘事件处理中的异常会被报告并跳过。都不会让应用崩溃。
 - **软件渲染**：`MOMO_SOFTWARE_RENDERING=1` 强制使用 CPU 光栅（排查 GPU 相关问题）。没有可用的 Metal 设备时也会自动回退到软件渲染。
 
 ---
@@ -445,10 +445,10 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | 示例 | 层次 | 内容 |
 |---|---|---|
 | `examples/hello_frame` | momo:ui | 渐变卡片、旋转星形、描边；默认打包进 Momo.app |
-| `examples/counter` | Widget | Material 计数器：按钮、主题、键盘快捷键 |
-| `examples/todo` | Widget | 输入框、添加/勾选/删除、列表滚动 |
+| `examples/counter` | View | Material 计数器：按钮、主题、键盘快捷键 |
+| `examples/todo` | View | 输入框、添加/勾选/删除、列表滚动 |
 
-Widget 示例都是独立 npm 工程，可以用 `build_example.mjs` 构建后以 `--bundle` 运行，也可以用 `momo build` 打包成 `.app`。
+View 示例都是独立 npm 工程，可以用 `build_example.mjs` 构建后以 `--bundle` 运行，也可以用 `momo build` 打包成 `.app`。
 
 ---
 

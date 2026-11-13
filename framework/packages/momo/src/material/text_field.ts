@@ -5,12 +5,12 @@ import { BoxDecoration } from "../painting/decoration";
 import { EdgeInsets } from "../painting/edge_insets";
 import type { TextStyle } from "../painting/text_style";
 import { Alignment } from "../painting/alignment";
-import { IgnorePointer, MouseRegion, Stack } from "../widgets/basic";
-import { Container } from "../widgets/container";
-import { EditableText, TextEditingController } from "../widgets/editable_text";
-import { FocusNode } from "../widgets/focus_manager";
-import { State, StatefulWidget, type BuildContext, type Widget } from "../widgets/framework";
-import { Text } from "../widgets/text";
+import { IgnorePointer, MouseRegion, Stack } from "../views/basic";
+import { Container } from "../views/container";
+import { EditableText, TextEditingController } from "../views/editable_text";
+import { FocusNode } from "../views/focus_manager";
+import { State, StatefulView, type BuildContext, type View } from "../views/framework";
+import { Text } from "../views/text";
 import { Theme } from "./theme";
 
 /** 输入框装饰(简化版)。 */
@@ -30,7 +30,7 @@ export class InputDecoration {
 }
 
 /** 文本输入框(基于 EditableText):边框随 hover/focus 变化, 空文本显示提示。 */
-export class TextField extends StatefulWidget {
+export class TextField extends StatefulView {
   readonly controller: TextEditingController | null;
   readonly focusNode: FocusNode | null;
   readonly decoration: InputDecoration;
@@ -69,10 +69,10 @@ export class TextFieldState extends State<TextField> {
   #hovered = false;
 
   get controller(): TextEditingController {
-    return this.widget.controller ?? (this.#controller ??= new TextEditingController());
+    return this.view.controller ?? (this.#controller ??= new TextEditingController());
   }
   get focusNode(): FocusNode {
-    return this.widget.focusNode ?? (this.#focusNode ??= new FocusNode({ debugLabel: "TextField" }));
+    return this.view.focusNode ?? (this.#focusNode ??= new FocusNode({ debugLabel: "TextField" }));
   }
   #rebuild = (): void => {
     if (this.mounted) this.setState();
@@ -81,7 +81,7 @@ export class TextFieldState extends State<TextField> {
     this.focusNode.addListener(this.#rebuild);
     this.controller.addListener(this.#rebuild);
   }
-  override didUpdateWidget(old: TextField): void {
+  override didUpdateView(old: TextField): void {
     const oldNode = old.focusNode ?? this.#focusNode;
     if (oldNode !== this.focusNode) {
       oldNode?.removeListener(this.#rebuild);
@@ -100,10 +100,10 @@ export class TextFieldState extends State<TextField> {
     this.#focusNode?.dispose();
   }
 
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     const cs = theme.colorScheme;
-    const w = this.widget;
+    const w = this.view;
     const d = w.decoration;
     const focused = this.focusNode.hasFocus;
     const borderColor = !w.enabled ? cs.onSurface.withOpacity(0.12) : focused ? cs.primary : this.#hovered ? cs.onSurface : cs.outline;
@@ -122,7 +122,7 @@ export class TextFieldState extends State<TextField> {
       onChanged: w.onChanged,
       onSubmitted: w.onSubmitted,
     });
-    const children: Widget[] = [];
+    const children: View[] = [];
     if (d.hintText !== null && this.controller.text.length === 0 && !this.controller.value.isComposingRangeValid) {
       children.push(new IgnorePointer({ child: new Text(d.hintText, { style: style.copyWith({ color: cs.onSurface.withOpacity(0.5) }), maxLines: 1 }) }));
     }

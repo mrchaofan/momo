@@ -18,17 +18,19 @@ TEST(AppConfigTest, Defaults) {
   EXPECT_FALSE(config->dev_mode);
   EXPECT_EQ(config->window.title, "Momo");
   EXPECT_EQ(config->window.size, (Size{1024, 768}));
+  EXPECT_TRUE(config->startup_window);
 }
 
 TEST(AppConfigTest, ParsesAllFlags) {
   auto config = Parse({"--bundle=/tmp/app/bundle.js", "--assets=/tmp/app/assets", "--dev",
-                       "--title=你好 Momo", "--width=800", "--height=600"});
+                       "--title=你好 Momo", "--width=800", "--height=600", "--no-startup-window"});
   ASSERT_TRUE(config.ok()) << config.status();
   EXPECT_EQ(config->bundle_path->string(), "/tmp/app/bundle.js");
   EXPECT_EQ(config->assets_dir->string(), "/tmp/app/assets");
   EXPECT_TRUE(config->dev_mode);
   EXPECT_EQ(config->window.title, "你好 Momo");
   EXPECT_EQ(config->window.size, (Size{800, 600}));
+  EXPECT_FALSE(config->startup_window);
 }
 
 TEST(AppConfigTest, IgnoresSystemAndUnknownArgs) {

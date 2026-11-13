@@ -13,7 +13,7 @@ const paint = new Paint();
 
 /**
  * 可编辑文本的渲染:文本、选区背景、光标;单行时水平滚动、多行时垂直滚动以保持光标可见。
- * 编辑逻辑(输入法/键盘/手势)在 EditableText widget 中。
+ * 编辑逻辑(输入法/键盘/手势)在 EditableText view 中。
  */
 export class RenderEditable extends RenderBox {
   readonly #painter: TextPainter;

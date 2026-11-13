@@ -4,8 +4,8 @@
 // 网页本身是同一个 WebView(GlobalKey), 在两处之间迁移时原生网页视图换窗口, 页面不刷新。
 import {
   Align, Alignment, Border, BorderRadius, BorderSide, BoxDecoration, Center, Column, Container, EdgeInsets, Expanded,
-  FontWeight, FractionallySizedBox, GestureDetector, MediaQuery, MouseRegion, Padding, Row, SizedBox, State, StatefulWidget,
-  StatelessWidget, Text, TextStyle, WindowChrome, type BuildContext, type Widget,
+  FontWeight, FractionallySizedBox, GestureDetector, MediaQuery, MouseRegion, Padding, Row, SizedBox, State, StatefulView,
+  StatelessView, Text, TextStyle, WindowChrome, type BuildContext, type View,
 } from "@momo/framework";
 import { WindowDragArea } from "./window_drag_area";
 import type { BrowserAppState, DetachedWindow } from "./main";
@@ -14,7 +14,7 @@ import { Palette, TextStyles, kStripLeadingPadding, kTitleBarHeight, kToolbarHei
 import { IconTap, type Tab } from "./tabs";
 
 /** 胶囊按钮: primary 为黑底白字, 否则浅灰底黑字;active 用于开关的"开"状态(同 primary 外观)。 */
-export class Pill extends StatefulWidget {
+export class Pill extends StatefulView {
   constructor(readonly o: { label: string; onTap: () => void; primary?: boolean; small?: boolean }) {
     super();
   }
@@ -25,8 +25,8 @@ export class Pill extends StatefulWidget {
 
 class PillState extends State<Pill> {
   #hover = false;
-  build(_c: BuildContext): Widget {
-    const { label, onTap, primary = false, small = false } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { label, onTap, primary = false, small = false } = this.view.o;
     const bg = primary ? (this.#hover ? Palette.ink : Palette.black) : (this.#hover ? Palette.line : Palette.hover);
     return new MouseRegion({
       cursor: "click",
@@ -51,7 +51,7 @@ class PillState extends State<Pill> {
 }
 
 /** 页面标题的首字母徽标(没有 favicon 时的占位图标)。 */
-function badge(title: string): Widget {
+function badge(title: string): View {
   const ch = (title.trim()[0] ?? "·").toUpperCase();
   return new Container({
     width: 64,
@@ -69,11 +69,11 @@ function badge(title: string): Widget {
 }
 
 /** 原窗口里已弹出标签的占位。 */
-export class DetachedPlaceholder extends StatelessWidget {
+export class DetachedPlaceholder extends StatelessView {
   constructor(readonly o: { app: BrowserAppState; tab: Tab }) {
     super();
   }
-  build(_c: BuildContext): Widget {
+  build(_c: BuildContext): View {
     const { app, tab } = this.o;
     return new Container({
       color: Palette.white,
@@ -114,11 +114,11 @@ export class DetachedPlaceholder extends StatelessWidget {
  * 单独窗口的内容(无边框窗口): 顶栏(窗口控制按钮、网页标题、置顶与恢复图标按钮)+ 工具栏(后退/前进/刷新、地址)
  * + 加载进度 + 网页。顶栏除按钮外都可拖动窗口(标题文字上也可以)。
  */
-export class DetachedPage extends StatelessWidget {
-  constructor(readonly o: { app: BrowserAppState; detached: DetachedWindow; page: Widget }) {
+export class DetachedPage extends StatelessView {
+  constructor(readonly o: { app: BrowserAppState; detached: DetachedWindow; page: View }) {
     super();
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const { app, detached: d, page } = this.o;
     const tab = d.tab;
     const web = tab.controller;

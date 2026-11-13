@@ -20,7 +20,6 @@
 #include "engine/platform/view.h"
 #include "engine/platform/viewport_metrics.h"
 #include "engine/shell/animator.h"
-#include "engine/shell/lifecycle.h"
 #include "engine/shell/vsync_waiter.h"
 #include "engine/ui/app_driver.h"
 
@@ -59,6 +58,8 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   void OnPointerPacket(platform::ViewId view, const platform::PointerDataPacket& packet);
   void OnKeyData(platform::ViewId view, const platform::KeyData& data);
   void OnFocusChanged(platform::ViewId view, bool focused);
+  // 视图可见性(窗口隐藏/最小化): 不可见的视图不出帧;全部不可见时停帧。
+  void OnVisibilityChanged(platform::ViewId view, bool visible);
 
   // 主窗口(视图 0)的兼容入口。
   void OnMetricsChanged(const platform::ViewportMetrics& metrics) {
@@ -69,8 +70,8 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   }
   void OnKeyData(const platform::KeyData& data) { OnKeyData(platform::kImplicitViewId, data); }
   void OnFocusChanged(bool focused) { OnFocusChanged(platform::kImplicitViewId, focused); }
-  // suspended/terminating 停帧, resumed 恢复, 然后通知应用。
-  void OnLifecycleEvent(LifecycleEvent event);
+  // 应用整体挂起(宿主隐藏了应用)时停帧。应用状态本身属于宿主(momo/app), 引擎只需要知道是否出帧。
+  void SetAppSuspended(bool suspended);
   // 宿主(扩展帧回调/纹理新帧)请求出一帧。
   void ScheduleFrameFromHost() { animator_.RequestFrame(); }
   // 由宿主请求重新加载 bundle(--dev hot restart): 销毁 JS 运行时并重新执行 bundle。
@@ -90,6 +91,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   void Render(std::unique_ptr<graphics::LayerTree> layer_tree) override;
   platform::ViewportMetrics metrics(platform::ViewId view) const override;
   bool focused(platform::ViewId view) const override;
+  bool visible(platform::ViewId view) const override;
   std::vector<platform::ViewId> views() const override;
 
   // Animator::Delegate
@@ -104,7 +106,11 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   struct ViewState {
     platform::ViewportMetrics metrics;
     bool focused = false;
+    bool visible = true;
   };
+  // 帧时钟: 应用未挂起且至少有一个可见视图时运行(零视图不出帧, JS 照常运行)。
+  void UpdateAnimator();
+  bool app_suspended_ = false;
   std::map<platform::ViewId, ViewState> views_;
   // 先于 driver_ 构造(执行 bundle 时即可能 scheduleFrame), 后于 driver_ 析构。
   Animator animator_;

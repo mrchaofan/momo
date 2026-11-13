@@ -18,6 +18,9 @@ struct Settings {
   std::filesystem::path code_cache_dir;
   // 显示器刷新率(Hz), 平台无 VsyncSource(或视图未绑定)时回退定时器使用。<= 0 = 未知(按 kDefaultRefreshRate)。
   double refresh_rate = 0;
+  // 引擎创建时就存在隐式视图 0(宿主的启动窗口, JS bundle 执行前即可渲染)。宿主不建启动窗口时为 false:
+  // 视图全部由宿主之后打开的窗口绑定。
+  bool implicit_view = true;
 };
 
 }  // namespace momo::engine

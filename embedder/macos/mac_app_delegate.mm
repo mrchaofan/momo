@@ -12,12 +12,31 @@ using momo::embedder::Application;
     return NSTerminateNow;
   }
   // 由我们自己按 docs/01 §4 有序关闭并 [NSApp stop:], 不让 AppKit 直接 exit()。
-  app->RequestTerminate();
+  app->Quit();
   return NSTerminateCancel;
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)sender {
-  return NO;  // 关窗由 WindowController → Application 处理
+  return NO;  // 最后一个窗口关闭后是否退出由 JS 决定(momo/app windowAllClosed)
+}
+
+- (BOOL)applicationShouldHandleReopen:(NSApplication*)sender hasVisibleWindows:(BOOL)flag {
+  if (self.application != nullptr) {
+    self.application->OnReopen(flag);
+  }
+  return NO;  // 不让 AppKit 自行还原窗口: 由 JS 处理 activate
+}
+
+- (void)applicationDidBecomeActive:(NSNotification*)notification {
+  if (self.application != nullptr) {
+    self.application->OnAppActiveChanged(true);
+  }
+}
+
+- (void)applicationDidResignActive:(NSNotification*)notification {
+  if (self.application != nullptr) {
+    self.application->OnAppActiveChanged(false);
+  }
 }
 
 - (void)applicationDidHide:(NSNotification*)notification {

@@ -9,7 +9,7 @@
 //  - metrics: WM_SIZE(非最小化)/ WM_DPICHANGED 后上报 {客户区物理尺寸, DPR}(去重, 与 mac 一致);
 //    创建过程中的消息不上报(初始值由 metrics() 取得)。
 //  - 生命周期事件: WM_CLOSE 先问 delegate(返回 true 才隐藏窗口, HWND 由析构销毁);
-//    SIZE_MINIMIZED / 还原 → OnVisibilityChanged;WM_SETFOCUS / WM_KILLFOCUS → OnFocusChanged。
+//    SIZE_MINIMIZED / SIZE_MAXIMIZED / 还原 → OnWindowStateChanged;WM_SETFOCUS / WM_KILLFOCUS → OnFocusChanged。
 //  - 深色标题栏: DWMWA_USE_IMMERSIVE_DARK_MODE 跟随系统"应用模式"(注册表 AppsUseLightTheme),
 //    WM_SETTINGCHANGE("ImmersiveColorSet")时更新。
 //  - 输入: 鼠标/滚轮/键盘归一化为 PointerData/KeyData(物理像素、左上原点、与 mac 同一套约定), 经 delegate
@@ -44,7 +44,14 @@ class WinWindow final : public PlatformWindow {
   platform::RenderSurface& surface() override;
   void SetCursor(SystemCursor cursor) override;
   // 可选能力: 窗口定位与指针捕获(隐藏标题栏、拖动区域、移动循环等尚未实现, 对应调用回复 Unimplemented)。
-  uint32_t capabilities() const override { return kCapabilityPosition | kCapabilityPointerCapture; }
+  uint32_t capabilities() const override {
+    return kCapabilityPosition | kCapabilityPointerCapture | kCapabilityVisibility | kCapabilityMinMax;
+  }
+  WindowStateFlags state() const override;
+  Status Hide() override;
+  Status Minimize() override;
+  Status Maximize() override;
+  Status Restore() override;
   StatusOr<bool> CapturePointer(int64_t sequence_id) override;
   void ReleasePointerCapture() override;
   Rect screen_frame() const override;
@@ -91,6 +98,9 @@ class WinWindow final : public PlatformWindow {
   bool created_ = false;     // 创建过程中的消息不上报
   Rect last_frame_;          // 最近上报的内容区屏幕框
   bool minimized_ = false;
+  WindowStateFlags last_state_{.visible = false};
+  // 状态(显示/最小化/最大化)有变化时通知 delegate。
+  void NotifyStateChanged();
   Size min_size_;            // 逻辑像素
   std::unique_ptr<WinSoftwareSurface> surface_;
   std::unique_ptr<WinTextInput> text_input_;

@@ -2,13 +2,13 @@
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/todo/src/main";
 import { runRegisteredTests, test, expect } from "../harness";
-import { WidgetTester } from "../tester";
+import { ViewTester } from "../tester";
 import {
   Checkbox, LogicalKeyboardKey, PhysicalKeyboardKey, Size, Offset, ScrollableState, StatefulElement,
 } from "../../packages/momo/src/index";
 
 test("examples/todo: type, add, check, delete, scroll", async () => {
-  const t = new WidgetTester(new Size(800, 600));
+  const t = new ViewTester(new Size(800, 600));
   const calls = t.recordMethodCalls("momo/textinput");
   await t.pumpFor(300);
   expect.equal(__mock.title, "Momo · todo");

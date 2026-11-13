@@ -11,6 +11,7 @@
 //                       缺少 bundle 时以空引擎启动而非报错
 //   --inspect-port=<n>  inspector 端口(0 = 系统分配;-1 = 不启动 inspector)
 //   --inspect-brk       执行 bundle 前等待调试器连接(隐含 --dev)
+//   --no-startup-window 不创建启动窗口(隐式视图 0): 窗口全部由 JS 打开(Widget.create)
 
 #include <filesystem>
 #include <optional>
@@ -27,6 +28,8 @@ struct AppConfig {
   std::optional<std::filesystem::path> bundle_path;
   std::optional<std::filesystem::path> assets_dir;
   WindowSpec window;
+  // 启动时创建并显示隐式视图 0 的窗口(JS bundle 执行前即可见, runApp 渲染到这里)。
+  bool startup_window = true;
   bool dev_mode = false;
   int inspector_port = 9229;
   bool inspector_wait = false;

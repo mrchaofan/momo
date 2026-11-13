@@ -22,6 +22,7 @@ StatusOr<std::unique_ptr<JsRuntime>> JsRuntime::Create(const Options& options) {
   }
   JsRuntimeImpl::Options impl_options;
   impl_options.code_cache_dir = options.code_cache_dir;
+  impl_options.on_process_exit = options.on_process_exit;
   MOMO_ASSIGN_OR_RETURN(std::unique_ptr<JsRuntimeImpl> impl,
                         JsRuntimeImpl::Create(loop->GetTaskRunner(), impl_options, node_args));
   return std::unique_ptr<JsRuntime>(new JsRuntime(std::move(impl)));

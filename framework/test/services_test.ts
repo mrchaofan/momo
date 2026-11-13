@@ -1,6 +1,7 @@
 import type { KeyData } from "momo:ui";
 import {
-  AppLifecycle,
+  app,
+
   BasicMessageChannel,
   Clipboard,
   HardwareKeyboard,
@@ -28,6 +29,7 @@ import {
   type KeyEvent,
   type TextInputClient,
 } from "../packages/momo/src/services/index";
+import type { HostEvent } from "../packages/momo/src/foundation/event_emitter";
 import { expect, group, test as baseTest } from "./harness";
 
 const codec = StandardMessageCodec.instance;
@@ -298,17 +300,37 @@ group("services › channels", () => {
     await openUrl("https://example.com");
     expect.deepEqual(opened, [["open", "https://example.com"]]);
   });
-  test("AppLifecycle (standard codec and raw utf-8)", async () => {
-    const lc = AppLifecycle.instance;
-    lc.ensureInitialized();
-    const states: string[] = [];
-    const listener = (s: string): void => void states.push(s);
-    lc.addListener(listener);
-    await defaultBinaryMessenger.handlePlatformMessage("momo/lifecycle", codec.encodeMessage("suspended"));
-    await defaultBinaryMessenger.handlePlatformMessage("momo/lifecycle", StringCodec.instance.encodeMessage("resumed"));
-    expect.deepEqual(states, ["suspended", "resumed"]);
-    expect.equal(lc.state, "resumed");
-    lc.removeListener(listener);
+  test("app: host events, cancelable questions and waitUntil", async () => {
+    app.debugReset();
+    const method = StandardMethodCodec.instance;
+    const send = async (name: string, args: unknown = null): Promise<unknown> => {
+      const reply = await defaultBinaryMessenger.handlePlatformMessage("momo/app", method.encodeMethodCall(new MethodCall(name, args)));
+      return reply === null ? null : method.decodeEnvelope(reply);
+    };
+    const log: string[] = [];
+    app.on("state-changed", (s) => log.push(`state:${s}`));
+    app.on("did-become-active", () => log.push("active"));
+    app.on("window-all-closed", () => log.push("all-closed"));
+    app.on("activate", (info) => log.push(`activate:${info.hasVisibleWindows}`));
+    await send("stateChanged", { state: "running" });
+    await send("activeChanged", { active: true });
+    await send("windowAllClosed");
+    await send("activate", { hasVisibleWindows: false });
+    expect.deepEqual(log, ["state:running", "active", "all-closed", "activate:false"]);
+    expect.equal(app.state, "running");
+    expect.isTrue(app.isActive);
+    await app.whenReady();
+
+    expect.equal(await send("beforeQuit"), true, "no listener: allow");
+    const cancel = (e: HostEvent): void => e.preventDefault();
+    app.once("before-quit", cancel);
+    expect.equal(await send("beforeQuit"), false);
+    let release!: (v: boolean) => void;
+    app.once("will-quit", (e) => e.waitUntil(new Promise<boolean>((r) => (release = r))));
+    const pending = send("willQuit");
+    release(false);
+    expect.equal(await pending, false, "waitUntil resolving to false cancels");
+    app.debugReset();
   });
 });
 

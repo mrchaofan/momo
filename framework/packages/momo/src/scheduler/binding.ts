@@ -1,4 +1,4 @@
-import { window } from "momo:ui";
+import { platformDispatcher } from "momo:ui";
 import { reportError } from "../foundation/assert";
 
 /** 帧阶段。 */
@@ -51,9 +51,9 @@ class DelayedTaskImpl implements DelayedTask {
 }
 
 /**
- * 帧调度器(对标 Flutter SchedulerBinding)。挂接 window.onBeginFrame/onDrawFrame:
+ * 帧调度器(对标 Flutter SchedulerBinding)。挂接 platformDispatcher.onBeginFrame/onDrawFrame:
  *   onBeginFrame → transient 回调(Ticker/动画);
- *   onDrawFrame  → persistent 回调(WidgetsBinding.drawFrame:build/layout/paint/合成)→ post-frame 回调。
+ *   onDrawFrame  → persistent 回调(ViewsBinding.drawFrame:build/layout/paint/合成)→ post-frame 回调。
  */
 export class SchedulerBinding {
   static #instance: SchedulerBinding | null = null;
@@ -78,8 +78,8 @@ export class SchedulerBinding {
   #frameCount = 0;
 
   private constructor() {
-    window.onBeginFrame = (t: number) => this.handleBeginFrame(t);
-    window.onDrawFrame = () => this.handleDrawFrame();
+    platformDispatcher.onBeginFrame = (t: number) => this.handleBeginFrame(t);
+    platformDispatcher.onDrawFrame = () => this.handleDrawFrame();
   }
 
   /** 当前阶段。 */
@@ -116,7 +116,7 @@ export class SchedulerBinding {
   scheduleFrame(): void {
     if (this.#hasScheduledFrame || !this.#framesEnabled) return;
     this.#hasScheduledFrame = true;
-    window.scheduleFrame();
+    platformDispatcher.scheduleFrame();
   }
 
   /** 确保会有一帧来处理视觉更新(帧处理中途的请求会在本帧内被消化时不重复请求)。 */

@@ -128,7 +128,7 @@ TEST_F(HubTest, JsEndpointRemovedAfterPostIsNotCalled) {
   int calls = 0;
   hub_->SetJsEndpoint(loop_.task_runner(),
                       [&](const std::string&, MessageBytes, MessageReply) { calls++; });
-  hub_->SendToJs("momo/lifecycle", {1});
+  hub_->SendToJs("test/channel", {1});
   hub_->SetJsEndpoint(nullptr, nullptr);  // 例如 JS 运行时在任务执行前销毁
   loop_.RunUntilIdle();
   EXPECT_EQ(calls, 0);

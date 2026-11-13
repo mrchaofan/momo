@@ -1,15 +1,15 @@
 // examples/webview — 多窗口、多标签浏览器(平台视图 + 多视图示例, docs/05 §9、docs/02 §2)。黑白简约风格。
 //   - 标签: 新建(+ / ⌘T)、关闭(× / ⌘W)、切换(点击 / ⌃Tab、⌃⇧Tab), 插入与删除带缓动;
 //   - 工具栏: 后退、前进、刷新/停止, 地址栏(⌘L 聚焦;非网址按搜索处理), 加载进度细线;
-//   - 窗口: ⌘N 新窗口;每个窗口是同一个 JS 运行时驱动的一个 momo 视图(Window widget), 共享应用状态。
-//     所有窗口对等(runWidget): 启动窗口由第一个浏览器窗口接管(Window({ view: views.get(0) })), 和其他窗口一样
-//     可以关闭、可以被并入别的窗口;最后一个窗口关闭后应用退出(宿主的策略);
+//   - 窗口: ⌘N 新窗口;每个窗口是一个 Widget(原生窗口对象), 内容由 RootView 渲染, 同一个 JS 运行时驱动,
+//     共享应用状态。所有窗口对等(runView): 启动窗口(Widget.fromId(0))由第一个浏览器窗口使用, 和其他窗口一样
+//     可以关闭、可以被并入别的窗口;最后一个窗口关闭后 macOS 上应用留在 Dock(点击图标重开窗口), 其他平台退出;
 //   - 标签右键: 窗口内菜单(momo 绘制, 叠在网页之上)——在新窗口中打开、在系统浏览器中打开;
 //   - 在新窗口中打开(类似 Codex): 把标签的 WebView(GlobalKey)移到一个单独窗口, 原生网页视图换窗口,
 //     页面不刷新;原窗口的标签保留并显示占位(恢复到标签页 / 显示窗口)。单独窗口可置顶、可恢复;
 //     关闭单独窗口 = 关闭该标签, 网页销毁;
 //   - 标签拖拽(类似 Chromium): 标签栏内左右拖动排序(其他标签平移让位);上下拖离标签栏变成新窗口,
-//     新窗口跟随鼠标(宿主的移动循环 WindowService.startMoveLoop, 不经 ui 线程往返), 网页随之迁移不刷新;
+//     新窗口跟随鼠标(宿主的移动循环 Widget.startMoveLoop, 不经 ui 线程往返), 网页随之迁移不刷新;
 //     拖到另一个窗口的标签栏上并入该窗口并可继续排序;窗口只有一个标签时, 拖动标签即拖动整个窗口;
 //     拖动开始即捕获指针(GestureBinding.capturePointer): 会话成为接收方, 与标签栏、窗口无关;换窗口(拖出的
 //     新窗口打开、并入另一个窗口)只改原生接收窗口(PointerCapture.moveToView), 触发拖动的窗口被并走关闭也不中断;
@@ -22,11 +22,10 @@ import {
   Actions, BorderRadius, GestureBinding, PointerCancelEvent, PointerUpEvent, Border, BorderSide, BoxDecoration, CallbackAction, Color, Column, Container, EdgeInsets,
   Expanded, FocusNode, Focus, FractionallySizedBox, Align, Alignment, InputDecoration, Intent, LogicalKeyboardKey,
   MaterialApp, MediaQuery, Offstage, Positioned, Row, Shortcuts, SingleActivator, SizedBox, Stack, State,
-  StatefulWidget, TextEditingController, TextField, TextSelection, ThemeData, ValueKey, ViewAnchor, Window, WindowChrome,
-  WindowService, openUrl, reportError, runWidget,
-  type BuildContext, type Offset, type PointerCapture, type PointerEvent, type Widget,
+  StatefulView, TextEditingController, TextField, TextSelection, ThemeData, Title, ValueKey, ViewAnchor, RootView, Widget,
+  WindowChrome, app, isApplePlatform, openUrl, reportError, runView,
+  type BuildContext, type Offset, type PointerCapture, type PointerEvent, type View,
 } from "@momo/framework";
-import { views, type View as UiView } from "momo:ui";
 import { WebView, type WebViewController, type WebViewState } from "@momo-examples/ext-webview";
 import { showContextMenu } from "./context_menu";
 import { Palette, TextStyles, kStripLeadingPadding, kTabStripHeight, kTabStripTitleBarHeight, kTabStripTopInset, kToolbarHeight } from "./style";
@@ -98,18 +97,20 @@ export class BrowserWindow {
   tabs: Tab[] = [];
   activeId = 0;
   /** 已打开的原生窗口(打开前为 null)。 */
-  view: UiView | null = null;
+  widget: Widget | null = null;
   /** 窗口尺寸与(拖出时的)位置: 仅用于创建窗口。 */
   size = { width: 1024, height: 720 };
   pos: { x: number; y: number } | null = null;
   /** 标签区左侧的留白(系统窗口控制按钮占用的宽度;页面构建时按 MediaQuery.windowControls 更新)。 */
   leading = kStripLeadingPadding;
-  /** adopt: 接管已打开的视图(启动窗口)而不是新开窗口。 */
-  constructor(readonly adopt: UiView | null = null) {}
+  /** widget: 使用已打开的窗口(启动窗口)而不是新开窗口。 */
+  constructor(widget: Widget | null = null) {
+    this.widget = widget;
+  }
 
   /** 窗口的屏幕框(逻辑点, 主屏左上原点;宿主报告, 未打开时为创建参数)。 */
   get frame(): { x: number; y: number; width: number; height: number } {
-    const f = this.view !== null ? WindowService.instance.frameOf(this.view.id) : null;
+    const f = this.widget?.bounds ?? null;
     return f ?? { x: this.pos?.x ?? 0, y: this.pos?.y ?? 0, ...this.size };
   }
 
@@ -144,12 +145,12 @@ export class DetachedWindow {
   readonly id = nextWindowId++;
   /** 窗口已打开: WebView 渲染在这里(之前仍在原窗口, 保证迁移时窗口已就绪)。 */
   ready = false;
-  view: UiView | null = null;
+  widget: Widget | null = null;
   pinned = false;
   constructor(readonly tab: Tab, readonly from: BrowserWindow) {}
 }
 
-class BrowserApp extends StatefulWidget {
+class BrowserApp extends StatefulView {
   createState(): State {
     return new BrowserAppState();
   }
@@ -157,24 +158,38 @@ class BrowserApp extends StatefulWidget {
 
 /** 应用级状态: 所有窗口、标签操作都在这里(标签动画的 vsync 也是它, 标签换窗口后动画仍有效)。 */
 export class BrowserAppState extends State<BrowserApp> {
-  /** 第一个浏览器窗口接管启动窗口(没有启动窗口时新开)。 */
-  readonly first = new BrowserWindow(views.get(0) ?? null);
-  #windows: BrowserWindow[] = [this.first];
+  #windows: BrowserWindow[] = [];
   #detached: DetachedWindow[] = [];
   readonly #pages = new Map<BrowserWindow, BrowserPageState>();
   #drag: DragSession | null = null;
 
   override initState(): void {
     super.initState();
-    this.openTab(this.first, null);
+    // 第一个浏览器窗口使用启动窗口(没有启动窗口时新开)。
+    const first = new BrowserWindow(Widget.fromId(0));
+    this.#windows.push(first);
+    this.#watch(first);
+    this.openTab(first, null);
+    app.on("window-all-closed", this.#onAllClosed);
+    app.on("activate", this.#onActivate);
   }
 
   override dispose(): void {
+    app.off("window-all-closed", this.#onAllClosed);
+    app.off("activate", this.#onActivate);
     this.#drag?.capture.release();
     for (const w of this.#windows) for (const tab of w.tabs) tab.dispose();
     this.#detached = [];
     super.dispose();
   }
+
+  // 最后一个窗口关闭: macOS 惯例留在 Dock(点击图标重新打开窗口), 其他平台退出。
+  readonly #onAllClosed = (): void => {
+    if (!isApplePlatform()) app.quit();
+  };
+  readonly #onActivate = (info: { hasVisibleWindows: boolean }): void => {
+    if (!info.hasVisibleWindows && this.#windows.length === 0) this.openWindow(null);
+  };
 
   get windows(): readonly BrowserWindow[] {
     return this.#windows;
@@ -248,19 +263,45 @@ export class BrowserAppState extends State<BrowserApp> {
   openWindow(url: string | null): void {
     const w = new BrowserWindow();
     this.setState(() => this.#windows.push(w));
+    this.#open(w);
     this.openTab(w, url);
   }
 
-  #onWindowOpened(w: BrowserWindow, view: UiView): void {
-    if (!this.#windows.includes(w)) return;
+  /** 为 w 打开原生窗口;打开后网页才移过去。 */
+  #open(w: BrowserWindow): void {
+    Widget.create({
+      title: w.active?.displayTitle ?? "Momo Browser", width: w.size.width, height: w.size.height,
+      minWidth: 480, minHeight: 320, x: w.pos?.x, y: w.pos?.y,
+    }).then(
+      (widget) => {
+        if (!this.mounted || !this.#windows.includes(w)) {
+          widget.destroy();  // 打开期间已被移除
+          return;
+        }
+        w.widget = widget;
+        this.#watch(w);
+        this.#onWindowOpened(w, widget);
+      },
+      (e: unknown) => {
+        reportError(e, "opening a browser window");
+        this.closeWindow(w);
+      },
+    );
+  }
+
+  /** 窗口被用户(或宿主)关闭: 从状态里移除。 */
+  #watch(w: BrowserWindow): void {
+    w.widget?.once("closed", () => this.closeWindow(w));
+  }
+
+  #onWindowOpened(w: BrowserWindow, widget: Widget): void {
     const d = this.#drag;
     if (d !== null && d.window === w && d.mode === "window") {
       // 拖出的新窗口打开了: 序列改由它接收, 宿主的移动循环让它跟随指针。
-      d.capture.moveToView(view.id);
-      WindowService.instance.startMoveLoop(view.id, ...this.#grabOffset(d, w));
+      d.capture.moveToView(widget.id);
+      widget.startMoveLoop(...this.#grabOffset(d, w));
     }
     this.setState(() => {
-      w.view = view;
       // 寄放在原窗口的网页同一帧移过来。
       for (const tab of w.tabs) tab.parking = null;
     });
@@ -314,7 +355,7 @@ export class BrowserAppState extends State<BrowserApp> {
     const mode = w.live.length === 1 && tab.detached === null ? "window" : "strip";
     const d: DragSession = { tab, grab, capture, screen, window: w, mode };
     this.#drag = d;
-    if (mode === "window" && w.view !== null) WindowService.instance.startMoveLoop(w.view.id, ...this.#grabOffset(d, w));
+    if (mode === "window") w.widget?.startMoveLoop(...this.#grabOffset(d, w));
     this.selectTab(w, tab);
   }
 
@@ -342,10 +383,8 @@ export class BrowserAppState extends State<BrowserApp> {
     this.#drag = null;
     if (!this.mounted) return;
     if (d.mode === "window") {
-      if (d.window.view !== null) {
-        WindowService.instance.endMoveLoop(d.window.view.id);
-        WindowService.instance.activate(d.window.view.id);
-      }
+      d.window.widget?.endMoveLoop();
+      d.window.widget?.focus();
       this.setState();
       return;
     }
@@ -382,6 +421,7 @@ export class BrowserAppState extends State<BrowserApp> {
     d.window = nw;
     nw.pos = this.#followPointer(d);
     this.#windows.push(nw);
+    this.#open(nw);
     this.#pages.get(from)?.syncAddress(true);
   }
 
@@ -390,7 +430,7 @@ export class BrowserAppState extends State<BrowserApp> {
     const src = d.window;
     if (d.tab.detached !== null || d.tab.parking !== null) return null;
     for (const t of this.#windows) {
-      if (t === src || t.view === null) continue;
+      if (t === src || t.widget === null) continue;
       const f = t.frame;
       const x = d.screen.dx - f.x;
       const y = d.screen.dy - f.y;
@@ -414,13 +454,13 @@ export class BrowserAppState extends State<BrowserApp> {
       d.window = target;
       d.mode = "strip";
     });
-    if (target.view !== null) WindowService.instance.activate(target.view.id);
+    target.widget?.focus();
     this.#pages.get(target)?.syncAddress(true);
-    if (src.view !== null) WindowService.instance.endMoveLoop(src.view.id);
+    src.widget?.endMoveLoop();
     if (src.live.length === 0) {
       // 拖动中的窗口被并走、即将关闭(可能正是按下所在的窗口): 先把序列改交目标窗口, 再关闭——
       // 会话照常接收, 继续排序或再次拖出。
-      if (target.view !== null) d.capture.moveToView(target.view.id);
+      if (target.widget !== null) d.capture.moveToView(target.widget.id);
       this.closeWindow(src);
     }
   }
@@ -437,14 +477,28 @@ export class BrowserAppState extends State<BrowserApp> {
     const d = new DetachedWindow(tab, from);
     tab.detached = d;
     this.setState(() => this.#detached.push(d));
-  }
-
-  #onDetachedOpened(d: DetachedWindow, view: UiView): void {
-    if (!this.#detached.includes(d)) return;
-    this.setState(() => {
-      d.ready = true;
-      d.view = view;
-    });
+    // 单独的单标签窗口是辅助窗口: 可接收键盘, 但不成为应用的主窗口, 聚焦它也不激活应用。
+    Widget.create({ title: tab.displayTitle, width: 960, height: 720, minWidth: 420, minHeight: 300, nonActivating: true }).then(
+      (widget) => {
+        if (!this.mounted || !this.#detached.includes(d)) {
+          widget.destroy();
+          return;
+        }
+        widget.once("closed", () => this.#onDetachedClosed(d));
+        // 窗口就绪后网页才移过来(同一帧里原窗口换成占位)。
+        this.setState(() => {
+          d.ready = true;
+          d.widget = widget;
+        });
+      },
+      (e: unknown) => {
+        reportError(e, "opening a separate window");
+        this.setState(() => {
+          d.tab.detached = null;
+          this.#detached = this.#detached.filter((x) => x !== d);
+        });
+      },
+    );
   }
 
   /** 恢复到标签页: 关闭单独窗口, WebView 移回原窗口(同一帧内迁移, 不刷新)并选中该标签。 */
@@ -456,16 +510,17 @@ export class BrowserAppState extends State<BrowserApp> {
       this.#detached = this.#detached.filter((x) => x !== d);
       d.from.activeId = tab.id;
     });
+    d.widget?.destroy();
     this.#pages.get(d.from)?.syncAddress(true);
   }
 
   showDetached(tab: Tab): void {
-    const view = tab.detached?.view;
-    if (view) WindowService.instance.activate(view.id);
+    tab.detached?.widget?.focus();
   }
 
   togglePin(d: DetachedWindow): void {
     this.setState(() => (d.pinned = !d.pinned));
+    d.widget?.setAlwaysOnTop(d.pinned);
   }
 
   /** 用户关闭了单独窗口: 原窗口的标签一起关闭, 网页销毁。 */
@@ -478,14 +533,17 @@ export class BrowserAppState extends State<BrowserApp> {
     this.closeTab(d.from, d.tab);
   }
 
-  /** 关闭窗口: 其标签与网页随窗口卸载一起释放(最后一个窗口关闭后宿主退出应用)。 */
+  /** 关闭窗口: 其标签与网页随 RootView 卸载一起释放, 原生窗口(及其弹出的单独窗口)随之关闭。 */
   closeWindow(w: BrowserWindow): void {
     if (!this.#windows.includes(w)) return;
+    const detached = this.#detached.filter((d) => d.from === w);
     this.setState(() => {
       this.#windows = this.#windows.filter((x) => x !== w);
       this.#detached = this.#detached.filter((d) => d.from !== w);
     });
     for (const tab of w.tabs) tab.dispose();
+    for (const d of detached) d.widget?.destroy();
+    w.widget?.destroy();
   }
 
   // ---- 页面状态 ----
@@ -500,52 +558,33 @@ export class BrowserAppState extends State<BrowserApp> {
     };
   }
 
-  build(_context: BuildContext): Widget {
-    return new ViewAnchor({
-      views: this.#windows.map((w) => new Window({
+  build(_context: BuildContext): View {
+    // 每个已打开的窗口一个 RootView(打开中的窗口还没有 Widget, 其网页暂时寄放在原窗口)。
+    const views: View[] = [];
+    for (const w of this.#windows) {
+      if (w.widget === null) continue;
+      views.push(new RootView({
         key: new ValueKey(w.id),
-        view: w.adopt,
-        title: w.active?.displayTitle ?? "Momo Browser",
-        width: w.size.width,
-        height: w.size.height,
-        minWidth: 480,
-        minHeight: 320,
-        x: w.pos?.x,
-        y: w.pos?.y,
-        onOpened: (view) => this.#onWindowOpened(w, view),
-        onClosed: () => this.closeWindow(w),
-        onCreateError: (e) => {
-          reportError(e, "opening a browser window");
-          this.closeWindow(w);
-        },
-        child: new BrowserPage({ app: this, model: w }),
-      })).concat(this.#detached.map((d) => new Window({
+        widget: w.widget,
+        child: new Title({ title: w.active?.displayTitle ?? "Momo Browser", child: new BrowserPage({ app: this, model: w }) }),
+      }));
+    }
+    for (const d of this.#detached) {
+      if (d.widget === null) continue;
+      views.push(new RootView({
         key: new ValueKey(d.id),
-        title: d.tab.displayTitle,
-        width: 960,
-        height: 720,
-        minWidth: 420,
-        minHeight: 300,
-        alwaysOnTop: d.pinned,
-        // 单独的单标签窗口是辅助窗口: 可接收键盘, 但不成为应用的主窗口, 聚焦它也不激活应用。
-        nonActivating: true,
-        onOpened: (view) => this.#onDetachedOpened(d, view),
-        onClosed: () => this.#onDetachedClosed(d),
-        onCreateError: (e) => {
-          reportError(e, "opening a separate window");
-          this.setState(() => {
-            d.tab.detached = null;
-            this.#detached = this.#detached.filter((x) => x !== d);
-          });
-        },
-        // 窗口就绪后网页才移过来(同一帧里原窗口换成占位)。
-        child: new DetachedPage({ app: this, detached: d, page: d.ready ? this.webViewFor(d.tab) : new SizedBox({}) }),
-      }))),
-    });
+        widget: d.widget,
+        child: new Title({
+          title: d.tab.displayTitle,
+          child: new DetachedPage({ app: this, detached: d, page: d.ready ? this.webViewFor(d.tab) : new SizedBox({}) }),
+        }),
+      }));
+    }
+    return new ViewAnchor({ views });
   }
 
   /** 标签的网页(GlobalKey: 在原窗口与单独窗口之间迁移时保持同一个 WebView)。 */
-  webViewFor(tab: Tab): Widget {
+  webViewFor(tab: Tab): View {
     return new WebView({
       key: tab.pageKey,
       initialUrl: tab.initialUrl ?? kNewTabUrl,
@@ -558,7 +597,7 @@ export class BrowserAppState extends State<BrowserApp> {
 // ---------------------------------------------------------------------------
 // 一个窗口的页面
 
-class BrowserPage extends StatefulWidget {
+class BrowserPage extends StatefulView {
   constructor(readonly o: { app: BrowserAppState; model: BrowserWindow }) {
     super();
   }
@@ -572,10 +611,10 @@ class BrowserPageState extends State<BrowserPage> {
   #addressFocus = new FocusNode({ debugLabel: "address" });
 
   get #app(): BrowserAppState {
-    return this.widget.o.app;
+    return this.view.o.app;
   }
   get #w(): BrowserWindow {
-    return this.widget.o.model;
+    return this.view.o.model;
   }
 
   override initState(): void {
@@ -629,7 +668,7 @@ class BrowserPageState extends State<BrowserPage> {
     });
   };
 
-  #toolbar(active: Tab | null): Widget {
+  #toolbar(active: Tab | null): View {
     const web = active?.controller ?? null;
     const loading = active?.loading ?? false;
     return new Container({
@@ -664,7 +703,7 @@ class BrowserPageState extends State<BrowserPage> {
   }
 
   /** 加载进度: 工具栏下方 2px 黑线, 宽度为进度。 */
-  #progress(active: Tab | null): Widget {
+  #progress(active: Tab | null): View {
     const p = active?.loading ? Math.max(0.05, active.progress) : 0;
     return new SizedBox({
       height: 2,
@@ -675,7 +714,7 @@ class BrowserPageState extends State<BrowserPage> {
     });
   }
 
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const app = this.#app;
     const w = this.#w;
     const active = w.active;
@@ -750,8 +789,8 @@ class BrowserPageState extends State<BrowserPage> {
   }
 }
 
-// 所有窗口对等: 根不绑定任何视图, 窗口全部由 Window 声明(第一个窗口接管启动窗口)。
-runWidget(new MaterialApp({
+// 所有窗口对等: 根不绑定任何视图, 每个窗口(Widget)的内容由 RootView 渲染(第一个窗口使用启动窗口)。
+runView(new MaterialApp({
   theme: new ThemeData({ primaryColor: new Color(0xff111111), scaffoldBackgroundColor: Palette.white }),
   home: new BrowserApp(),
 }));
