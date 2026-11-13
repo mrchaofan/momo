@@ -5,7 +5,6 @@
 #include <utility>
 
 #include "base/logging.h"
-#include "engine/common/standard_codec.h"
 #include "engine/extension/extension_host.h"
 
 namespace momo::engine {
@@ -38,7 +37,10 @@ Engine::Engine(const Settings& settings, Delegate& delegate,
       settings_(settings),
       host_(host),
       animator_(*this, task_runner(), std::move(waiter)) {
-  views_[platform::kImplicitViewId];  // 隐式视图: bundle 执行前即存在(宿主随后绑定其窗口)
+  if (settings.implicit_view) {
+    views_[platform::kImplicitViewId];  // 隐式视图: bundle 执行前即存在(宿主随后绑定其窗口)
+  }
+  UpdateAnimator();
 }
 
 Engine::~Engine() {
@@ -66,6 +68,9 @@ Status Engine::HotRestart() {
     if (state.focused) {
       driver_->OnFocusChanged(view, true);
     }
+    if (!state.visible) {
+      driver_->OnVisibilityChanged(view, false);
+    }
   }
   animator_.RequestFrame();
   return Status::Ok();
@@ -89,6 +94,7 @@ void Engine::AddView(platform::ViewId view) {
   views_[view];
   MOMO_LOG(VERBOSE) << "View added: " << view;
   driver_->OnViewAdded(view);
+  UpdateAnimator();
 }
 
 void Engine::RemoveView(platform::ViewId view) {
@@ -97,11 +103,13 @@ void Engine::RemoveView(platform::ViewId view) {
   }
   MOMO_LOG(VERBOSE) << "View removed: " << view;
   driver_->OnViewRemoved(view);
+  UpdateAnimator();
 }
 
 void Engine::Render(std::unique_ptr<graphics::LayerTree> layer_tree) {
-  if (layer_tree == nullptr || views_.count(layer_tree->view_id()) == 0) {
-    return;  // 已移除的视图(JS 侧尚未感知)
+  auto it = layer_tree != nullptr ? views_.find(layer_tree->view_id()) : views_.end();
+  if (it == views_.end() || !it->second.visible) {
+    return;  // 已移除的视图(JS 侧尚未感知)或不可见的视图
   }
   animator_.Render(std::move(layer_tree));
 }
@@ -114,6 +122,11 @@ platform::ViewportMetrics Engine::metrics(platform::ViewId view) const {
 bool Engine::focused(platform::ViewId view) const {
   auto it = views_.find(view);
   return it != views_.end() && it->second.focused;
+}
+
+bool Engine::visible(platform::ViewId view) const {
+  auto it = views_.find(view);
+  return it != views_.end() && it->second.visible;
 }
 
 std::vector<platform::ViewId> Engine::views() const {
@@ -159,17 +172,38 @@ void Engine::OnFocusChanged(platform::ViewId view, bool focused) {
   driver_->OnFocusChanged(view, focused);
 }
 
-void Engine::OnLifecycleEvent(LifecycleEvent event) {
-  // 先调整帧调度, 再通知应用: resumed 时应用的 scheduleFrame 立即生效。
-  if (event == LifecycleEvent::kResumed) {
+void Engine::OnVisibilityChanged(platform::ViewId view, bool visible) {
+  auto it = views_.find(view);
+  if (it == views_.end() || it->second.visible == visible) {
+    return;
+  }
+  it->second.visible = visible;
+  MOMO_LOG(VERBOSE) << "View " << view << (visible ? " visible" : " hidden");
+  driver_->OnVisibilityChanged(view, visible);
+  UpdateAnimator();
+  if (visible) {
+    animator_.RequestFrame();  // 重新可见: 补一帧最新画面
+  }
+}
+
+void Engine::SetAppSuspended(bool suspended) {
+  if (app_suspended_ == suspended) {
+    return;
+  }
+  app_suspended_ = suspended;
+  MOMO_LOG(INFO) << (suspended ? "App suspended: frames stopped." : "App resumed.");
+  UpdateAnimator();
+}
+
+void Engine::UpdateAnimator() {
+  bool any_visible = false;
+  for (const auto& [view, state] : views_) {
+    any_visible = any_visible || state.visible;
+  }
+  if (!app_suspended_ && any_visible) {
     animator_.Start();
   } else {
     animator_.Stop();
-  }
-  MOMO_LOG(INFO) << "Lifecycle: " << LifecycleEventName(event);
-  if (host_.hub) {
-    host_.hub->SendToJs("momo/lifecycle",
-                        EncodeStandard(EncodableValue(std::string(LifecycleEventName(event)))));
   }
 }
 

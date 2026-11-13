@@ -1,4 +1,4 @@
-// @momo-examples/ext-texture 的 JS 门面。返回的 textureId 交给框架的 Texture widget
+// @momo-examples/ext-texture 的 JS 门面。返回的 textureId 交给框架的 Texture view
 // (或 SceneBuilder.addTexture / Canvas.drawTexture)显示。
 import { native } from "ext:texture";
 

@@ -1,9 +1,9 @@
-// examples/todo — Widget 版待办(docs/11 M4 验收):TextField 输入、添加、勾选、删除、列表滚动。
+// examples/todo — View 版待办(docs/11 M4 验收):TextField 输入、添加、勾选、删除、列表滚动。
 // 构建: node framework/scripts/build_example.mjs examples/todo/src/main.ts examples/todo/dist/main.js
 import {
   AppBar, Checkbox, Color, Colors, Column, Container, Divider, EdgeInsets, ElevatedButton, Expanded, InputDecoration, ListTile,
-  ListView, MaterialApp, Padding, Row, Scaffold, SizedBox, State, StatefulWidget, Text, TextButton, TextEditingController, TextField,
-  TextStyle, Theme, ThemeData, ValueKey, FocusNode, Center, runApp, type BuildContext, type Widget,
+  ListView, MaterialApp, Padding, Row, Scaffold, SizedBox, State, StatefulView, Text, TextButton, TextEditingController, TextField,
+  TextStyle, Theme, ThemeData, ValueKey, FocusNode, Center, app, runApp, type BuildContext, type View,
 } from "@momo/framework";
 
 /** 待办项。 */
@@ -13,7 +13,7 @@ interface TodoItem {
   readonly done: boolean;
 }
 
-class TodoApp extends StatefulWidget {
+class TodoApp extends StatefulView {
   createState(): State {
     return new TodoAppState();
   }
@@ -22,7 +22,7 @@ class TodoApp extends StatefulWidget {
 class TodoAppState extends State<TodoApp> {
   #items: TodoItem[] = [
     { id: 1, title: "读 docs/06-framework-js.md", done: true },
-    { id: 2, title: "用 Widget 写一个 todo", done: false },
+    { id: 2, title: "用 View 写一个 todo", done: false },
     { id: 3, title: "试试滚轮滚动列表", done: false },
   ];
   #nextId = 4;
@@ -62,7 +62,7 @@ class TodoAppState extends State<TodoApp> {
     });
   };
 
-  #buildItem(context: BuildContext, item: TodoItem): Widget {
+  #buildItem(context: BuildContext, item: TodoItem): View {
     const theme = Theme.of(context);
     return new ListTile({
       key: new ValueKey(item.id),
@@ -79,7 +79,7 @@ class TodoAppState extends State<TodoApp> {
     });
   }
 
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     const remaining = this.#items.filter((t) => !t.done).length;
     const input = new Padding({
@@ -126,6 +126,9 @@ class TodoAppState extends State<TodoApp> {
     });
   }
 }
+
+// 单窗口应用: 关窗即退出(应用生命周期与窗口无关, 最后一个窗口关闭后由应用决定是否退出)。
+app.on("window-all-closed", () => app.quit());
 
 runApp(new MaterialApp({
   title: "Momo · todo",

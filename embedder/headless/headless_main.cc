@@ -143,7 +143,12 @@ int Run(const Options& options) {
                                                  : std::filesystem::absolute(options.assets);
     settings.extensions_dir = options.extensions;
     settings.dev_mode = true;
-    auto shell = engine::Shell::Create(runners, settings);
+    // process.exit(code): 退出码交给本进程, 结束消息循环后有序关闭。
+    auto on_exit = [&exit_code, loop](int code) {
+      exit_code = code;
+      loop->Terminate();
+    };
+    auto shell = engine::Shell::Create(runners, settings, nullptr, on_exit);
     if (!shell.ok()) {
       std::fprintf(stderr, "momo_headless: %s\n", std::string(shell.status().message()).c_str());
       loop->Terminate();

@@ -40,6 +40,9 @@ class JsAppDriver final : public AppDriver {
   bool OnKeyData(ViewId view, const platform::KeyData& data) override {
     return bindings_->KeyData(view, data);
   }
+  void OnVisibilityChanged(ViewId view, bool visible) override {
+    bindings_->VisibilityChanged(view, visible);
+  }
   void OnFocusChanged(ViewId view, bool focused) override {
     bindings_->FocusChanged(view, focused);
   }
@@ -67,6 +70,7 @@ StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings,
   options.enable_inspector = settings.enable_inspector;
   options.inspector_port = settings.inspector_port;
   options.inspector_wait = settings.inspector_wait;
+  options.on_process_exit = host.request_exit;
   MOMO_ASSIGN_OR_RETURN(std::unique_ptr<runtime::JsRuntime> runtime,
                         runtime::JsRuntime::Create(options));
   auto driver = std::make_unique<JsAppDriver>(std::move(runtime), client, host, settings);

@@ -79,7 +79,7 @@ if(MOMO_HAVE_V8)
     ui/scene_bindings.cc
     ui/services_bindings.cc
     ui/text_bindings.cc
-    ui/window_binding.cc)
+    ui/platform_dispatcher_binding.cc)
   target_link_libraries(momo_engine_ui PUBLIC momo_engine_runtime momo_engine_common momo_engine_graphics
                         momo_engine_text momo_engine_assets momo_engine_extension
                         momo_engine_platform)

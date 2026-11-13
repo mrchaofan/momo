@@ -23,12 +23,15 @@ engine/platform/                   # 平台契约(engine 可见的全部;零平�
 └── viewport_metrics.h             # ViewportMetrics(物理尺寸 + DPR)
 
 embedder/common/                   # embedder 的平台抽象(engine 不可见)
-├── platform_integration.h         # 工厂与根入口(创建窗口/VsyncSource、服务、显示器、原生循环)
+├── platform_integration.h         # 工厂与根入口(创建窗口/VsyncSource、服务、应用能力、显示器、原生循环)
+├── platform_app.h                 # 应用级能力(隐藏/显示/激活, AppCapability)
 ├── platform_window.h              # 窗口接口(含可选能力 WindowCapability)+ WindowDelegate 回调 + WindowSpec
 ├── platform_services.h            # 剪贴板/打开 URL(低频服务)
 ├── text_input.h                   # IME 接入接口与 TextEditingState/TextInputEvent
-├── window_types.h                 # SystemCursor、WindowOptions、TitleBarOptions、WindowResizeOptions…
-├── window_channel.h               # 宿主通道 momo/window、momo/app(窗口管理)
+├── window_types.h                 # SystemCursor、WindowOptions、WindowStateFlags、TitleBarOptions、WindowResizeOptions…
+├── host_channel.h                 # 宿主通道的公共实现(方法注册表、宿主 → JS 通知与询问)
+├── app_channel.h                  # 宿主通道 momo/app(应用生命周期与退出)
+├── window_channel.h               # 宿主通道 momo/window(窗口)
 ├── platform_channels.h            # 宿主通道 momo/clipboard、momo/url、momo/textinput
 ├── display.h                      # 显示器信息(DPR、刷新率、工作区)
 └── (menu.h)                       # 应用菜单与右键菜单接口(规划)
@@ -109,7 +112,7 @@ class WindowDelegate {
   virtual void OnKeyData(const KeyData&) = 0;
   virtual bool OnCloseRequested() = 0;   // 返回 false 拦截关闭
   virtual void OnFocusChanged(bool focused) = 0;
-  virtual void OnVisibilityChanged(bool visible) = 0;  // 最小化/还原 → 生命周期 Suspended
+  virtual void OnWindowStateChanged(const WindowStateFlags&) = 0;  // 显示/隐藏、最小化、最大化、全屏 → 视图可见性
  protected:
   ~WindowDelegate() = default;
 };
@@ -138,9 +141,9 @@ class RenderSurface {
 
 ## 5. 平台服务与消息通道
 
-窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`window_channel.cc`:`momo/window`、`momo/app`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 的 `on_created` 回调里, 早于 JS bundle 执行。新增服务或窗口能力 = embedder 里新增通道方法 + JS 封装, 不改 engine, 不改 ui 绑定层, 这与扩展机制使用同一套通路(docs/07)。
+应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 的 `on_created` 回调里, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层, 这与扩展机制使用同一套通路(docs/07)。
 
-窗口的可选能力(隐藏标题栏、系统拖动、移动循环、指针捕获、置顶、定位、平台视图…)由 `PlatformWindow::capabilities()` 显式声明, 不支持的方法返回 `Unimplemented`(JS 收到错误码 `unimplemented`, 框架当作空操作), JS 可经 `momo/window getState` 查询。
+窗口的可选能力(隐藏标题栏、系统拖动、移动循环、指针捕获、置顶、定位、平台视图、隐藏、最小化/最大化…)由 `PlatformWindow::capabilities()` 显式声明, 不支持的方法返回 `Unimplemented`(JS 收到错误码 `unimplemented`, 框架当作空操作), JS 可经 `momo/window getState` 查询。
 
 ## 6. 实现要点备忘
 

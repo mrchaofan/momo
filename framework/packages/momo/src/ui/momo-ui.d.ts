@@ -309,49 +309,51 @@ declare module "momo:ui" {
   /**
    * 一个视图(宿主的一个原生窗口)。多视图: 一个 JS 运行时驱动多个视图, 共享 JS 状态与帧时钟;每个视图有自己的
    * 尺寸、输入、焦点与画面。只有引擎职责(画面、尺寸、输入): 窗口的外观与行为(标题、光标、位置、标题栏、
-   * 创建与关闭、指针序列的原生接收窗口…)属于宿主, 经宿主注册的 momo/window 通道操作(框架的 WindowService)。
+   * 创建与关闭、指针序列的原生接收窗口…)属于宿主, 经宿主注册的 momo/window 通道操作。
    */
-  export interface View {
+  export interface Viewport {
     readonly id: number;
     readonly devicePixelRatio: number;
     readonly physicalSize: { readonly width: number; readonly height: number };
     readonly focused: boolean;
+    /** 窗口是否可见(隐藏或最小化时为 false: 引擎不为它出帧, 提交的画面被丢弃;重新可见时引擎补一帧)。 */
+    readonly visible: boolean;
     onMetricsChanged: (() => void) | null;
     /** count 个指针事件, 见 POINTER_DATA_STRIDE。坐标为本视图的物理像素。 */
     onPointerPacket: ((data: Float64Array, count: number) => void) | null;
     /** 返回 true 表示已消费。 */
     onKeyData: ((data: KeyData) => boolean | void) | null;
     onFocusChanged: ((focused: boolean) => void) | null;
+    onVisibilityChanged: ((visible: boolean) => void) | null;
     /** 提交本视图本帧的画面(只能在 onDrawFrame 内调用;每视图每帧一次)。 */
     render(scene: Scene): void;
   }
 
-  /** 全局的帧调度与帧回调(不是视图;视图都在 views 里)。 */
-  export interface Window {
+  /** 全局的帧调度与帧回调(对标 Flutter PlatformDispatcher;不是视图, 视图都在 viewports 里)。 */
+  export interface PlatformDispatcher {
     /** frameTimeMs: 本帧 vsync 时间(毫秒, 单调时钟)。 */
     onBeginFrame: ((frameTimeMs: number) => void) | null;
     /** 在此对各视图调用 render(scene) 提交本帧;帧外调用 render 会被丢弃。 */
     onDrawFrame: (() => void) | null;
-    /** views 增减(宿主打开或关闭了窗口)。 */
-    onViewsChanged: (() => void) | null;
+    /** viewports 增减(宿主打开或关闭了窗口)。 */
+    onViewportsChanged: (() => void) | null;
     scheduleFrame(): void;
   }
 
-  export const window: Window;
+  export const platformDispatcher: PlatformDispatcher;
   /**
    * 当前全部视图, 键为视图 id。视图 0 是宿主启动时创建的窗口(隐式视图: bundle 执行前即存在, runApp 渲染到
    * 这里);它与其他视图一样可以被关闭, 关闭后不在这里。
    */
-  export const views: ReadonlyMap<number, View>;
+  export const viewports: ReadonlyMap<number, Viewport>;
 }
 
 // 消息通道(docs/04 §5): 异步、字节流、双向。平台服务与扩展共用。
 // 内置通道(载荷编码见 framework services/standard_codec.ts 与 engine/runtime/standard_codec.h):
-// 引擎注册的: momo/lifecycle、momo/platform_views、momo/extensions;宿主(embedder)注册的: momo/window、
-// momo/app、momo/clipboard、momo/url、momo/textinput(窗口与平台服务不经引擎, 见 embedder/common/window_channel.h)。
-//   momo/lifecycle   native→JS  string: "resumed" | "suspended" | "terminating"
-//   momo/window      双向       窗口管理(框架 services/window.ts 的 WindowService;协议见 window_channel.h)
-//   momo/app         native→JS  requestExit() → bool(false 取消退出)
+// 引擎注册的: momo/platform_views、momo/extensions;宿主(embedder)注册的: momo/app、momo/window、
+// momo/clipboard、momo/url、momo/textinput(应用、窗口与平台服务不经引擎, 见 embedder/common/*_channel.h)。
+//   momo/app         双向       应用生命周期与退出(框架 services/app.ts 的 app;协议见 app_channel.h)
+//   momo/window      双向       窗口(框架 services/widget.ts 的 Widget;协议见 window_channel.h)
 //   momo/clipboard   JS→native  方法调用: getText() → string, setText(text)
 //   momo/url         JS→native  方法调用: open(url)
 //   momo/textinput   双向       JS→native: show(), hide(), setCaretRect([x,y,w,h]), setEditingState({...})

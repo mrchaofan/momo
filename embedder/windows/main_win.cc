@@ -46,7 +46,7 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   momo::embedder::Application* application = app->get();
   // 再次启动应用: 激活已有窗口(参数目前只记录日志;打开文件等语义待定义)。
   delegate.SetSecondInstanceHandler([application](std::vector<std::string>) {
-    momo::embedder::WindowController* controller = application->front_window();
+    momo::embedder::WindowController* controller = application->windows().front_window();
     if (controller != nullptr && controller->has_window()) {
       WinAppDelegate::ActivateWindow(controller->window().native_handle());
     }

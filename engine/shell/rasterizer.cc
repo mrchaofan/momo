@@ -84,6 +84,7 @@ void Rasterizer::Setup(platform::ViewId view_id, platform::RenderSurface* surfac
   view.logged_acquire_failure = false;
   view.logged_no_platform_views = false;
   view.composing = false;
+  view.first_frame_reported = false;
   CreateBackend(view);
   MOMO_LOG(VERBOSE) << "Rasterizer surface attached (view " << view_id << ").";
   // 绑定前已收到的最新一帧立即补画, 尽早替换闪屏。
@@ -152,7 +153,7 @@ void Rasterizer::Draw(LayerTreePipeline& pipeline) {
         if (view.surface == nullptr) {
           stats_.frames_without_surface++;
         } else {
-          DrawToSurface(view, *layer_tree);
+          DrawAndReport(layer_tree->view_id(), view, *layer_tree);
         }
         view.last_layer_tree = std::move(layer_tree);
       }
@@ -168,8 +169,20 @@ bool Rasterizer::DrawLastLayerTree(platform::ViewId view_id) {
   if (it == views_.end() || it->second.last_layer_tree == nullptr || it->second.surface == nullptr) {
     return false;
   }
-  DrawToSurface(it->second, *it->second.last_layer_tree);
+  DrawAndReport(view_id, it->second, *it->second.last_layer_tree);
   return true;
+}
+
+void Rasterizer::DrawAndReport(platform::ViewId view_id, ViewState& view,
+                               graphics::LayerTree& layer_tree) {
+  const uint64_t presented = stats_.frames_presented;
+  DrawToSurface(view, layer_tree);
+  if (stats_.frames_presented != presented && !view.first_frame_reported) {
+    view.first_frame_reported = true;
+    if (on_first_frame_) {
+      on_first_frame_(view_id);
+    }
+  }
 }
 
 void Rasterizer::DrawToSurface(ViewState& view, graphics::LayerTree& layer_tree) {

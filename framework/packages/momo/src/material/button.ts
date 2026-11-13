@@ -5,16 +5,16 @@ import { BoxDecoration, BoxShadow } from "../painting/decoration";
 import { EdgeInsets } from "../painting/edge_insets";
 import { Offset } from "../painting/geometry";
 import type { TextStyle } from "../painting/text_style";
-import { ActivateIntent, Actions, CallbackAction } from "../widgets/actions";
-import { Center, ConstrainedBox, Padding } from "../widgets/basic";
+import { ActivateIntent, Actions, CallbackAction } from "../views/actions";
+import { Center, ConstrainedBox, Padding } from "../views/basic";
 import { BoxConstraints } from "../rendering/box_constraints";
-import { Focus } from "../widgets/focus_scope";
-import { FocusNode } from "../widgets/focus_manager";
-import { MouseRegion } from "../widgets/basic";
-import { GestureDetector } from "../widgets/gesture_detector";
-import { State, StatefulWidget, type BuildContext, type Widget } from "../widgets/framework";
-import { DefaultTextStyle } from "../widgets/text";
-import { AnimatedContainer } from "../widgets/implicit_animations";
+import { Focus } from "../views/focus_scope";
+import { FocusNode } from "../views/focus_manager";
+import { MouseRegion } from "../views/basic";
+import { GestureDetector } from "../views/gesture_detector";
+import { State, StatefulView, type BuildContext, type View } from "../views/framework";
+import { DefaultTextStyle } from "../views/text";
+import { AnimatedContainer } from "../views/implicit_animations";
 import { Theme, type ThemeData } from "./theme";
 
 /** 交互状态集合。 */
@@ -37,14 +37,14 @@ export interface ButtonStyle {
 }
 
 /** 按钮基类:hover/pressed/focused 状态、键盘激活(Enter/Space)、鼠标光标。 */
-export abstract class ButtonStyleButton extends StatefulWidget {
+export abstract class ButtonStyleButton extends StatefulView {
   readonly onPressed: (() => void) | null;
   readonly onLongPress: (() => void) | null;
-  readonly child: Widget;
+  readonly child: View;
   readonly style: ButtonStyle | null;
   readonly focusNode: FocusNode | null;
   readonly autofocus: boolean;
-  constructor(o: { key?: Key | null; onPressed: (() => void) | null; onLongPress?: (() => void) | null; child: Widget; style?: ButtonStyle | null; focusNode?: FocusNode | null; autofocus?: boolean }) {
+  constructor(o: { key?: Key | null; onPressed: (() => void) | null; onLongPress?: (() => void) | null; child: View; style?: ButtonStyle | null; focusNode?: FocusNode | null; autofocus?: boolean }) {
     super(o.key);
     this.onPressed = o.onPressed;
     this.onLongPress = o.onLongPress ?? null;
@@ -69,15 +69,15 @@ export class ButtonState extends State<ButtonStyleButton> {
   focused = false;
 
   get states(): ButtonStates {
-    return { hovered: this.hovered, pressed: this.pressed, focused: this.focused, disabled: !this.widget.enabled };
+    return { hovered: this.hovered, pressed: this.pressed, focused: this.focused, disabled: !this.view.enabled };
   }
 
   #activate = (): void => {
-    this.widget.onPressed?.();
+    this.view.onPressed?.();
   };
 
-  build(context: BuildContext): Widget {
-    const w = this.widget;
+  build(context: BuildContext): View {
+    const w = this.view;
     const theme = Theme.of(context);
     const d = w.defaultStyle(theme);
     const s = w.style ?? {};

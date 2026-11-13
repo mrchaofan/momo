@@ -6,8 +6,8 @@
 
 namespace momo::embedder {
 
-WindowController::WindowController(Callbacks callbacks, engine::platform::ViewId view_id)
-    : callbacks_(std::move(callbacks)), view_id_(view_id) {}
+WindowController::WindowController(Client& client, engine::platform::ViewId view_id)
+    : client_(client), view_id_(view_id) {}
 
 WindowController::~WindowController() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
@@ -21,6 +21,7 @@ Status WindowController::CreateWindow(PlatformIntegration& platform,
   MOMO_ASSIGN_OR_RETURN(window_, platform.CreateWindow(spec, this));
   last_metrics_ = window_->metrics();
   has_metrics_ = true;
+  state_ = window_->state();
   return Status::Ok();
 }
 
@@ -45,6 +46,26 @@ void WindowController::AttachEngine(engine::Shell& shell,
   }
   if (focused_) {
     shell.OnFocusChanged(view_id_, true);
+  }
+  rendering_ = ShouldRender();
+  if (!rendering_) {
+    shell.OnViewVisibilityChanged(view_id_, false);
+  }
+}
+
+bool WindowController::ShouldRender() const {
+  // 以 show:false 创建、尚未显示过的窗口也出帧: 第一帧呈现后才发 readyToShow(应用据此显示)。
+  return state_.shown() || (!first_frame_ && !state_.minimized);
+}
+
+void WindowController::UpdateRendering() {
+  const bool rendering = ShouldRender();
+  if (rendering == rendering_) {
+    return;
+  }
+  rendering_ = rendering;
+  if (shell_ != nullptr) {
+    shell_->OnViewVisibilityChanged(view_id_, rendering);
   }
 }
 
@@ -78,11 +99,8 @@ void WindowController::OnKeyData(const platform::KeyData& data) {
 
 bool WindowController::OnCloseRequested() {
   // 总是先拦截: 关闭需要询问 JS(异步, ui 线程), 且销毁必须按 docs/01 §4 的顺序进行。
-  if (callbacks_.on_close_requested) {
-    callbacks_.on_close_requested();
-    return false;
-  }
-  return true;
+  client_.OnWindowCloseRequested(view_id_);
+  return false;
 }
 
 void WindowController::OnFocusChanged(bool focused) {
@@ -90,21 +108,20 @@ void WindowController::OnFocusChanged(bool focused) {
   if (shell_ != nullptr) {
     shell_->OnFocusChanged(view_id_, focused);
   }
-  if (callbacks_.on_focus_changed) {
-    callbacks_.on_focus_changed(focused);
-  }
+  client_.OnWindowFocusChanged(view_id_, focused);
 }
 
-void WindowController::OnVisibilityChanged(bool visible) {
-  if (callbacks_.on_visibility_changed) {
-    callbacks_.on_visibility_changed(visible);
+void WindowController::OnWindowStateChanged(const WindowStateFlags& state) {
+  if (state == state_) {
+    return;
   }
+  state_ = state;
+  UpdateRendering();
+  client_.OnWindowStateChanged(view_id_, state);
 }
 
 void WindowController::OnTextInput(const TextInputEvent& event) {
-  if (callbacks_.on_text_input) {
-    callbacks_.on_text_input(event);
-  }
+  client_.OnWindowTextInput(view_id_, event);
 }
 
 void WindowController::OnPlatformViewFocused(int64_t view_id) {
@@ -135,16 +152,21 @@ void* WindowController::GetNativeWindowHandle() {
   return window_ ? window_->native_handle() : nullptr;
 }
 
-void WindowController::OnWindowFrameChanged(const Rect& screen_frame) {
-  if (callbacks_.on_frame_changed) {
-    callbacks_.on_frame_changed(screen_frame);
+void WindowController::OnFirstFramePresented() {
+  if (first_frame_) {
+    return;
   }
+  first_frame_ = true;
+  UpdateRendering();
+  client_.OnWindowFirstFrame(view_id_);
+}
+
+void WindowController::OnWindowFrameChanged(const Rect& screen_frame) {
+  client_.OnWindowFrameChanged(view_id_, screen_frame);
 }
 
 void WindowController::OnWindowControlsChanged(const std::optional<Rect>& rect) {
-  if (callbacks_.on_controls_changed) {
-    callbacks_.on_controls_changed(rect);
-  }
+  client_.OnWindowControlsChanged(view_id_, rect);
 }
 
 }  // namespace momo::embedder

@@ -31,8 +31,23 @@ export interface MockControl {
   hasView(id: number): boolean;
   /** 模拟用户点击某个视图的关闭按钮(询问 JS 的 closeRequested, 允许则关闭)。返回是否关闭。 */
   requestCloseView(id: number): Promise<boolean>;
-  /** 模拟用户/系统请求退出应用(momo/app requestExit)。返回是否允许。 */
-  requestAppExit(): Promise<boolean>;
+  /**
+   * 模拟用户/系统请求退出应用(Cmd+Q;同真实宿主的退出流程: beforeQuit → 逐个询问窗口 closeRequested → willQuit)。
+   * 返回是否退出。
+   */
+  requestQuit(): Promise<boolean>;
+  /** 应用是否已退出(app.exit 或退出流程完成), 以及退出码。 */
+  exitCode: number | null;
+  /** momo/app 方法调用(quit / exit / hide / show / focus, 按顺序)。 */
+  appCalls: string[];
+  /** 模拟用户/系统改变窗口状态(最小化、最大化…), 经 momo/window stateChanged 上报;可见性同步到视图。 */
+  setWindowState(id: number, state: Partial<{ visible: boolean; minimized: boolean; maximized: boolean; fullscreen: boolean }>): void;
+  /** 窗口状态(键为视图 id)。 */
+  windowStates: Map<number, { visible: boolean; minimized: boolean; maximized: boolean; fullscreen: boolean }>;
+  /** 模拟窗口获得/失去系统焦点(视图 onFocusChanged + momo/window focusChanged)。 */
+  setWindowFocus(id: number, focused: boolean): void;
+  /** 模拟用户点击 Dock 图标(momo/app activate)。 */
+  reopen(hasVisibleWindows: boolean): void;
   /** 下一次 create 失败。 */
   failNextCreateView: boolean;
   /** 置顶状态(键为视图 id)。 */

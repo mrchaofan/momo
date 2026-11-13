@@ -3,21 +3,21 @@ import { Color } from "../painting/color";
 import { BoxDecoration, BoxShadow } from "../painting/decoration";
 import { EdgeInsets } from "../painting/edge_insets";
 import { Offset } from "../painting/geometry";
-import { Column, Expanded, Positioned, Row, SizedBox, Stack, Padding } from "../widgets/basic";
-import { Container } from "../widgets/container";
-import { StatelessWidget, type BuildContext, type Widget } from "../widgets/framework";
-import { DefaultTextStyle } from "../widgets/text";
+import { Column, Expanded, Positioned, Row, SizedBox, Stack, Padding } from "../views/basic";
+import { Container } from "../views/container";
+import { StatelessView, type BuildContext, type View } from "../views/framework";
+import { DefaultTextStyle } from "../views/text";
 import { Theme } from "./theme";
 import { BorderRadius } from "../painting/borders";
 
 /** 顶部应用栏。 */
-export class AppBar extends StatelessWidget {
-  readonly title: Widget | null;
-  readonly actions: readonly Widget[];
+export class AppBar extends StatelessView {
+  readonly title: View | null;
+  readonly actions: readonly View[];
   readonly backgroundColor: Color | null;
   readonly foregroundColor: Color | null;
   readonly height: number;
-  constructor(o: { key?: Key | null; title?: Widget | null; actions?: readonly Widget[]; backgroundColor?: Color | null; foregroundColor?: Color | null; height?: number } = {}) {
+  constructor(o: { key?: Key | null; title?: View | null; actions?: readonly View[]; backgroundColor?: Color | null; foregroundColor?: Color | null; height?: number } = {}) {
     super(o.key);
     this.title = o.title ?? null;
     this.actions = o.actions ?? [];
@@ -25,7 +25,7 @@ export class AppBar extends StatelessWidget {
     this.foregroundColor = o.foregroundColor ?? null;
     this.height = o.height ?? 56;
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     const bg = this.backgroundColor ?? theme.colorScheme.primary;
     const fg = this.foregroundColor ?? theme.colorScheme.onPrimary;
@@ -47,19 +47,19 @@ export class AppBar extends StatelessWidget {
 }
 
 /** 页面骨架(简化版):appBar + body + floatingActionButton。 */
-export class Scaffold extends StatelessWidget {
-  readonly appBar: Widget | null;
-  readonly body: Widget | null;
-  readonly floatingActionButton: Widget | null;
+export class Scaffold extends StatelessView {
+  readonly appBar: View | null;
+  readonly body: View | null;
+  readonly floatingActionButton: View | null;
   readonly backgroundColor: Color | null;
-  constructor(o: { key?: Key | null; appBar?: Widget | null; body?: Widget | null; floatingActionButton?: Widget | null; backgroundColor?: Color | null } = {}) {
+  constructor(o: { key?: Key | null; appBar?: View | null; body?: View | null; floatingActionButton?: View | null; backgroundColor?: Color | null } = {}) {
     super(o.key);
     this.appBar = o.appBar ?? null;
     this.body = o.body ?? null;
     this.floatingActionButton = o.floatingActionButton ?? null;
     this.backgroundColor = o.backgroundColor ?? null;
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     const column = new Column({
       crossAxisAlignment: "stretch",
@@ -82,7 +82,7 @@ export class Scaffold extends StatelessWidget {
 }
 
 /** 分隔线。 */
-export class Divider extends StatelessWidget {
+export class Divider extends StatelessView {
   readonly height: number;
   readonly thickness: number;
   readonly color: Color | null;
@@ -94,7 +94,7 @@ export class Divider extends StatelessWidget {
     this.color = o.color ?? null;
     this.indent = o.indent ?? 0;
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const color = this.color ?? Theme.of(context).dividerColor;
     return new SizedBox({
       height: this.height,
@@ -107,17 +107,17 @@ export class Divider extends StatelessWidget {
 }
 
 /** 卡片。 */
-export class Card extends StatelessWidget {
-  readonly child: Widget | null;
+export class Card extends StatelessView {
+  readonly child: View | null;
   readonly margin: EdgeInsets;
   readonly color: Color | null;
-  constructor(o: { key?: Key | null; child?: Widget | null; margin?: EdgeInsets; color?: Color | null } = {}) {
+  constructor(o: { key?: Key | null; child?: View | null; margin?: EdgeInsets; color?: Color | null } = {}) {
     super(o.key);
     this.child = o.child ?? null;
     this.margin = o.margin ?? EdgeInsets.all(4);
     this.color = o.color ?? null;
   }
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     return new Container({
       margin: this.margin,

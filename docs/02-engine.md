@@ -74,7 +74,7 @@ common, platform → base
 
 | JS 可见对象 | C++ 实现(`engine/ui/`) | 说明 |
 |---|---|---|
-| `window` / `views` | `window_binding.cc`(`UiBindings::Impl`)→ `WindowClient`(由 `Engine` 实现) | `window`: 全局帧调度与帧回调;每个视图: 尺寸、DPR、焦点、输入回调, `view.render(scene)` 提交一帧 |
+| `window` / `views` | `platform_dispatcher_binding.cc`(`UiBindings::Impl`)→ `WindowClient`(由 `Engine` 实现) | `window`: 全局帧调度与帧回调;每个视图: 尺寸、DPR、焦点、输入回调, `view.render(scene)` 提交一帧 |
 | `Canvas` / `Paint` / `Path` / `Gradient` | `painting_bindings.cc`(`JsCanvas` 等)→ `graphics::DisplayListBuilder` | JS 调 drawRect/drawPath/drawParagraph,记录为 DisplayList |
 | `PictureRecorder` / `Picture` | 同上(`JsPictureRecorder` / `JsPicture`) | Picture = 不可变 DisplayList |
 | `SceneBuilder` / `Scene` | `scene_bindings.cc`(`JsSceneBuilder` / `JsScene`)→ `graphics::LayerTree` | pushOffset/pushClipRect/addPicture,组装图层树 |

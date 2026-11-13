@@ -8,7 +8,7 @@
 | `common/` | momo_engine_common | 无 V8/Skia 的公共设施: 启动设置、TaskRunners、消息通道、StandardCodec、JSON | `settings.h`、`task_runners.h`、`message_channel_hub.h/.cc`、`standard_codec.h/.cc`、`json.h/.cc` |
 | `shell/` | momo_engine_shell | Shell、ThreadHost、Animator、Rasterizer、RenderBackend(软件/Metal)、Engine 内部类、平台视图通道 | `shell.h/.cc`、`thread_host.h/.cc`、`animator.h/.cc`、`rasterizer.h/.cc`、`render_backend.h/.cc`、`engine.h/.cc` |
 | `runtime/` | momo_engine_runtime | Node.js 环境(libnode)、libuv 接入 ui 线程、ESM 入口与 `momo:*` 模块、绑定基建 | `js_runtime.h/.cc`、`js_runtime_impl.h/.cc`、`node_bindings.h/.cc`、`node_bindings_posix.cc`、`node_bootstrap.h/.cc`、`class_builder.h`、`wrappable.h/.cc` |
-| `ui/` | momo_engine_ui | momo:ui / momo:services / ext:* 绑定、事件入口 | `ui_bindings.h`、`ui_impl.h`、`window_binding.cc`、`painting_bindings.cc`、`scene_bindings.cc`、`text_bindings.cc`、`image_bindings.cc`、`services_bindings.cc`、`extension_bindings.cc`、`app_driver.h`、`js_app_driver.cc`、`app_driver_no_js.cc` |
+| `ui/` | momo_engine_ui | momo:ui / momo:services / ext:* 绑定、事件入口 | `ui_bindings.h`、`ui_impl.h`、`platform_dispatcher_binding.cc`、`painting_bindings.cc`、`scene_bindings.cc`、`text_bindings.cc`、`image_bindings.cc`、`services_bindings.cc`、`extension_bindings.cc`、`app_driver.h`、`js_app_driver.cc`、`app_driver_no_js.cc` |
 | `graphics/` | momo_engine_graphics | DisplayList、LayerTree、Image、外部纹理、软件光栅与 Metal 后端 | `display_list.h/.cc`、`layer.h/.cc`、`image.h`、`texture.h/.cc`、`software_rasterizer.h/.cc`、`gpu/metal_rasterizer.h/.mm`、内部 `skia/` |
 | `text/` | momo_engine_text | 字体集合(系统字体 + 内嵌字体 + 回退)与段落排版(SkParagraph) | `font_collection.h/.cc`、`paragraph.h/.cc` |
 | `assets/` | momo_engine_assets | 资源读取(路径越界防护)、图片解码(静态/多帧) | `asset_manager.h/.cc`、`image_decoder.h/.cc` |

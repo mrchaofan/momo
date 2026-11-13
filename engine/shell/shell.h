@@ -39,7 +39,6 @@
 #include "engine/platform/viewport_metrics.h"
 #include "engine/platform/vsync_source.h"
 #include "engine/shell/engine.h"
-#include "engine/shell/lifecycle.h"
 
 namespace momo::engine {
 
@@ -66,6 +65,9 @@ class Shell final : public Object, private Engine::Delegate {
     // 框架请求把键盘焦点交给视图(macOS: makeFirstResponder)。
     virtual void OnPlatformViewFocusRequested(int64_t view_id) { (void)view_id; }
 
+    // 本视图的第一帧已呈现到 surface(宿主可在此显示以 show:false 创建的窗口)。每次 AttachView 后最多一次。
+    virtual void OnFirstFramePresented() {}
+
    protected:
     ~Delegate() = default;
   };
@@ -74,10 +76,13 @@ class Shell final : public Object, private Engine::Delegate {
   // on_created: 在 JS bundle 执行之前于 platform 线程调用(此时 hub() 已可用): 宿主在这里注册自己的
   // 通道处理器(窗口、平台服务), bundle 顶层代码发出的调用因此不会落空(同 Flutter 桌面 embedder 在
   // Run 之前注册插件通道)。处理器在 Create 返回后才会在 platform 线程上运行。
+  // on_exit_requested: JS 调用 process.exit(code) 时在 platform 线程回调(此时 JS 已停止执行), 宿主据此做有序
+  // 退出;为空时只停止 JS。
   // in_process_extensions: 额外加载的进程内扩展(静态链接/测试), (id, init) 对。
   static StatusOr<std::unique_ptr<Shell>> Create(
       const TaskRunners& task_runners, const Settings& settings,
       const std::function<void(Shell&)>& on_created = nullptr,
+      std::function<void(int exit_code)> on_exit_requested = nullptr,
       std::vector<std::pair<std::string, MomoExtInitFn>> in_process_extensions = {});
   ~Shell() override;  // 隐式 Shutdown()
 
@@ -106,6 +111,8 @@ class Shell final : public Object, private Engine::Delegate {
   void OnPointerPacket(platform::ViewId view, platform::PointerDataPacket packet);
   void OnKeyData(platform::ViewId view, const platform::KeyData& data);
   void OnFocusChanged(platform::ViewId view, bool focused);
+  // 视图可见性(窗口显示/隐藏/最小化)。不可见的视图不出帧;全部不可见时停帧。
+  void OnViewVisibilityChanged(platform::ViewId view, bool visible);
   // 隐式视图(视图 0)的便捷入口。
   void OnMetricsChanged(const platform::ViewportMetrics& metrics) {
     OnMetricsChanged(platform::kImplicitViewId, metrics);
@@ -120,8 +127,8 @@ class Shell final : public Object, private Engine::Delegate {
   // --dev: 重新加载 bundle(销毁并重建 JS 运行时, 保留 isolate 之外的一切状态)。旧运行时创建的
   // 平台视图随之销毁;旧 JS 打开的窗口由宿主自行决定是否关闭(窗口归宿主)。
   void RequestHotRestart();
-  // 同时驱动帧调度: suspended/terminating 停帧, resumed 恢复。
-  void NotifyLifecycleEvent(LifecycleEvent event);
+  // 应用整体挂起(宿主隐藏了应用)时停帧, 恢复时继续。应用生命周期本身属于宿主。
+  void SetAppSuspended(bool suspended);
 
   const TaskRunners& task_runners() const { return task_runners_; }
   // 消息通道(任意线程可用;Shell 关闭后仍可安全调用, 只是不再有 handler)。

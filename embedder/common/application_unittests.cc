@@ -1,5 +1,6 @@
 #include "embedder/common/application.h"
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <functional>
@@ -77,6 +78,37 @@ class ApplicationTest : public ::testing::Test {
     return std::move(app).value();
   }
 
+  // 无 bundle 的 --dev 引擎没有 JS 运行时: 测试自己充当 JS 端点(platform 线程), 记录宿主发往 JS 的消息
+  // (channel:method), 询问按 answer 回复(缺省允许)。
+  struct FakeJs {
+    std::vector<std::string> messages;
+    std::function<bool(const std::string& what)> answer;
+    // 只取询问(需要回复的消息)。
+    std::vector<std::string> questions;
+  };
+  std::unique_ptr<Application> LaunchWithFakeJs(FakeJs& js, AppConfig config = {}) {
+    config.dev_mode = true;
+    config.inspector_port = -1;
+    auto app = MakeApp(std::move(config), [](Application::Options& o) { o.hot_restart_poll = {}; });
+    EXPECT_TRUE(app->Launch().ok());
+    app->shell()->hub()->SetJsEndpoint(
+        app->task_runners().platform,
+        [&js](const std::string& channel, engine::MessageBytes message, engine::MessageReply reply) {
+          StatusOr<engine::MethodCall> call = engine::DecodeMethodCall(message);
+          const std::string what = channel + ":" + (call.ok() ? call->method : "<bad>");
+          js.messages.push_back(what);
+          if (reply) {
+            js.questions.push_back(what);
+            const bool allow = js.answer ? js.answer(what) : true;
+            reply.Send(engine::EncodeSuccessEnvelope(engine::EncodableValue(allow)));
+          }
+        });
+    return app;
+  }
+  static bool Contains(const std::vector<std::string>& v, const std::string& item) {
+    return std::find(v.begin(), v.end(), item) != v.end();
+  }
+
   void PostToPlatform(Application& app, Closure task) {
     app.task_runners().platform->PostTask(std::move(task));
   }
@@ -120,7 +152,7 @@ TEST_F(ApplicationTest, LaunchRunTerminateInDocumentedOrder) {
     raw->task_runners().ui->PostTask([&] { ui_alive_at_window_destroy = true; });
   };
 
-  PostToPlatform(*app, [raw] { raw->RequestTerminate(); });
+  PostToPlatform(*app, [raw] { raw->Terminate(); });
   EXPECT_EQ(app->Run(), 0);
 
   EXPECT_EQ(app->state(), State::kTerminating);
@@ -135,19 +167,194 @@ TEST_F(ApplicationTest, LaunchRunTerminateInDocumentedOrder) {
   EXPECT_EQ(native_->quit_count(), 1);
 }
 
-// 关闭按钮总是先被拦截: 询问 JS(momo/window closeRequested)后关闭该窗口;最后一个窗口关闭即退出应用。
-TEST_F(ApplicationTest, ClosingTheLastWindowExitsTheApplication) {
+// 关闭按钮总是先被拦截: 询问 JS(momo/window closeRequested)后关闭该窗口。最后一个窗口关闭不退出应用:
+// 只通知 JS(momo/app windowAllClosed), 引擎与 JS 继续运行(零窗口是合法状态)。
+TEST_F(ApplicationTest, ClosingTheLastWindowKeepsTheAppRunning) {
+  FakeJs js;
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  bool close_result = true;
+  State after = State::kNotRunning;
+  size_t windows_after = 1;
+  PostToPlatform(*app, [&] { close_result = state_->window->delegate()->OnCloseRequested(); });
+  raw->task_runners().platform->PostDelayedTask(
+      [&, raw] {
+        after = raw->state();
+        windows_after = raw->windows().count();
+        raw->Terminate();
+      },
+      std::chrono::milliseconds(100));
+  EXPECT_EQ(app->Run(), 0);
+  EXPECT_FALSE(close_result) << "native close must be intercepted";
+  EXPECT_EQ(after, State::kRunning);
+  EXPECT_EQ(windows_after, 0u);
+  EXPECT_TRUE(Contains(js.questions, "momo/window:closeRequested"));
+  EXPECT_TRUE(Contains(js.messages, "momo/app:windowAllClosed"));
+}
+
+// 退出流程: beforeQuit → 逐个询问窗口 → willQuit → 有序关闭。退出期间不发 windowAllClosed。
+TEST_F(ApplicationTest, QuitAsksBeforeQuitThenWindowsThenWillQuit) {
+  FakeJs js;
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  PostToPlatform(*app, [raw] { raw->Quit(); });
+  EXPECT_EQ(app->Run(), 0);
+  EXPECT_EQ(js.questions, (std::vector<std::string>{"momo/app:beforeQuit", "momo/window:closeRequested",
+                                                    "momo/app:willQuit"}));
+  EXPECT_FALSE(Contains(js.messages, "momo/app:windowAllClosed"));
+  EXPECT_EQ(app->state(), State::kTerminating);
+  EXPECT_EQ(state_->windows_destroyed, 1);
+}
+
+TEST_F(ApplicationTest, QuitIsCancelledByBeforeQuit) {
+  FakeJs js;
+  js.answer = [](const std::string& what) { return what != "momo/app:beforeQuit"; };
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  bool quitting_after = true;
+  PostToPlatform(*app, [raw] { raw->Quit(); });
+  raw->task_runners().platform->PostDelayedTask(
+      [&, raw] {
+        quitting_after = raw->is_quitting();
+        raw->Terminate();
+      },
+      std::chrono::milliseconds(50));
+  app->Run();
+  EXPECT_EQ(js.questions, (std::vector<std::string>{"momo/app:beforeQuit"}));
+  EXPECT_FALSE(quitting_after);
+  EXPECT_EQ(state_->windows_destroyed, 1) << "destroyed only by the final Terminate";
+}
+
+// 任一窗口拒绝关闭: 退出中止, 已允许的窗口照常关闭(同 Electron)。
+TEST_F(ApplicationTest, QuitAbortsWhenAWindowRefuses) {
+  FakeJs js;
+  js.answer = [](const std::string& what) { return what != "momo/window:closeRequested"; };
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  State after = State::kNotRunning;
+  size_t windows_after = 0;
+  PostToPlatform(*app, [raw] { raw->Quit(); });
+  raw->task_runners().platform->PostDelayedTask(
+      [&, raw] {
+        after = raw->state();
+        windows_after = raw->windows().count();
+        raw->Terminate();
+      },
+      std::chrono::milliseconds(50));
+  app->Run();
+  EXPECT_EQ(after, State::kRunning);
+  EXPECT_EQ(windows_after, 1u);
+  EXPECT_FALSE(Contains(js.questions, "momo/app:willQuit"));
+}
+
+// willQuit 取消: 窗口已全部关闭, 应用无窗口继续运行。
+TEST_F(ApplicationTest, WillQuitCancelKeepsAppRunningWithoutWindows) {
+  FakeJs js;
+  js.answer = [](const std::string& what) { return what != "momo/app:willQuit"; };
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  State after = State::kNotRunning;
+  size_t windows_after = 1;
+  PostToPlatform(*app, [raw] { raw->Quit(); });
+  raw->task_runners().platform->PostDelayedTask(
+      [&, raw] {
+        after = raw->state();
+        windows_after = raw->windows().count();
+        raw->Terminate();
+      },
+      std::chrono::milliseconds(50));
+  app->Run();
+  EXPECT_EQ(after, State::kRunning);
+  EXPECT_EQ(windows_after, 0u);
+}
+
+// Exit: 不询问 JS, 仍按文档顺序有序关闭, 返回给定退出码。
+TEST_F(ApplicationTest, ExitSkipsQuestionsButShutsDownInOrder) {
+  FakeJs js;
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  PostToPlatform(*app, [raw] { raw->Exit(7); });
+  EXPECT_EQ(app->Run(), 7);
+  EXPECT_TRUE(js.questions.empty());
+  EXPECT_EQ(observer_.steps, (std::vector<Step>{Step::kEngineShutdown, Step::kWindowDestroyed,
+                                                Step::kThreadsJoined, Step::kMessageLoopQuit}));
+}
+
+// JS 经 momo/app 调用 exit / quit。
+TEST_F(ApplicationTest, JsExitReachesTheApplication) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok());
+  Application* raw = app.get();
+  SendFromJs(raw, "momo/app", {"exit", engine::EncodableMap{{"code", int64_t{4}}}},
+             [](StatusOr<engine::EncodableValue> result) { EXPECT_TRUE(result.ok()) << result.status(); });
+  EXPECT_EQ(app->Run(), 4);
+}
 
-  bool close_result = true;
-  PostToPlatform(*app, [&] { close_result = state_->window->delegate()->OnCloseRequested(); });
+TEST_F(ApplicationTest, JsQuitReachesTheApplication) {
+  WriteBundle();
+  auto app = MakeApp();
+  ASSERT_TRUE(app->Launch().ok());
+  SendFromJs(app.get(), "momo/app", {"quit", engine::EncodableValue()},
+             [](StatusOr<engine::EncodableValue> result) { EXPECT_TRUE(result.ok()) << result.status(); });
   EXPECT_EQ(app->Run(), 0);
-
-  EXPECT_FALSE(close_result) << "native close must be intercepted";
   EXPECT_EQ(app->state(), State::kTerminating);
-  EXPECT_EQ(state_->windows_destroyed, 1);
+}
+
+// 应用级平台能力(momo/app hide / focus / getState)经 PlatformApp。
+TEST_F(ApplicationTest, AppMethodsReachThePlatformApp) {
+  WriteBundle();
+  auto app = MakeApp();
+  ASSERT_TRUE(app->Launch().ok());
+  Application* raw = app.get();
+  auto& mock_app = static_cast<testing::MockApp&>(raw->platform().app());
+  std::string state;
+  SendFromJs(raw, "momo/app", {"hide", engine::EncodableValue()}, [&, raw](StatusOr<engine::EncodableValue> r) {
+    EXPECT_TRUE(r.ok()) << r.status();
+    SendFromJs(raw, "momo/app", {"focus", engine::EncodableMap{{"steal", true}}},
+               [&, raw](StatusOr<engine::EncodableValue> r) {
+                 EXPECT_TRUE(r.ok()) << r.status();
+                 SendFromJs(raw, "momo/app", {"getState", engine::EncodableValue()},
+                            [&, raw](StatusOr<engine::EncodableValue> r) {
+                              ASSERT_TRUE(r.ok()) << r.status();
+                              state = r->Find("state")->AsString().value_or("");
+                              raw->task_runners().platform->PostTask([raw] { raw->Terminate(); });
+                            });
+               });
+  });
+  app->Run();
+  EXPECT_TRUE(mock_app.hidden);
+  EXPECT_EQ(mock_app.activations, 1);
+  EXPECT_TRUE(mock_app.last_steal);
+  EXPECT_EQ(state, "running");
+}
+
+// 用户点击 Dock 图标(applicationShouldHandleReopen)→ momo/app activate;前台状态 → activeChanged。
+TEST_F(ApplicationTest, ReopenAndActivationReachJs) {
+  FakeJs js;
+  auto app = LaunchWithFakeJs(js);
+  Application* raw = app.get();
+  PostToPlatform(*app, [raw] {
+    raw->OnAppActiveChanged(true);
+    raw->OnReopen(false);
+    raw->Terminate();
+  });
+  app->Run();
+  EXPECT_TRUE(Contains(js.messages, "momo/app:activeChanged"));
+  EXPECT_TRUE(Contains(js.messages, "momo/app:activate"));
+}
+
+// 不建启动窗口: 引擎没有隐式视图, 窗口全部由 JS 打开。
+TEST_F(ApplicationTest, NoStartupWindowLaunches) {
+  WriteBundle();
+  AppConfig config;
+  config.startup_window = false;
+  auto app = MakeApp(config);
+  ASSERT_TRUE(app->Launch().ok());
+  EXPECT_EQ(app->state(), State::kRunning);
+  EXPECT_EQ(state_->windows_created, 0);
+  EXPECT_TRUE(app->shell()->attached_views().empty());
+  app->Terminate();
 }
 
 // ui 线程卡死(JS 死循环)时, 关闭请求超时后强制退出;正常回复的请求不触发超时。
@@ -165,7 +372,7 @@ TEST_F(ApplicationTest, HungUiThreadForcesExitAfterCloseTimeout) {
   ASSERT_TRUE(app->Launch().ok());
   app->task_runners().ui->PostTask([&] { release_ui.Wait(); });  // 模拟 JS 卡死
   Application* raw = app.get();
-  PostToPlatform(*app, [raw] { raw->RequestTerminate(); });
+  PostToPlatform(*app, [raw] { raw->Quit(); });
   EXPECT_EQ(app->Run(), 0);
   EXPECT_EQ(forced.load(), 1);
 }
@@ -179,7 +386,7 @@ TEST_F(ApplicationTest, AnsweredCloseRequestDoesNotTimeOut) {
   });
   ASSERT_TRUE(app->Launch().ok());
   Application* raw = app.get();
-  PostToPlatform(*app, [raw] { raw->RequestTerminate(); });
+  PostToPlatform(*app, [raw] { raw->Quit(); });
   EXPECT_EQ(app->Run(), 0);
   EXPECT_FALSE(forced);
 }
@@ -190,8 +397,8 @@ TEST_F(ApplicationTest, RepeatedTerminateRequestsAreCoalesced) {
   ASSERT_TRUE(app->Launch().ok());
   Application* raw = app.get();
   PostToPlatform(*app, [raw] {
-    raw->RequestTerminate();
-    raw->RequestTerminate();  // 关窗 + Cmd+Q 同时到达
+    raw->Quit();
+    raw->Quit();  // 关窗 + Cmd+Q 同时到达
   });
   EXPECT_EQ(app->Run(), 0);
   EXPECT_EQ(observer_.steps.size(), 4u);
@@ -231,28 +438,24 @@ TEST_F(ApplicationTest, WindowCreationFailureFailsLaunch) {
   EXPECT_EQ(observer_.steps.size(), 4u);
 }
 
-TEST_F(ApplicationTest, MinimizeAndHideSuspendAndResume) {
+// Suspended 只看应用是否被隐藏;窗口最小化只影响该窗口的视图出帧, 不改变应用状态。
+TEST_F(ApplicationTest, MinimizingWindowsDoesNotSuspendButHidingTheAppDoes) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok());
   Application* raw = app.get();
   std::vector<State> seen;
   PostToPlatform(*app, [&, raw] {
-    auto* delegate = state_->window->delegate();
-    delegate->OnVisibilityChanged(false);  // 最小化
+    ASSERT_TRUE(state_->window->Minimize().ok());
     seen.push_back(raw->state());
-    raw->OnAppVisibilityChanged(false);    // 应用隐藏: 仍挂起
-    raw->OnAppVisibilityChanged(true);     // 应用显示, 窗口仍最小化: 仍挂起
+    raw->OnAppVisibilityChanged(false);  // 应用隐藏: 挂起
     seen.push_back(raw->state());
-    delegate->OnVisibilityChanged(true);   // 还原
+    raw->OnAppVisibilityChanged(true);
     seen.push_back(raw->state());
-    raw->RequestTerminate();
+    raw->Quit();
   });
   EXPECT_EQ(app->Run(), 0);
-  EXPECT_EQ(seen, (std::vector<State>{State::kSuspended, State::kSuspended, State::kRunning}));
-  EXPECT_EQ(observer_.states,
-            (std::vector<State>{State::kLaunching, State::kRunning, State::kSuspended,
-                                State::kRunning, State::kTerminating}));
+  EXPECT_EQ(seen, (std::vector<State>{State::kRunning, State::kSuspended, State::kRunning}));
 }
 
 TEST_F(ApplicationTest, DestroyWithoutLaunchIsClean) {
@@ -316,7 +519,7 @@ TEST_F(ApplicationTest, JsCreatedWindowsOpenCloseAndShutDown) {
                ASSERT_TRUE(result.ok()) << result.status();
                created_id = result->AsInt().value_or(-1);
                raw->task_runners().platform->PostTask([&, raw] {
-                 open_after_create = raw->window_count();
+                 open_after_create = raw->windows().count();
                  attached = raw->shell()->attached_views();
                  ASSERT_EQ(state_->windows.size(), 2u);
                  MockWindow* second = state_->windows[1];
@@ -328,11 +531,11 @@ TEST_F(ApplicationTest, JsCreatedWindowsOpenCloseAndShutDown) {
   // 关闭需要往返 ui 线程: 稍后检查, 然后再开一个窗口并直接退出应用。
   raw->task_runners().platform->PostDelayedTask(
       [&, raw] {
-        open_after_close = raw->window_count();
+        open_after_close = raw->windows().count();
         SendFromJs(raw, "momo/window",
                    {"create", engine::EncodableMap{{"title", "third"}, {"width", 200.0}, {"height", 200.0}}},
                    [raw](StatusOr<engine::EncodableValue>) {
-                     raw->task_runners().platform->PostTask([raw] { raw->RequestTerminate(); });
+                     raw->task_runners().platform->PostTask([raw] { raw->Quit(); });
                    });
       },
       std::chrono::milliseconds(200));
@@ -346,13 +549,14 @@ TEST_F(ApplicationTest, JsCreatedWindowsOpenCloseAndShutDown) {
   EXPECT_EQ(state_->windows_destroyed, 3) << "the third window is destroyed on shutdown";
 }
 
-// 所有窗口对等: 启动窗口(隐式视图 0)关闭后应用照常运行, 由其他窗口继续;最后一个关闭才退出。
+// 所有窗口对等: 启动窗口(隐式视图 0)关闭后应用照常运行, 由其他窗口继续;最后一个关闭也不退出。
 TEST_F(ApplicationTest, StartupWindowCanCloseWhileOthersStayOpen) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok());
   Application* raw = app.get();
   State after_first_close = State::kNotRunning;
+  State after_last_close = State::kNotRunning;
   std::vector<engine::platform::ViewId> attached;
   SendFromJs(raw, "momo/window",
              {"create", engine::EncodableMap{{"width", 300.0}, {"height", 200.0}}},
@@ -371,10 +575,16 @@ TEST_F(ApplicationTest, StartupWindowCanCloseWhileOthersStayOpen) {
                                 std::chrono::milliseconds(50));
                           });
              });
+  raw->task_runners().platform->PostDelayedTask(
+      [&, raw] {
+        after_last_close = raw->state();
+        raw->Terminate();
+      },
+      std::chrono::milliseconds(300));
   EXPECT_EQ(app->Run(), 0);
   EXPECT_EQ(after_first_close, State::kRunning);
   EXPECT_EQ(attached, (std::vector<engine::platform::ViewId>{1}));
-  EXPECT_EQ(app->state(), State::kTerminating) << "closing the last window exits";
+  EXPECT_EQ(after_last_close, State::kRunning) << "closing the last window does not exit";
   EXPECT_EQ(state_->windows_destroyed, 2);
 }
 

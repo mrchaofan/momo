@@ -28,6 +28,8 @@ using testing::WaitFor;
 class RecordingShellDelegate final : public Shell::Delegate {
  public:
   void* GetNativeWindowHandle() override { return nullptr; }
+  void OnFirstFramePresented() override { first_frames++; }
+  int first_frames = 0;
 };
 
 // 宿主通道(on_created 注册): 记录 JS 发来的方法调用(channel:method)。
@@ -172,7 +174,7 @@ TEST_F(ShellTest, DetachAfterSourceGoneFallsBackToTimer) {
   (*shell)->Shutdown();
 }
 
-TEST_F(ShellTest, SuspendedLifecycleStopsFramesUntilResumed) {
+TEST_F(ShellTest, SuspendedAppStopsFramesUntilResumed) {
   Settings settings;
   settings.refresh_rate = 240;
   auto shell = Shell::Create(runners_, settings);
@@ -181,12 +183,73 @@ TEST_F(ShellTest, SuspendedLifecycleStopsFramesUntilResumed) {
   RecordingShellDelegate delegate;
   (*shell)->AttachView(&delegate, &surface);
 
-  (*shell)->NotifyLifecycleEvent(LifecycleEvent::kSuspended);
+  (*shell)->SetAppSuspended(true);
   (*shell)->OnMetricsChanged(Metrics(500, 500));
   EXPECT_FALSE(WaitFor([&] { return surface.acquired.load() > 0; },
                        std::chrono::milliseconds(60)));
 
-  (*shell)->NotifyLifecycleEvent(LifecycleEvent::kResumed);
+  (*shell)->SetAppSuspended(false);
+  EXPECT_TRUE(WaitFor([&] { return surface.presented.load() >= 1; }));
+  (*shell)->Shutdown();
+}
+
+// 视图可见性按视图: 隐藏的视图不出帧, 其他视图照常;全部隐藏时帧时钟停止;重新可见时补一帧。
+TEST_F(ShellTest, HiddenViewIsNotDrawnWhileOthersAre) {
+  Settings settings;
+  settings.refresh_rate = 240;
+  auto shell = Shell::Create(runners_, settings);
+  ASSERT_TRUE(shell.ok());
+  FakeSurface a_surface, b_surface;
+  RecordingShellDelegate a, b;
+  (*shell)->AttachView(0, &a, &a_surface);
+  (*shell)->AttachView(1, &b, &b_surface);
+  (*shell)->OnViewVisibilityChanged(1, false);
+  (*shell)->OnMetricsChanged(0, Metrics(100, 100));
+  (*shell)->OnMetricsChanged(1, Metrics(100, 100));
+  EXPECT_TRUE(WaitFor([&] { return a_surface.presented.load() >= 1; }));
+  EXPECT_FALSE(WaitFor([&] { return b_surface.acquired.load() > 0; }, std::chrono::milliseconds(60)))
+      << "a hidden view is not drawn";
+
+  (*shell)->OnViewVisibilityChanged(0, false);  // 全部隐藏: 停帧
+  const int a_before = a_surface.acquired.load();
+  (*shell)->OnMetricsChanged(0, Metrics(200, 100));
+  EXPECT_FALSE(WaitFor([&] { return a_surface.acquired.load() > a_before; },
+                       std::chrono::milliseconds(60)));
+
+  (*shell)->OnViewVisibilityChanged(1, true);  // 重新可见: 补一帧
+  EXPECT_TRUE(WaitFor([&] { return b_surface.presented.load() >= 1; }));
+  (*shell)->Shutdown();
+}
+
+// 每次绑定后第一帧呈现时通知视图的宿主(show:false 窗口据此显示)。
+TEST_F(ShellTest, FirstPresentedFrameIsReportedOncePerAttach) {
+  Settings settings;
+  settings.refresh_rate = 240;
+  auto shell = Shell::Create(runners_, settings);
+  ASSERT_TRUE(shell.ok());
+  FakeSurface surface;
+  RecordingShellDelegate delegate;
+  (*shell)->AttachView(&delegate, &surface);
+  (*shell)->OnMetricsChanged(Metrics(64, 64));
+  EXPECT_TRUE(PumpUntil([&] { return delegate.first_frames == 1; }));
+  (*shell)->OnMetricsChanged(Metrics(128, 64));
+  EXPECT_TRUE(PumpUntil([&] { return surface.presented.load() >= 2; }));
+  Pump();
+  EXPECT_EQ(delegate.first_frames, 1);
+  (*shell)->Shutdown();
+}
+
+// 宿主不建启动窗口: 引擎里没有隐式视图, 视图全部来自之后绑定的窗口。
+TEST_F(ShellTest, NoImplicitViewUntilTheHostAttachesOne) {
+  Settings settings;
+  settings.implicit_view = false;
+  settings.refresh_rate = 240;
+  auto shell = Shell::Create(runners_, settings);
+  ASSERT_TRUE(shell.ok());
+  FakeSurface surface;
+  RecordingShellDelegate delegate;
+  (*shell)->AttachView(4, &delegate, &surface);
+  (*shell)->OnMetricsChanged(4, Metrics(64, 64));
   EXPECT_TRUE(WaitFor([&] { return surface.presented.load() >= 1; }));
   (*shell)->Shutdown();
 }
@@ -196,6 +259,22 @@ TEST_F(ShellTest, SuspendedLifecycleStopsFramesUntilResumed) {
 int Channel(uint32_t argb, int shift) { return static_cast<int>((argb >> shift) & 0xFF); }
 
 // 端到端: 真实示例 bundle → JS 运行时 → 帧管线 → 软件光栅 → surface 像素。
+// process.exit(code) 不直接退出进程: 停止 JS 并在 platform 线程把退出码交给宿主。
+TEST_F(ShellTest, ProcessExitIsHandedToTheHost) {
+  const std::filesystem::path bundle =
+      std::filesystem::temp_directory_path() / "momo_shell_process_exit.mjs";
+  std::ofstream(bundle) << "setTimeout(() => { process.exit(3); globalThis.after = true; }, 0);\n";
+  Settings settings;
+  settings.bundle_path = bundle;
+  std::optional<int> code;
+  auto shell = Shell::Create(runners_, settings, nullptr, [&](int c) { code = c; });
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  EXPECT_TRUE(PumpUntil([&] { return code.has_value(); }));
+  EXPECT_EQ(code.value_or(-1), 3);
+  (*shell)->Shutdown();
+  std::filesystem::remove(bundle);
+}
+
 TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
   Settings settings;
   settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
@@ -222,7 +301,7 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
 
 TEST_F(ShellTest, BundleErrorsFailCreateWithJsMessage) {
   const auto bundle = std::filesystem::temp_directory_path() / "momo_bad_bundle.js";
-  std::ofstream(bundle) << "import { views } from 'momo:ui';\nviews.get(0).render(42);\n";
+  std::ofstream(bundle) << "import { viewports } from 'momo:ui';\nviewports.get(0).render(42);\n";
   Settings settings;
   settings.bundle_path = bundle;
   auto shell = Shell::Create(runners_, settings);

@@ -5,7 +5,7 @@
 
 - 原生部分 `native/src/ext_webview.mm`:只用 C ABI(`momo_extension.hpp`),注册视图类型 `momo.webview`,
   处理命令通道 `momo.webview`,经 `momo.webview/events` 推送状态与页面消息。协议在文件头。
-- JS 门面 `js/index.ts`:`WebView` widget 与 `WebViewController`(loadUrl / loadHtml / goBack / goForward /
+- JS 门面 `js/index.ts`:`WebView` view 与 `WebViewController`(loadUrl / loadHtml / goBack / goForward /
   reload / stop / evaluateJavaScript / focus,以及 onStateChanged / onMessage / onError 回调)。
 
 ```ts

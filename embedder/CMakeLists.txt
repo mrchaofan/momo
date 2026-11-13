@@ -11,12 +11,15 @@ add_library(momo_embedder_pointer STATIC common/pointer_dispatcher.cc)
 target_link_libraries(momo_embedder_pointer PUBLIC momo_engine_platform)
 
 add_library(momo_embedder_common STATIC
+  common/app_channel.cc
   common/app_config.cc
   common/application.cc
   common/asset_resolver.cc
+  common/host_channel.cc
   common/platform_channels.cc
   common/window_channel.cc
-  common/window_controller.cc)
+  common/window_controller.cc
+  common/window_manager.cc)
 # 只依赖平台抽象接口: 平台实现由入口注入, common 可用 mock 单测。
 target_link_libraries(momo_embedder_common PUBLIC momo::engine momo_engine_platform momo_embedder_pointer)
 

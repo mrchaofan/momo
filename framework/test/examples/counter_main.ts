@@ -2,11 +2,11 @@
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/counter/src/main";
 import { runRegisteredTests, test, expect } from "../harness";
-import { WidgetTester } from "../tester";
+import { ViewTester } from "../tester";
 import { LogicalKeyboardKey, PhysicalKeyboardKey, Size } from "../../packages/momo/src/index";
 
 test("examples/counter: tap buttons, keyboard shortcut, FAB", async () => {
-  const t = new WidgetTester(new Size(800, 600));
+  const t = new ViewTester(new Size(800, 600));
   await t.pumpAndSettle();
   expect.equal(__mock.title, "Momo · counter");
   expect.equal(t.byText("0").length, 1);

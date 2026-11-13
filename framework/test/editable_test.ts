@@ -1,14 +1,14 @@
 import {
   Center, EditableText, FocusNode, MethodCall, SizedBox, TextEditingController, TextEditingValue, TextRange, TextSelection,
   TextStyle, LogicalKeyboardKey, PhysicalKeyboardKey, KeyModifier, Offset, Align, Alignment, debugOverrideTargetPlatform,
-  type Widget, Column,
+  type View, Column,
 } from "../packages/momo/src/index";
 import { expect, group } from "./harness";
 import { Kind } from "./tester";
-import { testWidgets } from "./util";
-import type { WidgetTester } from "./tester";
+import { testViews } from "./util";
+import type { ViewTester } from "./tester";
 
-function field(controller: TextEditingController, node: FocusNode, o: { maxLines?: number | null; onSubmitted?: (t: string) => void; onChanged?: (t: string) => void } = {}): Widget {
+function field(controller: TextEditingController, node: FocusNode, o: { maxLines?: number | null; onSubmitted?: (t: string) => void; onChanged?: (t: string) => void } = {}): View {
   return new Align({
     alignment: Alignment.topLeft,
     child: new SizedBox({
@@ -22,11 +22,11 @@ function field(controller: TextEditingController, node: FocusNode, o: { maxLines
   });
 }
 
-async function focused(t: WidgetTester, text = "", maxLines: number | null = 1): Promise<{ c: TextEditingController; n: FocusNode; calls: MethodCall[] }> {
+async function focused(t: ViewTester, text = "", maxLines: number | null = 1): Promise<{ c: TextEditingController; n: FocusNode; calls: MethodCall[] }> {
   const calls = t.recordMethodCalls("momo/textinput");
   const c = new TextEditingController({ text });
   const n = new FocusNode();
-  await t.pumpWidget(field(c, n, { maxLines }));
+  await t.pumpView(field(c, n, { maxLines }));
   n.requestFocus();
   await t.pump();
   return { c, n, calls };
@@ -35,7 +35,7 @@ async function focused(t: WidgetTester, text = "", maxLines: number | null = 1):
 const key = (k: LogicalKeyboardKey, p: PhysicalKeyboardKey): { logical: number; physical: number } => ({ logical: k.keyId, physical: p.keyId });
 
 group("EditableText", () => {
-  testWidgets("focus opens the input connection and syncs editing state", async (t) => {
+  testViews("focus opens the input connection and syncs editing state", async (t) => {
     const { c, calls } = await focused(t, "abc");
     await t.flushMicrotasks();
     const methods = calls.map((m) => m.method);
@@ -47,7 +47,7 @@ group("EditableText", () => {
     expect.equal(c.selection.baseOffset, 3);
   }, { ahemText: true });
 
-  testWidgets("commit inserts at the selection; composing / composingEnd", async (t) => {
+  testViews("commit inserts at the selection; composing / composingEnd", async (t) => {
     const { c, calls } = await focused(t, "hello");
     c.selection = TextSelection.collapsed(2);
     await t.platformCall("momo/textinput", "commit", { text: "XY" });
@@ -75,7 +75,7 @@ group("EditableText", () => {
     expect.deepEqual(last.args, { text: "heXY你好llo", selectionBase: 6, selectionExtent: 6, composingStart: -1, composingEnd: -1 });
   });
 
-  testWidgets("commit/composing honour replaceStart/replaceEnd", async (t) => {
+  testViews("commit/composing honour replaceStart/replaceEnd", async (t) => {
     const { c } = await focused(t, "resume");
     // 按住 e 选重音:输入法显式替换 [1,2) 为 "é"
     await t.platformCall("momo/textinput", "commit", { text: "é", replaceStart: 1, replaceEnd: 2 });
@@ -91,13 +91,13 @@ group("EditableText", () => {
     expect.equal(c.text, "REsume!");
   });
 
-  testWidgets("commands: delete, move, select, newline/submit", async (t) => {
+  testViews("commands: delete, move, select, newline/submit", async (t) => {
     const submitted: string[] = [];
     const calls = t.recordMethodCalls("momo/textinput");
     void calls;
     const c = new TextEditingController({ text: "one two" });
     const n = new FocusNode();
-    await t.pumpWidget(field(c, n, { onSubmitted: (s) => submitted.push(s) }));
+    await t.pumpView(field(c, n, { onSubmitted: (s) => submitted.push(s) }));
     n.requestFocus();
     await t.pump();
     const cmd = (command: string): Promise<void> => t.platformCall("momo/textinput", "command", { command });
@@ -122,7 +122,7 @@ group("EditableText", () => {
     expect.equal(c.text, "a");
   });
 
-  testWidgets("keyboard navigation and editing keys", async (t) => {
+  testViews("keyboard navigation and editing keys", async (t) => {
     debugOverrideTargetPlatform("windows");
     try {
       const { c } = await focused(t, "ab cd", null);
@@ -150,7 +150,7 @@ group("EditableText", () => {
     }
   });
 
-  testWidgets("editing keys work with the raw key codes the embedders send", async (t) => {
+  testViews("editing keys work with the raw key codes the embedders send", async (t) => {
     // macOS/Windows 嵌入层: 特殊键 logicalKey = 0x1_0000_0000 + HID usage, physicalKey = 0x0007_0000 | usage。
     const raw = (usage: number) => ({ logical: 0x1_0000_0000 + usage, physical: 0x0007_0000 + usage });
     const { c } = await focused(t, "abc", null);
@@ -162,7 +162,7 @@ group("EditableText", () => {
     expect.equal(c.text, "a");
   });
 
-  testWidgets("multiline up/down and line start/end", async (t) => {
+  testViews("multiline up/down and line start/end", async (t) => {
     const { c } = await focused(t, "abc\ndefgh\nij", null);
     c.selection = TextSelection.collapsed(6); // "de|fgh"
     await t.pump();
@@ -175,11 +175,11 @@ group("EditableText", () => {
     expect.equal(c.selection.extentOffset, 10);
   }, { ahemText: true });
 
-  testWidgets("tap places the caret; double tap selects a word; drag selects", async (t) => {
+  testViews("tap places the caret; double tap selects a word; drag selects", async (t) => {
     const c = new TextEditingController({ text: "hello world" });
     const n = new FocusNode();
     t.recordMethodCalls("momo/textinput");
-    await t.pumpWidget(new Column({ children: [field(c, n)] }));
+    await t.pumpView(new Column({ children: [field(c, n)] }));
     // 字宽 10, 文本在 (0,0)
     await t.tap(new Offset(23, 5));
     expect.isTrue(n.hasFocus);
@@ -194,7 +194,7 @@ group("EditableText", () => {
     expect.deepEqual([c.selection.baseOffset, c.selection.extentOffset], [1, 4]);
   }, { ahemText: true });
 
-  testWidgets("blur closes the connection (hide)", async (t) => {
+  testViews("blur closes the connection (hide)", async (t) => {
     const { n, calls } = await focused(t, "x");
     n.unfocus();
     await t.pump();
@@ -203,11 +203,11 @@ group("EditableText", () => {
     void TextEditingValue;
   });
 
-  testWidgets("cursor blinks via frame callbacks", async (t) => {
+  testViews("cursor blinks via frame callbacks", async (t) => {
     const c = new TextEditingController({ text: "x" });
     const n = new FocusNode();
     t.recordMethodCalls("momo/textinput");
-    await t.pumpWidget(new Center({ child: new SizedBox({ width: 100, child: new EditableText({ controller: c, focusNode: n }) }) }));
+    await t.pumpView(new Center({ child: new SizedBox({ width: 100, child: new EditableText({ controller: c, focusNode: n }) }) }));
     n.requestFocus();
     await t.pump();
     const state = t.allElements().map((e) => (e as { state?: unknown }).state).find((s): s is { cursorCurrentlyVisible: boolean } => typeof s === "object" && s !== null && "cursorCurrentlyVisible" in s)!;

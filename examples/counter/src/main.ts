@@ -1,15 +1,15 @@
-// examples/counter — Widget 版计数器(docs/11 M4 验收):文字 + 按钮 + 点击计数。
+// examples/counter — View 版计数器(docs/11 M4 验收):文字 + 按钮 + 点击计数。
 // 构建: node framework/scripts/build_example.mjs examples/counter/src/main.ts examples/counter/dist/main.js
 import {
   AppBar, Center, Column, EdgeInsets, ElevatedButton, FloatingActionButton, Intent, CallbackAction, LogicalKeyboardKey,
-  MaterialApp, Padding, Row, Scaffold, SingleActivator, SizedBox, State, StatefulWidget, Shortcuts, Actions, Text, TextButton,
-  Theme, ThemeData, Color, Focus, runApp, type BuildContext, type Widget,
+  MaterialApp, Padding, Row, Scaffold, SingleActivator, SizedBox, State, StatefulView, Shortcuts, Actions, Text, TextButton,
+  Theme, ThemeData, Color, Focus, app, runApp, type BuildContext, type View,
 } from "@momo/framework";
 
 class IncrementIntent extends Intent {}
 class DecrementIntent extends Intent {}
 
-class CounterPage extends StatefulWidget {
+class CounterPage extends StatefulView {
   constructor(readonly title: string) {
     super();
   }
@@ -25,7 +25,7 @@ class CounterPageState extends State<CounterPage> {
   #decrement = (): void => this.setState(() => this.#count--);
   #reset = (): void => this.setState(() => (this.#count = 0));
 
-  build(context: BuildContext): Widget {
+  build(context: BuildContext): View {
     const theme = Theme.of(context);
     return new Shortcuts({
       // 键盘:↑ / + 加一, ↓ / - 减一
@@ -43,7 +43,7 @@ class CounterPageState extends State<CounterPage> {
         child: new Focus({
           autofocus: true,
           child: new Scaffold({
-            appBar: new AppBar({ title: new Text(this.widget.title) }),
+            appBar: new AppBar({ title: new Text(this.view.title) }),
             body: new Center({
               child: new Column({
                 mainAxisSize: "min",
@@ -74,6 +74,9 @@ class CounterPageState extends State<CounterPage> {
     });
   }
 }
+
+// 单窗口应用: 关窗即退出(应用生命周期与窗口无关, 最后一个窗口关闭后由应用决定是否退出)。
+app.on("window-all-closed", () => app.quit());
 
 runApp(new MaterialApp({
   title: "Momo · counter",

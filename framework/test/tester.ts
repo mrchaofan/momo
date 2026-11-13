@@ -1,11 +1,11 @@
-// WidgetTester:对标 flutter_test,通过 window / view 回调驱动帧、指针、键盘,经 BinaryMessenger 模拟平台消息。
+// ViewTester:对标 flutter_test,通过 window / view 回调驱动帧、指针、键盘,经 BinaryMessenger 模拟平台消息。
 // 只依赖框架公开的 momo:ui 回调与 messenger,因此在 mock 宿主和真实引擎宿主下都可用。
-import { views, window } from "momo:ui";
+import { viewports, platformDispatcher } from "momo:ui";
 import { currentHost } from "./harness";
 import {
   Element, GlobalKey, Key, Offset, Rect, RenderBox, RichText, SchedulerBinding, Size, StandardMethodCodec, MethodCall,
-  WidgetsBinding, defaultBinaryMessenger, keysEqual, runApp, paragraphCache, type Type, type Widget, HardwareKeyboard,
-  FocusManager, imageCache, TextInput, WindowService,
+  ViewsBinding, defaultBinaryMessenger, keysEqual, runApp, paragraphCache, type Type, type View, HardwareKeyboard,
+  FocusManager, imageCache, TextInput, Widget,
 } from "../packages/momo/src/index";
 
 /** 指针设备类型码(与 momo:ui 指针包一致)。 */
@@ -34,14 +34,14 @@ export interface PointerOptions {
 }
 
 /** 测试驱动器。 */
-export class WidgetTester {
-  readonly binding: WidgetsBinding;
+export class ViewTester {
+  readonly binding: ViewsBinding;
   /** 假时钟(毫秒)。 */
   now = 1000;
   #dpr = 1;
 
   constructor(size: Size = new Size(800, 600), devicePixelRatio = 1) {
-    this.binding = WidgetsBinding.ensureInitialized();
+    this.binding = ViewsBinding.ensureInitialized();
     this.#dpr = devicePixelRatio;
     this.binding.debugOverrideView(size, devicePixelRatio);
   }
@@ -62,8 +62,8 @@ export class WidgetTester {
   }
 
   /** runApp 并出一帧。 */
-  async pumpWidget(widget: Widget, durationMs = 0): Promise<void> {
-    runApp(widget);
+  async pumpView(view: View, durationMs = 0): Promise<void> {
+    runApp(view);
     await this.pump(durationMs);
   }
 
@@ -71,9 +71,9 @@ export class WidgetTester {
   async pump(durationMs = 0): Promise<void> {
     this.now += durationMs;
     await this.flushMicrotasks();
-    window.onBeginFrame?.(this.now);
+    platformDispatcher.onBeginFrame?.(this.now);
     await this.flushMicrotasks();
-    window.onDrawFrame?.();
+    platformDispatcher.onDrawFrame?.();
     await this.flushMicrotasks();
   }
 
@@ -108,23 +108,23 @@ export class WidgetTester {
     if (root) walk(root);
     return out;
   }
-  byType(type: Type<Widget>): Element[] {
-    return this.allElements().filter((e) => e.widget instanceof type);
+  byType(type: Type<View>): Element[] {
+    return this.allElements().filter((e) => e.view instanceof type);
   }
   byKey(key: Key): Element[] {
-    return this.allElements().filter((e) => keysEqual(e.widget.key, key));
+    return this.allElements().filter((e) => keysEqual(e.view.key, key));
   }
   /** 显示该文本(完全相等)的 RichText Element。 */
   byText(text: string): Element[] {
-    return this.allElements().filter((e) => e.widget instanceof RichText && e.widget.text.toPlainText() === text);
+    return this.allElements().filter((e) => e.view instanceof RichText && e.view.text.toPlainText() === text);
   }
   /** 唯一匹配, 否则抛错。 */
   one(list: Element[], what = "element"): Element {
     if (list.length !== 1) throw new Error(`expected exactly one ${what}, found ${list.length}`);
     return list[0]!;
   }
-  widget<T extends Widget>(type: Type<T>): T {
-    return this.one(this.byType(type), type.name).widget as T;
+  view<T extends View>(type: Type<T>): T {
+    return this.one(this.byType(type), type.name).view as T;
   }
   state<T>(key: GlobalKey): T {
     return key.currentState as T;
@@ -160,7 +160,7 @@ export class WidgetTester {
     const viewId = o.view ?? 0;
     // 屏幕位置 = 窗口屏幕框左上 + 窗口内位置(逻辑点)。
     const mock = currentHost?.mock ?? null;
-    const frame = mock?.frames.get(viewId) ?? WindowService.instance.frameOf(viewId) ?? { x: 0, y: 0 };
+    const frame = mock?.frames.get(viewId) ?? Widget.fromId(viewId)?.bounds ?? { x: 0, y: 0 };
     d[10] = o.screen?.dx ?? frame.x + position.dx;
     d[11] = o.screen?.dy ?? frame.y + position.dy;
     d[12] = o.sequenceId ?? 0;
@@ -170,7 +170,7 @@ export class WidgetTester {
     d[16] = o.gestureStage ?? 0;
     // mock 宿主: 经宿主投递(移动循环等宿主行为生效);真实引擎: 直接交给视图。
     if (mock !== null) mock.deliverPointer(viewId, d, 1);
-    else views.get(viewId)?.onPointerPacket?.(d, 1);
+    else viewports.get(viewId)?.onPointerPacket?.(d, 1);
   }
 
   #pos(target: Element | Offset): Offset {
@@ -220,7 +220,7 @@ export class WidgetTester {
 
   /** 发送一条 KeyData;返回框架是否消费。 */
   sendKeyData(type: "down" | "up" | "repeat", logicalKey: number, physicalKey: number, o: { character?: string; modifiers?: number } = {}): boolean {
-    const r = views.get(0)?.onKeyData?.({ type, timeStampUs: this.now * 1000, physicalKey, logicalKey, character: o.character ?? "", modifiers: o.modifiers ?? 0 });
+    const r = viewports.get(0)?.onKeyData?.({ type, timeStampUs: this.now * 1000, physicalKey, logicalKey, character: o.character ?? "", modifiers: o.modifiers ?? 0 });
     return r === true;
   }
 
@@ -267,16 +267,16 @@ export class WidgetTester {
   }
 }
 
-let shared: WidgetTester | null = null;
+let shared: ViewTester | null = null;
 
 /** 获取(并复位视图尺寸的)共享 tester。 */
-export function tester(size: Size = new Size(800, 600), dpr = 1): WidgetTester {
-  if (shared === null) shared = new WidgetTester(size, dpr);
+export function tester(size: Size = new Size(800, 600), dpr = 1): ViewTester {
+  if (shared === null) shared = new ViewTester(size, dpr);
   else shared.setViewSize(size, dpr);
   return shared;
 }
 
-/** 在每个 widget 测试结束后调用。 */
+/** 在每个 view 测试结束后调用。 */
 export async function resetTester(): Promise<void> {
   if (shared !== null) await shared.reset();
 }

@@ -1,4 +1,4 @@
-// 平台视图(docs/05 §9): PlatformView widget ↔ momo/platform_views 通道 ↔ SceneBuilder.addPlatformView。
+// 平台视图(docs/05 §9): PlatformView view ↔ momo/platform_views 通道 ↔ SceneBuilder.addPlatformView。
 import {
   ColoredBox, Colors, Focus, IgnorePointer, GestureDetector, FocusManager, FocusNode, MethodCall, PlatformView, PlatformViewLayer, PlatformViewsService,
   Positioned, SizedBox, Stack, StandardMethodCodec, defaultBinaryMessenger, type PlatformViewController,
@@ -7,7 +7,7 @@ import { expect, group } from "./harness";
 import type { RecordedOp } from "./host";
 import { Offset } from "../packages/momo/src/index";
 
-import { testWidgets } from "./util";
+import { testViews } from "./util";
 
 const CHANNEL = "momo/platform_views";
 const codec = StandardMethodCodec.instance;
@@ -34,12 +34,12 @@ function cleanup(): void {
 }
 
 group("platform views", () => {
-  testWidgets("PlatformView creates the view and adds a platform view layer below later content", async (t, ctx) => {
+  testViews("PlatformView creates the view and adds a platform view layer below later content", async (t, ctx) => {
     const calls = mockPlatformViews();
     try {
       let created: PlatformViewController | null = null;
       const params = new Uint8Array([1, 2, 3]);
-      await t.pumpWidget(new Stack({
+      await t.pumpView(new Stack({
         children: [
           new Positioned({ left: 10, top: 20, width: 300, height: 200,
             child: new PlatformView({ viewType: "test.view", creationParams: params, onCreated: (c) => { created = c; } }) }),
@@ -66,8 +66,8 @@ group("platform views", () => {
       expect.isTrue(t.binding.renderView.rootLayer !== null);
       void PlatformViewLayer;
 
-      // 移除 widget → dispose。
-      await t.pumpWidget(new SizedBox({}));
+      // 移除 view → dispose。
+      await t.pumpView(new SizedBox({}));
       await t.pump();
       expect.equal(calls.at(-1)!.method, "dispose");
       expect.equal(calls.at(-1)!.args.id, id);
@@ -77,11 +77,11 @@ group("platform views", () => {
     }
   }, { mockOnly: true });
 
-  testWidgets("create failure reports through onCreateError and keeps the placeholder", async (t, ctx) => {
+  testViews("create failure reports through onCreateError and keeps the placeholder", async (t, ctx) => {
     const calls = mockPlatformViews(["missing.view"]);
     try {
       let error: unknown = null;
-      await t.pumpWidget(new SizedBox({ width: 100, height: 100,
+      await t.pumpView(new SizedBox({ width: 100, height: 100,
         child: new PlatformView({ viewType: "missing.view", onCreateError: (e) => { error = e; } }) }));
       await t.pump();
       expect.equal(calls.length, 1);
@@ -92,12 +92,12 @@ group("platform views", () => {
     }
   }, { mockOnly: true });
 
-  testWidgets("focus follows the native view and focusing the widget focuses the native view", async (t) => {
+  testViews("focus follows the native view and focusing the view focuses the native view", async (t) => {
     const calls = mockPlatformViews();
     try {
       const node = new FocusNode({ debugLabel: "web" });
       const other = new FocusNode({ debugLabel: "other" });
-      await t.pumpWidget(new Stack({
+      await t.pumpView(new Stack({
         children: [
           new Positioned({ left: 0, top: 0, width: 100, height: 100, child: new PlatformView({ viewType: "test.view", focusNode: node }) }),
           new Positioned({ left: 0, top: 120, width: 10, height: 10, child: new Focus({ focusNode: other, child: new SizedBox({}) }) }),
@@ -124,7 +124,7 @@ group("platform views", () => {
       const focus = calls.filter((c) => c.method === "focus");
       expect.equal(focus.length, 1);
       expect.equal(focus[0]!.args.id, id);
-      await t.pumpWidget(new SizedBox({}));  // 卸载(dispose 仍走 mock)
+      await t.pumpView(new SizedBox({}));  // 卸载(dispose 仍走 mock)
       await t.pump();
     } finally {
       cleanup();
@@ -134,7 +134,7 @@ group("platform views", () => {
   // ---- 输入(docs/05 §9 "输入"): 宿主在主线程按每帧几何直接把原生事件交给原生视图, 不经过框架。
   // 框架里的平台视图只占位: 几何刚变化、新帧尚未呈现时落到这里的事件不穿透到下面的 momo 内容。
   // 宿主按"平台视图之上的可命中区域"决定原生事件归谁: 只记录自身可命中的节点, IgnorePointer 子树与平台视图本身不记。
-  testWidgets("content above a platform view records hit regions; ignored subtrees do not", async (t, ctx) => {
+  testViews("content above a platform view records hit regions; ignored subtrees do not", async (t, ctx) => {
     mockPlatformViews();
     try {
       const build = (ignoring: boolean) => new Stack({
@@ -150,10 +150,10 @@ group("platform views", () => {
         .flatMap((o) => ctx.host.mock!.pictureOps(o.args[2]))
         .filter((o) => o.op === "addHitRegion")
         .map((o) => o.args);
-      await t.pumpWidget(build(true));
+      await t.pumpView(build(true));
       await t.pump();
       expect.deepEqual(hitRegions(), [[10, 10, 40, 40]]);
-      await t.pumpWidget(build(false));
+      await t.pumpView(build(false));
       await t.pump();
       expect.deepEqual(hitRegions(), [[10, 10, 40, 40], [100, 10, 40, 40]]);
     } finally {
@@ -161,11 +161,11 @@ group("platform views", () => {
     }
   }, { mockOnly: true });
 
-  testWidgets("a platform view absorbs pointer events without forwarding anything", async (t) => {
+  testViews("a platform view absorbs pointer events without forwarding anything", async (t) => {
     const calls = mockPlatformViews();
     try {
       let below = 0;
-      await t.pumpWidget(new Stack({
+      await t.pumpView(new Stack({
         children: [
           Positioned.fill({ child: new GestureDetector({ onTap: () => below++, child: new ColoredBox({ color: Colors.white }) }) }),
           new Positioned({ left: 0, top: 0, width: 300, height: 200, child: new PlatformView({ viewType: "test.view" }) }),
@@ -177,14 +177,14 @@ group("platform views", () => {
       await t.tap(new Offset(500, 400));
       expect.equal(below, 1);
       expect.deepEqual(calls.map((c) => c.method), ["create"], "nothing but the view's creation reaches the host");
-      await t.pumpWidget(new SizedBox({}));
+      await t.pumpView(new SizedBox({}));
       await t.pump();
     } finally {
       cleanup();
     }
   }, { mockOnly: true });
 
-  testWidgets("view ids are unique and positive", async () => {
+  testViews("view ids are unique and positive", async () => {
     const a = PlatformViewsService.allocateId();
     const b = PlatformViewsService.allocateId();
     expect.isTrue(a > 0 && b > 0 && a !== b && Number.isSafeInteger(b));

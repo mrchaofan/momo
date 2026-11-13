@@ -2,7 +2,7 @@
 import { Paint, Path, type Canvas } from "momo:ui";
 import {
   AnimationController, BorderRadius, BoxDecoration, Center, Container, CustomPaint, CustomPainter, GestureDetector, MouseRegion, Size,
-  State, StatefulWidget, type Animation, type BuildContext, type Widget,
+  State, StatefulView, type Animation, type BuildContext, type View,
 } from "@momo/framework";
 import { Palette } from "./style";
 
@@ -45,7 +45,7 @@ class IconPainter extends CustomPainter {
 }
 
 /** 图标按钮: 悬停浅灰底;active(如已置顶)为黑底白图标。 */
-export class IconButton extends StatefulWidget {
+export class IconButton extends StatefulView {
   constructor(readonly o: { icon: IconKind; onTap: () => void; active?: boolean; size?: number }) {
     super();
   }
@@ -56,8 +56,8 @@ export class IconButton extends StatefulWidget {
 
 class IconButtonState extends State<IconButton> {
   #hover = false;
-  build(_c: BuildContext): Widget {
-    const { icon, onTap, active = false, size = 28 } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { icon, onTap, active = false, size = 28 } = this.view.o;
     const bg = active ? Palette.black : this.#hover ? Palette.hover : Palette.white;
     const fg = active ? Palette.white : Palette.ink;
     return new MouseRegion({
@@ -114,7 +114,7 @@ class SpinnerPainter extends CustomPainter {
 }
 
 /** 转圈的加载图标(每秒一圈)。 */
-export class Spinner extends StatefulWidget {
+export class Spinner extends StatefulView {
   constructor(readonly o: { size?: number; color?: number } = {}) {
     super();
   }
@@ -134,8 +134,8 @@ class SpinnerState extends State<Spinner> {
     this.#turn.dispose();
     super.dispose();
   }
-  build(_c: BuildContext): Widget {
-    const { size = 12, color = Palette.ink.value } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { size = 12, color = Palette.ink.value } = this.view.o;
     return new CustomPaint({ size: new Size(size, size), painter: new SpinnerPainter(this.#turn, color) });
   }
 }

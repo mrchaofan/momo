@@ -11,7 +11,7 @@ import { PointerRouter, PointerSignalResolver, type PointerRoute } from "./point
 
 /**
  * 一次显式指针捕获(GestureBinding.capturePointer): 进行中的按下序列从此只交给捕获者, 直到抬起或取消。
- * 捕获者不属于任何 widget 或窗口——触发拖动的 widget 卸载、它所在的窗口关闭, 序列照常交给捕获者。
+ * 捕获者不属于任何 view 或窗口——触发拖动的 view 卸载、它所在的窗口关闭, 序列照常交给捕获者。
  */
 export class PointerCapture {
   #active = true;
@@ -63,16 +63,16 @@ export class GestureBinding {
   readonly converter = new PointerEventConverter();
   #hitTests = new Map<number, HitTestResult>();
 
-  /** 在视图 viewId 的根做命中测试(由 WidgetsBinding 设置)。 */
+  /** 在视图 viewId 的根做命中测试(由 ViewsBinding 设置)。 */
   hitTestInView: ((result: HitTestResult, position: Offset, viewId: number) => void) | null = null;
-  /** 宿主的原生捕获: 进行中的序列 sequenceId 改由窗口 viewId 接收(由 WidgetsBinding 设置为 WindowService.capturePointer)。 */
+  /** 宿主的原生捕获: 进行中的序列 sequenceId 改由窗口 viewId 接收(由 ViewsBinding 设置为 Widget.capturePointer)。 */
   pointerCaptureSink: ((viewId: number, sequenceId: number) => void) | null = null;
   /** 显式捕获: 指针 → 捕获者。 */
   readonly #captures = new Map<number, { capture: PointerCapture; route: PointerRoute }>();
   /** 正在分发的指针事件层数;分发中发起的捕获, 原接收方的取消推迟到分发结束(路由按快照分发)。 */
   #dispatching = 0;
   #pendingCancels: [PointerCancelEvent, HitTestResult | null][] = [];
-  /** 鼠标 hover 跟踪(由 WidgetsBinding 设置)。 */
+  /** 鼠标 hover 跟踪(由 ViewsBinding 设置)。 */
   mouseTracker: MouseTrackerHook | null = null;
   /** 触控板手势锁定的命中结果(phase start → end): 滚动一份, 每种平台手势各一份(捏合与旋转可同时进行)。 */
   #signalLatches = new Map<string, HitTestResult>();
@@ -97,7 +97,7 @@ export class GestureBinding {
   }
 
   /**
-   * 显式捕获进行中的按下序列(同 Win32 SetCapture / Chromium Widget::SetCapture): 从此这个指针的全部事件
+   * 显式捕获进行中的按下序列(同 Win32 SetCapture / Chromium View::SetCapture): 从此这个指针的全部事件
    * (不论来自哪个窗口)只交给 route——不做命中测试、不进竞技场、不更新悬停;抬起或取消后自动结束。
    * 原接收方(按下时的命中路径、已在竞技场里的手势)失去这个指针, 收到取消(分发中发起时推迟到当前事件分发完)。
    * 典型用法: 拖动开始时捕获(拖动会话成为接收方), 换窗口时 capture.moveToView(viewId)。

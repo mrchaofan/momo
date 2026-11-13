@@ -31,10 +31,11 @@ class NullDelegate final : public WindowDelegate {
   void OnKeyData(const platform::KeyData&) override {}
   bool OnCloseRequested() override { return false; }
   void OnFocusChanged(bool) override {}
-  void OnVisibilityChanged(bool) override {}
+  void OnWindowStateChanged(const WindowStateFlags& state) override { states.push_back(state); }
   void OnTextInput(const TextInputEvent&) override {}
   void OnWindowControlsChanged(const std::optional<Rect>& rect) override { controls = rect; }
   std::optional<Rect> controls;
+  std::vector<WindowStateFlags> states;
 };
 
 // 只实现必需方法的窗口: 全部可选能力都不支持。
@@ -70,6 +71,7 @@ class FakeHost final : public WindowChannel::Host {
     closed.push_back(view);
     windows.erase(view);
   }
+  void RequestCloseWindow(platform::ViewId view) override { close_requests.push_back(view); }
   PlatformWindow* FindWindow(platform::ViewId view) override {
     if (view == kBareView) return &bare;
     auto it = windows.find(view);
@@ -83,6 +85,7 @@ class FakeHost final : public WindowChannel::Host {
   std::map<platform::ViewId, std::unique_ptr<MockWindow>> windows;
   std::vector<WindowOptions> created;
   std::vector<platform::ViewId> closed;
+  std::vector<platform::ViewId> close_requests;
   platform::ViewId next_id = 1;
 };
 
@@ -229,8 +232,39 @@ TEST_F(WindowChannelTest, UnknownViewsAndMethods) {
   EXPECT_EQ(host_.closed, (std::vector<platform::ViewId>{42, view}));
 }
 
-// 关闭/退出询问: JS 无处理器时允许;JS 回复 false 时取消。
-TEST_F(WindowChannelTest, CloseAndExitRequestsAskJs) {
+// 显示与状态切换(show:false 创建、hide/show、最小化/最大化/还原)经窗口上报状态;requestClose 走询问。
+TEST_F(WindowChannelTest, VisibilityAndStateMethods) {
+  StatusOr<EncodableValue> id = Call("create", {{"width", 300.0}, {"height", 200.0}, {"show", false}});
+  ASSERT_TRUE(id.ok()) << id.status();
+  EXPECT_FALSE(host_.created.back().show);
+  const platform::ViewId view = *id->AsInt();
+  MockWindow* w = host_.mock(view);
+  ASSERT_TRUE(Call("show", {{"view", view}}).ok());
+  EXPECT_TRUE(w->state().visible);
+  ASSERT_TRUE(Call("maximize", {{"view", view}}).ok());
+  EXPECT_TRUE(w->state().maximized);
+  ASSERT_TRUE(Call("minimize", {{"view", view}}).ok());
+  EXPECT_FALSE(w->state().shown());
+  ASSERT_TRUE(Call("restore", {{"view", view}}).ok());
+  EXPECT_TRUE(w->state().shown() && w->state().maximized);
+  ASSERT_TRUE(Call("hide", {{"view", view}}).ok());
+  EXPECT_FALSE(w->state().visible);
+  EXPECT_FALSE(host_.delegate.states.empty());
+
+  StatusOr<EncodableValue> state = Call("getState", {{"view", view}});
+  ASSERT_TRUE(state.ok());
+  const EncodableValue* flags = state->Find("state");
+  ASSERT_NE(flags, nullptr);
+  EXPECT_EQ(flags->Find("visible")->GetIf<bool>() != nullptr && *flags->Find("visible")->GetIf<bool>(), false);
+
+  ASSERT_TRUE(Call("requestClose", {{"view", view}}).ok());
+  EXPECT_EQ(host_.close_requests, (std::vector<platform::ViewId>{view}));
+  EXPECT_TRUE(host_.closed.empty()) << "requestClose asks first";
+  EXPECT_EQ(Call("hide", {{"view", FakeHost::kBareView}}).status().code(), StatusCode::kUnimplemented);
+}
+
+// 关闭询问: JS 无处理器时允许;JS 回复 false 时取消。
+TEST_F(WindowChannelTest, CloseRequestsAskJs) {
   std::optional<bool> allowed;
   channel_.RequestClose(1, [&](bool allow) { allowed = allow; });
   loop_.RunUntilIdle();
@@ -248,11 +282,7 @@ TEST_F(WindowChannelTest, CloseAndExitRequestsAskJs) {
   channel_.RequestClose(1, [&](bool allow) { allowed = allow; });
   loop_.RunUntilIdle();
   EXPECT_EQ(allowed, false);
-  allowed.reset();
-  channel_.RequestAppExit([&](bool allow) { allowed = allow; });
-  loop_.RunUntilIdle();
-  EXPECT_EQ(allowed, false);
-  EXPECT_EQ(asked, (std::vector<std::string>{"momo/window:closeRequested", "momo/app:requestExit"}));
+  EXPECT_EQ(asked, (std::vector<std::string>{"momo/window:closeRequested"}));
   hub_->SetJsEndpoint(nullptr, nullptr);
 }
 

@@ -12,7 +12,7 @@ packages/momo/src/
 ├── painting/    # text_painter.ts、decoration.ts、image_provider.ts、borders.ts、colors.ts
 ├── rendering/   # object.ts(RenderObject/PipelineOwner)、box.ts、flex.ts、stack.ts、
 │                #   padding.ts、paragraph.ts、image.ts、proxy_box.ts、view.ts、layer.ts
-├── widgets/     # framework.ts(Widget/Element/BuildOwner)、binding.ts(runApp)、basic.ts、
+├── views/       # framework.ts(View/Element/BuildOwner)、binding.ts(runApp)、basic.ts、
 │                #   container.ts、text.ts、image.ts、gesture_detector.ts、focus.ts、
 │                #   scroll/*.ts、inherited.ts
 ├── material/    # (M6)button.ts、text_field.ts、dialog.ts、theme.ts
@@ -41,7 +41,7 @@ node scripts/build_example.mjs ../examples/todo/src/main.ts    ../examples/todo/
 
 - 工作区:`framework/package.json` 为 npm workspace 根;发布包为 `packages/momo`(`@momo/framework`,
   `exports` 指向 TS 源码, 子路径 `@momo/framework/widgets` 等)。构建脚本把 `@momo/framework` 别名到源码。
-- 测试布局:`test/*_test.ts` 写成与宿主无关的场景函数(`test/harness.ts` 极简运行器 + `test/tester.ts` WidgetTester,
+- 测试布局:`test/*_test.ts` 写成与宿主无关的场景函数(`test/harness.ts` 极简运行器 + `test/tester.ts` ViewTester,
   只通过 `window` 回调与 `defaultBinaryMessenger` 驱动框架);`test/mock/` 是 Node 宿主用的 momo:ui / momo:services mock
   (记录绘制与合成调用、Ahem 固定宽度字形模型)。`test/examples/*_main.ts` 在 mock 下端到端运行两个示例。
 - 引擎宿主(`momo_headless`, CTest `FrameworkTests.EngineHeadless`):`npm run build:tests` 产出 `out/test/momo_tests.js`(momo:* 为外部导入), 用法:

@@ -4,7 +4,7 @@ import { __mock } from "../mock/momo_ui";
 import "../../../examples/webview/src/main";
 import { IconButton, Spinner } from "../../../examples/webview/src/icons";
 import { runRegisteredTests, test, expect } from "../harness";
-import { Phase, WidgetTester, type PointerOptions } from "../tester";
+import { Phase, ViewTester, type PointerOptions } from "../tester";
 import { LogicalKeyboardKey, Offset, PhysicalKeyboardKey, Size, defaultBinaryMessenger, TextField, utf8Encode } from "../../packages/momo/src/index";
 
 /** 某个视图(窗口)最近一帧场景里的平台视图 id。 */
@@ -22,29 +22,29 @@ async function pushState(id: number, state: Record<string, unknown>): Promise<vo
 }
 
 // 地址栏聚焦时光标持续闪烁, pumpAndSettle 等不到静止: 按时长推进(覆盖 220ms 的标签动画)。
-async function settle(t: WidgetTester): Promise<void> {
+async function settle(t: ViewTester): Promise<void> {
   await t.pumpFor(400);
 }
 
 // 拖动分步驱动(中途要断言, 不能用 t.drag 一次做完): 按下 / 按住移动 steps 步(每步一帧) / 抬起。
-async function press(t: WidgetTester, at: Offset, o: PointerOptions = {}): Promise<void> {
+async function press(t: ViewTester, at: Offset, o: PointerOptions = {}): Promise<void> {
   t.sendPointer(Phase.down, at, o);
   await t.flushMicrotasks();
 }
-async function moveHeld(t: WidgetTester, from: Offset, delta: Offset, steps: number, o: PointerOptions = {}): Promise<void> {
+async function moveHeld(t: ViewTester, from: Offset, delta: Offset, steps: number, o: PointerOptions = {}): Promise<void> {
   for (let i = 1; i <= steps; i++) {
     t.now += 16;
     t.sendPointer(Phase.move, from.plus(delta.scale(i / steps)), o);
     await t.pump();
   }
 }
-async function release(t: WidgetTester, at: Offset): Promise<void> {
+async function release(t: ViewTester, at: Offset): Promise<void> {
   t.sendPointer(Phase.up, at, { buttons: 0 });
   await settle(t);
 }
 
 test("examples/webview: open, switch and close tabs with eased insert/remove", async () => {
-  const t = new WidgetTester(new Size(1000, 700));
+  const t = new ViewTester(new Size(1000, 700));
   await settle(t);
   // 第一个浏览器窗口接管了启动窗口(视图 0): 标题跟随活动标签。
   expect.equal(__mock.titles.get(0), "新标签页");
@@ -80,7 +80,7 @@ test("examples/webview: open, switch and close tabs with eased insert/remove", a
   await t.tap(t.one(t.byText("Example Domain")));
   await settle(t);
   expect.deepEqual(__mock.lastSceneOps.filter((o) => o.op === "addPlatformView").map((o) => o.args[0]), [first]);
-  expect.equal(t.widget(TextField).controller!.text, "https://example.com/");
+  expect.equal(t.view(TextField).controller!.text, "https://example.com/");
   expect.isFalse(viewCalls.some((c) => c.method === "dispose"));
 
   // 标签右键 → 窗口内菜单。菜单与遮罩在平台视图之后加入场景, 即合成在网页之上。
@@ -114,7 +114,7 @@ test("examples/webview: open, switch and close tabs with eased insert/remove", a
   expect.deepEqual(__mock.lastSceneOps.filter((o) => o.op === "addPlatformView").map((o) => o.args[0]), [second]);
 
   // 地址栏提交: 非网址按搜索。
-  t.widget(TextField).controller!.text = "momo engine";
+  t.view(TextField).controller!.text = "momo engine";
   await t.tap(t.one(t.byType(TextField)));
   await t.pressKey({ logical: LogicalKeyboardKey.enter.keyId, physical: PhysicalKeyboardKey.enter.keyId });
   await settle(t);
@@ -175,7 +175,7 @@ test("examples/webview: open, switch and close tabs with eased insert/remove", a
   await t.tap(pin!, { view: win });
   await settle(t);
   expect.equal(__mock.alwaysOnTop.get(win), true);
-  expect.isTrue((t.byType(IconButton)[0]!.widget as IconButton).o.active === true, "pin shows as active");
+  expect.isTrue((t.byType(IconButton)[0]!.view as IconButton).o.active === true, "pin shows as active");
   await t.tap(t.one(t.byText("显示窗口")));
   await settle(t);
   expect.deepEqual(__mock.activated, [win]);

@@ -78,7 +78,7 @@ engine/shell/vsync_waiter.cc    PlatformVsyncWaiter::AwaitVsync
 embedder/macos/mac_vsync_displaylink.mm
 engine/shell/engine.cc          OnAnimatorBeginFrame
 engine/ui/js_app_driver.cc      BeginFrame
-engine/ui/window_binding.cc     UiBindings::BeginFrame / DrawFrame、Render
+engine/ui/platform_dispatcher_binding.cc     UiBindings::BeginFrame / DrawFrame、Render
 engine/ui/scene_bindings.cc     SceneBuilder → LayerTree
 engine/shell/shell.cc           OnEngineDraw
 engine/shell/rasterizer.cc      Draw → DrawToSurface
@@ -92,9 +92,9 @@ embedder/macos/mac_surface_metal.mm   AcquireFrame / present
 embedder/macos/mac_window.mm             mouseDown → dispatchPointer
 embedder/common/window_controller.cc     OnPointerPacket
 engine/shell/shell.cc                    OnPointerPacket → PostToEngine
-engine/ui/window_binding.cc              UiBindings::PointerPacket
+engine/ui/platform_dispatcher_binding.cc              UiBindings::PointerPacket
 framework/.../gestures/binding.ts        handlePointerPacket
-framework/.../widgets/binding.ts         drawFrame
+framework/.../views/binding.ts           drawFrame
 framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 ```
 
@@ -108,7 +108,9 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 |---|---|---|
 | 给 JS 新增/修改 `momo:ui` API | `engine/ui/*_bindings.cc`（用 `ClassBuilder`） | `framework/packages/momo/src/ui/momo-ui.d.ts`（JS⇄C++ 契约）、`framework/test/mock/momo_ui.ts`（Node mock） |
 | 新增平台服务（对话框、菜单…） | `embedder/common/platform_services.h` → `embedder/macos/mac_platform_integration.mm`（`MacServices`）→ `embedder/common/platform_channels.cc` 注册通道 | 框架 `services/` 加 JS 封装；`embedder/windows/win_services.cc`；mock 平台。**不改 engine** |
-| 新增窗口能力（全屏、透明、阴影…） | `embedder/common/platform_window.h`（可选能力 + `WindowCapability`）→ `embedder/macos/mac_window.mm` → `embedder/common/window_channel.cc` 加方法名 | 框架 `services/window.ts`（`WindowService`），需要声明式时加到 `Window` / `WindowChrome`；Node mock 的宿主实现（`framework/test/mock/momo_ui.ts`）。**不改 engine** |
+| 新增窗口能力（全屏、透明、阴影…） | `embedder/common/platform_window.h`（可选能力 + `WindowCapability`）→ `embedder/macos/mac_window.mm` → `embedder/common/window_channel.cc` 里 `RegisterWindowMethod` 一行 | 框架 `services/widget.ts` 的 `Widget` 加方法/事件，需要声明式时加到 `WindowChrome`；Node mock 的宿主实现（`framework/test/mock/momo_ui.ts`）。**不改 engine** |
+| 新增应用能力（Dock 角标、激活策略…） | `embedder/common/platform_app.h`（`PlatformApp` + `AppCapability`）→ `embedder/macos/mac_platform_integration.mm` → `embedder/common/app_channel.cc` 里 `Register` 一行 | 框架 `services/app.ts` 的 `app` 加方法；Node mock 的 `momo/app`。**不改 engine** |
+| 应用生命周期、退出流程 | `embedder/common/application.cc`（`Quit` / `Exit` / `Terminate`）、`window_manager.cc` | `application_unittests.cc`（退出流程与关闭顺序有专门断言） |
 | 窗口/输入行为 | `embedder/macos/mac_window.mm`（`MomoContentView`） | 输入类型在 `engine/platform/input_types.h`；JS 侧解码在 `gestures/converter.ts` |
 | 帧调度、背压 | `engine/shell/animator.cc`、`base/pipeline.h` | `animator_unittests.cc` |
 | 渲染（层、DisplayList、Skia） | `engine/graphics/` | golden 基准图 `engine/graphics/testdata/` |
@@ -117,7 +119,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | 消息通道/编解码 | `engine/common/message_channel_hub.*`、`standard_codec.*` | JS 侧 `services/standard_codec.ts` 必须保持同一线格式 |
 | 启动、关闭、生命周期 | `embedder/common/application.cc` | `application_unittests.cc`（关闭顺序有专门断言） |
 | 命令行参数 | `embedder/common/app_config.cc` | README 的参数表 |
-| Widget / 布局 / 手势 | `framework/packages/momo/src/{widgets,rendering,gestures}/` | `framework/test/*_test.ts` |
+| View / 布局 / 手势 | `framework/packages/momo/src/{views,rendering,gestures}/` | `framework/test/*_test.ts` |
 | Material 控件 | `framework/packages/momo/src/material/` | `material_test.ts` |
 | 扩展 C ABI | `extensions/sdk/include/momo/momo_extension.h`、`engine/extension/extension_host.cc`、`engine/ui/extension_bindings.cc` | **只能在结构体末尾追加字段**（见 §4）；新增能力时同步 C++ 封装 `momo_extension.hpp` |
 | 扩展 SDK 打包 | `extensions/CMakeLists.txt`（`momo_ext_sdk_package`、install 规则）、`extensions/sdk/lib/cmake/MomoExtSdk/` | CTest `ExtensionSdk.StandaloneCxxBuild` |
@@ -190,14 +192,14 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 1. `embedder/common/platform_window.h`：加可选方法（默认返回 `Unsupported(...)`）和一个 `WindowCapability` 位。
 2. `embedder/macos/mac_window.mm` 实现并在 `capabilities()` 里声明；Windows 不支持就不动（JS 收到 `unimplemented`）。
 3. `embedder/common/window_channel.cc`：加方法名（`setFullscreen {view, on}`）与能力名；`window_channel_unittests.cc` 加用例。
-4. 框架 `services/window.ts` 的 `WindowService` 加方法；需要声明式写法时加到 `Window` 的属性里。
+4. 框架 `services/widget.ts` 的 `Widget` 加方法（宿主推送的变化加事件）。
 5. Node mock 的宿主实现（`framework/test/mock/momo_ui.ts` 的 `handleWindowCall`）同步。
 
-### 5.3 新增一个 Widget
+### 5.3 新增一个 View（组件）
 
-1. 在 `framework/packages/momo/src/widgets/`（或 `material/`）实现；需要新布局/绘制时，在 `rendering/` 写 RenderObject。
+1. 在 `framework/packages/momo/src/views/`（或 `material/`）实现；需要新布局/绘制时，在 `rendering/` 写 RenderObject。
 2. 从对应目录的 `index.ts` 导出。
-3. 在 `framework/test/` 用 `testWidgets` + `WidgetTester` 写测试。依赖字形宽度的断言加 `{ ahemText: true }`；只在 mock 下才能观察到的断言加 `{ mockOnly: true }`。
+3. 在 `framework/test/` 用 `testViews` + `ViewTester` 写测试。依赖字形宽度的断言加 `{ ahemText: true }`；只在 mock 下才能观察到的断言加 `{ mockOnly: true }`。
 4. `npm test`（Node）+ `ctest -R FrameworkTests`（真实引擎）都要过。
 
 ### 5.4 改 embedder 的 macOS 行为

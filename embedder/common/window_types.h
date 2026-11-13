@@ -47,6 +47,17 @@ struct TitleBarOptions {
   friend bool operator==(const TitleBarOptions&, const TitleBarOptions&) = default;
 };
 
+// 窗口状态(momo/window stateChanged / getState)。
+struct WindowStateFlags {
+  bool visible = true;      // 已显示(Show/Hide);最小化的窗口仍算 visible
+  bool minimized = false;
+  bool maximized = false;
+  bool fullscreen = false;
+  // 内容是否可能被看到: 不可见时引擎不为该视图出帧。
+  bool shown() const { return visible && !minimized; }
+  friend bool operator==(const WindowStateFlags&, const WindowStateFlags&) = default;
+};
+
 // 窗口创建参数(momo/window create;逻辑点)。
 struct WindowOptions {
   std::string title;
@@ -59,6 +70,9 @@ struct WindowOptions {
   bool non_activating = false;
   // 用户能否拖动边框缩放窗口(之后可经 momo/window setResizable 修改)。
   bool resizable = true;
+  // 创建后立即显示。false: 窗口创建并绑定引擎但不显示, 第一帧呈现后宿主发 readyToShow, 应用再 show
+  // (避免先看到空白窗口, 同 Electron 的 show: false + ready-to-show)。
+  bool show = true;
 };
 
 

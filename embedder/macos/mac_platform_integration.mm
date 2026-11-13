@@ -44,6 +44,28 @@ class MacServices final : public momo::embedder::PlatformServices {
   }
 };
 
+// 应用级能力: NSApplication 的隐藏/显示/激活。
+class MacApp final : public momo::embedder::PlatformApp {
+ public:
+  uint32_t capabilities() const override { return kAppCapabilityHide | kAppCapabilityActivate; }
+  Status Hide() override {
+    [NSApp hide:nil];  // applicationDidHide → Application::OnAppVisibilityChanged(false)
+    return Status::Ok();
+  }
+  Status Show() override {
+    [NSApp unhide:nil];
+    return Status::Ok();
+  }
+  Status Activate(bool steal) override {
+    if (steal) {
+      [NSApp activateIgnoringOtherApps:YES];
+    } else {
+      [NSApp requestUserAttention:NSInformationalRequest];  // 不抢占前台: Dock 图标提示
+    }
+    return Status::Ok();
+  }
+};
+
 Rect ToRect(NSRect r) { return {r.origin.x, r.origin.y, r.size.width, r.size.height}; }
 
 class MacPlatformIntegration final : public PlatformIntegration {
@@ -68,6 +90,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
   }
 
   momo::embedder::PlatformServices& services() override { return services_; }
+  momo::embedder::PlatformApp& app() override { return app_; }
 
   std::vector<DisplayInfo> displays() const override {
     std::vector<DisplayInfo> out;
@@ -93,6 +116,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
  private:
   MacNativeLoop native_loop_;
   MacServices services_;
+  MacApp app_;
 };
 
 }  // namespace

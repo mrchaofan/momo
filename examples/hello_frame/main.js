@@ -2,13 +2,13 @@
 // 渐变圆角卡片 + 旋转的路径星形 + 描边图形;每帧重新请求下一帧, 驱动整条帧管线:
 //   onBeginFrame → onDrawFrame → view.render → Animator/Pipeline → raster 软件光栅 → present。
 // 坐标以逻辑像素书写, 场景根部按 devicePixelRatio 缩放到物理像素(与 Flutter 相同的分工)。
-// 分工: momo:ui 只管画面与输入(window = 全局帧回调, views = 视图);窗口标题等窗口属性属于宿主,
+// 分工: momo:ui 只管画面与输入(platformDispatcher = 全局帧回调, viewports = 视图);窗口标题等窗口属性属于宿主,
 // 经宿主注册的 momo/window 通道设置(StandardMethodCodec, 这里手写最小编码)。
-import { window, views, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
-import { send } from 'momo:services';
+import { platformDispatcher, viewports, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
+import { send, setHandler } from 'momo:services';
 
 // 隐式视图: 宿主启动时创建的窗口(bundle 执行前即存在)。
-const view = views.get(0);
+const view = viewports.get(0);
 
 // StandardMethodCodec 最小编码: string 与 {string: string | int32} 的 map。
 function utf8(s) { return [...new TextEncoder().encode(s)]; }
@@ -21,6 +21,15 @@ function map(o) {
 function invoke(method, args) { return send('momo/window', new Uint8Array([...str(method), ...map(args)]).buffer); }
 
 invoke('setTitle', { view: 0, title: 'Momo · hello_frame' });
+
+// 应用生命周期属于宿主且与窗口无关: 最后一个窗口关闭后应用不会自动退出(只收到 momo/app windowAllClosed)。
+// 这个示例只有一个窗口, 关窗即退出(momo/app quit)。
+setHandler('momo/app', (data) => {
+  const b = new Uint8Array(data);
+  const method = new TextDecoder().decode(b.subarray(2, 2 + b[1]));
+  if (method === 'windowAllClosed') send('momo/app', new Uint8Array([...str('quit'), 0]).buffer);
+  return null;
+});
 
 let frameTime = 0;
 let frames = 0;
@@ -87,13 +96,13 @@ function drawScene(width, height, seconds) {
   return recorder.endRecording();
 }
 
-window.onBeginFrame = (frameTimeMs) => {
+platformDispatcher.onBeginFrame = (frameTimeMs) => {
   frameTime = frameTimeMs;
   if (started === 0) started = frameTimeMs;
 };
 
-window.onDrawFrame = () => {
-  if (!views.has(0)) return;  // 窗口已关闭
+platformDispatcher.onDrawFrame = () => {
+  if (!viewports.has(0)) return;  // 窗口已关闭
   const dpr = view.devicePixelRatio;
   const { width, height } = view.physicalSize;
   const seconds = (frameTime - started) / 1000;
@@ -111,9 +120,9 @@ window.onDrawFrame = () => {
     const fps = (frames * 1000) / Math.max(1, frameTime - started);
     console.log(`hello_frame: ${frames} frames, ~${fps.toFixed(1)} fps @ ${width}x${height}`);
   }
-  window.scheduleFrame();  // 持续动画
+  platformDispatcher.scheduleFrame();  // 持续动画
 };
 
-view.onMetricsChanged = () => window.scheduleFrame();
+view.onMetricsChanged = () => platformDispatcher.scheduleFrame();
 
-window.scheduleFrame();
+platformDispatcher.scheduleFrame();

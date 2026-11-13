@@ -3,7 +3,7 @@ import "./foundation_test";
 import "./services_test";
 import "./animation_test";
 import "./smoke_test";
-import "./widgets_test";
+import "./views_test";
 import "./layout_test";
 import "./gestures_test";
 import "./interaction_test";

@@ -150,7 +150,7 @@ class RecordingDelegate final : public WindowDelegate {
   void OnKeyData(const platform::KeyData&) override {}
   bool OnCloseRequested() override { return false; }
   void OnFocusChanged(bool) override {}
-  void OnVisibilityChanged(bool) override {}
+  void OnWindowStateChanged(const WindowStateFlags&) override {}
   void OnTextInput(const momo::embedder::TextInputEvent& event) override { events.push_back(event); }
 
   std::vector<momo::embedder::TextInputEvent> events;

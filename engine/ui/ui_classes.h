@@ -149,7 +149,7 @@ class JsParagraphBuilder final : public Wrappable {
   std::unique_ptr<text::ParagraphBuilder> builder;
 };
 
-// 当前 isolate 上的 momo:ui 共享状态(UiBindings::Impl, 见 window_binding.cc)。
+// 当前 isolate 上的 momo:ui 共享状态(UiBindings::Impl, 见 platform_dispatcher_binding.cc)。
 UiBindings::Impl& UiImpl(v8::Isolate* isolate);
 // UiBindings::Impl 中供各绑定文件使用的设施。
 text::FontCollection& UiFonts(v8::Isolate* isolate);

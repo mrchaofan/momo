@@ -240,9 +240,50 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
 }
 
 void WinWindow::Show() {
-  ::ShowWindow(hwnd_, SW_SHOWNORMAL);
+  ::ShowWindow(hwnd_, ::IsZoomed(hwnd_) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
   ::SetForegroundWindow(hwnd_);
   ::UpdateWindow(hwnd_);
+  NotifyStateChanged();
+}
+
+WindowStateFlags WinWindow::state() const {
+  WindowStateFlags s;
+  s.minimized = ::IsIconic(hwnd_) != FALSE;
+  s.visible = ::IsWindowVisible(hwnd_) != FALSE;
+  s.maximized = !s.minimized && ::IsZoomed(hwnd_) != FALSE;
+  return s;
+}
+
+void WinWindow::NotifyStateChanged() {
+  if (!created_) return;
+  const WindowStateFlags s = state();
+  if (s == last_state_) return;
+  last_state_ = s;
+  delegate_->OnWindowStateChanged(s);
+}
+
+Status WinWindow::Hide() {
+  ::ShowWindow(hwnd_, SW_HIDE);
+  NotifyStateChanged();
+  return Status::Ok();
+}
+
+Status WinWindow::Minimize() {
+  ::ShowWindow(hwnd_, SW_MINIMIZE);
+  NotifyStateChanged();
+  return Status::Ok();
+}
+
+Status WinWindow::Maximize() {
+  ::ShowWindow(hwnd_, SW_MAXIMIZE);
+  NotifyStateChanged();
+  return Status::Ok();
+}
+
+Status WinWindow::Restore() {
+  ::ShowWindow(hwnd_, SW_RESTORE);
+  NotifyStateChanged();
+  return Status::Ok();
 }
 
 void WinWindow::SetTitle(std::string_view title) {
@@ -702,16 +743,10 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_SIZE:
-      if (wparam == SIZE_MINIMIZED) {
-        if (!minimized_) {
-          minimized_ = true;
-          if (created_) delegate_->OnVisibilityChanged(false);
-        }
-        return 0;
-      }
+      minimized_ = wparam == SIZE_MINIMIZED;
+      NotifyStateChanged();  // 最小化 / 最大化 / 还原
       if (minimized_) {
-        minimized_ = false;
-        if (created_) delegate_->OnVisibilityChanged(true);
+        return 0;
       }
       NotifyMetricsChanged();
       NotifyFrameChanged();

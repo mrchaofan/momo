@@ -5,13 +5,13 @@ import {
   BoxParentData, IgnorePointer, Transform, Matrix4, HitTestResult, GestureBinding, Listener,
 } from "../packages/momo/src/index";
 import { expect, group, test } from "./harness";
-import { testWidgets } from "./util";
+import { testViews } from "./util";
 
 const box = (k: string, w: number, h: number): SizedBox => new SizedBox({ key: new ValueKey(k), width: w, height: h });
 
 group("rendering/layout", () => {
-  testWidgets("Row: flex distribution and spaceBetween", async (t) => {
-    await t.pumpWidget(new Column({
+  testViews("Row: flex distribution and spaceBetween", async (t) => {
+    await t.pumpView(new Column({
       children: [
         new Row({ children: [box("a", 100, 10), new Expanded({ flex: 1, child: box("b", 0, 10) }), new Expanded({ flex: 3, child: box("c", 0, 10) })] }),
         new Row({ mainAxisAlignment: "spaceBetween", children: [box("d", 100, 20), box("e", 100, 20), box("f", 100, 20)] }),
@@ -28,8 +28,8 @@ group("rendering/layout", () => {
     expect.deepEqual([r("a").top, r("d").top, r("g").top], [0, 10, 30]);
   });
 
-  testWidgets("Column: mainAxisSize.min, crossAxis stretch/end, Flexible loose", async (t) => {
-    await t.pumpWidget(new Center({
+  testViews("Column: mainAxisSize.min, crossAxis stretch/end, Flexible loose", async (t) => {
+    await t.pumpView(new Center({
       child: new Column({
         mainAxisSize: "min",
         crossAxisAlignment: "end",
@@ -39,7 +39,7 @@ group("rendering/layout", () => {
     const col = t.one(t.byType(Column)).findRenderObject() as RenderFlex;
     expect.deepEqual([col.size.width, col.size.height], [120, 30]);
     expect.equal(t.rectOf(t.one(t.byKey(new ValueKey("a")))).left, 340 + 70);
-    await t.pumpWidget(new Row({
+    await t.pumpView(new Row({
       crossAxisAlignment: "stretch",
       children: [new Flexible({ child: box("x", 100, 10) }), new Expanded({ child: new SizedBox({ key: new ValueKey("y") }) })],
     }));
@@ -49,8 +49,8 @@ group("rendering/layout", () => {
     expect.deepEqual([y.left, y.width], [100, 400]);
   });
 
-  testWidgets("Stack: positioned + alignment", async (t) => {
-    await t.pumpWidget(new Center({
+  testViews("Stack: positioned + alignment", async (t) => {
+    await t.pumpView(new Center({
       child: new SizedBox({
         width: 200, height: 100,
         child: new Stack({
@@ -75,8 +75,8 @@ group("rendering/layout", () => {
     expect.deepEqual([r("fill").left, r("fill").top, r("fill").width, r("fill").height], [301, 252, 196, 94]);
   });
 
-  testWidgets("Padding / Align / Container constraints", async (t) => {
-    await t.pumpWidget(new Align({
+  testViews("Padding / Align / Container constraints", async (t) => {
+    await t.pumpView(new Align({
       alignment: Alignment.topLeft,
       child: new Container({
         margin: EdgeInsets.all(10),
@@ -89,25 +89,25 @@ group("rendering/layout", () => {
     const r = t.rectOf(t.one(t.byKey(new ValueKey("in"))));
     // 内容区:x 11..107, y 12..56 → bottomRight 子在 (97, 46)
     expect.deepEqual([r.left, r.top], [97, 46]);
-    await t.pumpWidget(new Center({ child: new ConstrainedBox({ constraints: BoxConstraints.from({ minWidth: 50, maxHeight: 20 }), child: box("c", 10, 100) }) }));
+    await t.pumpView(new Center({ child: new ConstrainedBox({ constraints: BoxConstraints.from({ minWidth: 50, maxHeight: 20 }), child: box("c", 10, 100) }) }));
     const c = t.rectOf(t.one(t.byKey(new ValueKey("c"))));
     expect.deepEqual([c.width, c.height], [50, 20]);
   });
 
-  testWidgets("Text uses Ahem metrics; wraps at constraint", async (t) => {
-    await t.pumpWidget(new Center({ child: new SizedBox({ width: 100, child: new Text("hello world", { style: new TextStyle({ fontSize: 10 }) }) }) }));
+  testViews("Text uses Ahem metrics; wraps at constraint", async (t) => {
+    await t.pumpView(new Center({ child: new SizedBox({ width: 100, child: new Text("hello world", { style: new TextStyle({ fontSize: 10 }) }) }) }));
     const p = t.one(t.byText("hello world")).findRenderObject() as RenderParagraph;
     // "hello world" = 110px > 100 → 两行 "hello " / "world"
     expect.deepEqual([p.size.width, p.size.height], [100, 20]);
     expect.equal(p.textPainter.computeLineMetrics().length, 2);
-    await t.pumpWidget(new Center({ child: new Text("abc", { style: new TextStyle({ fontSize: 20 }) }) }));
+    await t.pumpView(new Center({ child: new Text("abc", { style: new TextStyle({ fontSize: 20 }) }) }));
     const q = t.one(t.byText("abc")).findRenderObject() as RenderParagraph;
     expect.deepEqual([q.size.width, q.size.height], [60, 20]);
     expect.close(q.getDistanceToBaseline("alphabetic")!, 16);
   }, { ahemText: true });
 
-  testWidgets("Row baseline alignment", async (t) => {
-    await t.pumpWidget(new Align({
+  testViews("Row baseline alignment", async (t) => {
+    await t.pumpView(new Align({
       alignment: Alignment.topLeft,
       child: new Row({
         crossAxisAlignment: "baseline",
@@ -121,8 +121,8 @@ group("rendering/layout", () => {
     expect.deepEqual([a.top, b.top], [16, 0]);
   }, { ahemText: true });
 
-  testWidgets("relayout boundary: child size change re-lays out parent", async (t) => {
-    await t.pumpWidget(new Align({ alignment: Alignment.topLeft, child: new Padding({ padding: EdgeInsets.all(5), child: box("a", 10, 10) }) }));
+  testViews("relayout boundary: child size change re-lays out parent", async (t) => {
+    await t.pumpView(new Align({ alignment: Alignment.topLeft, child: new Padding({ padding: EdgeInsets.all(5), child: box("a", 10, 10) }) }));
     const pad = t.one(t.byType(Padding)).findRenderObject() as RenderPadding;
     expect.deepEqual([pad.size.width, pad.size.height], [20, 20]);
     const inner = t.one(t.byKey(new ValueKey("a"))).findRenderObject() as RenderConstrainedBox;
@@ -132,7 +132,7 @@ group("rendering/layout", () => {
   });
 });
 
-group("rendering/pipeline (no widgets)", () => {
+group("rendering/pipeline (no views)", () => {
   test("PipelineOwner flushLayout on a raw render tree", () => {
     const owner = new PipelineOwner();
     const leaf = new RenderConstrainedBox(BoxConstraints.tight(new Size(10, 20)));
@@ -154,10 +154,10 @@ group("rendering/pipeline (no widgets)", () => {
 });
 
 group("rendering/hit test", () => {
-  testWidgets("hit test path: topmost stack child first; IgnorePointer; Transform", async (t) => {
+  testViews("hit test path: topmost stack child first; IgnorePointer; Transform", async (t) => {
     const hits: string[] = [];
     const listener = (name: string, child: SizedBox): Listener => new Listener({ onPointerDown: () => hits.push(name), behavior: "opaque", child });
-    await t.pumpWidget(new Stack({
+    await t.pumpView(new Stack({
       children: [
         Positioned.fill({ child: listener("bottom", new SizedBox()) }),
         new Positioned({ left: 0, top: 0, width: 100, height: 100, child: listener("top", new SizedBox()) }),
@@ -185,9 +185,9 @@ group("rendering/hit test", () => {
     expect.deepEqual(entry!.transform!.transformPoint(new Offset(410, 220)).toString(), new Offset(10, 20).toString());
   });
 
-  testWidgets("devicePixelRatio: physical pointer coords map to logical", async (t) => {
+  testViews("devicePixelRatio: physical pointer coords map to logical", async (t) => {
     const at: Offset[] = [];
-    await t.pumpWidget(new Align({
+    await t.pumpView(new Align({
       alignment: Alignment.topLeft,
       child: new Padding({ padding: EdgeInsets.all(10), child: new Listener({ behavior: "opaque", onPointerDown: (e) => at.push(e.localPosition), child: box("l", 50, 50) }) }),
     }));

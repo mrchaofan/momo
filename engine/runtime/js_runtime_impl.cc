@@ -81,6 +81,16 @@ StatusOr<std::unique_ptr<JsRuntimeImpl>> JsRuntimeImpl::Create(
   v8::Isolate* isolate = impl->setup_->isolate();
   impl->isolate_ = isolate;
   impl->env_ = impl->setup_->env();
+  // process.exit() 不得直接 exit(): 其他线程(platform、raster)还在运行, 有序关闭由宿主完成
+  // (同 Electron 把 process.exit 接到 app.exit)。停止 JS 执行后交给宿主。
+  node::SetProcessExitHandler(
+      impl->env_, [on_exit = options.on_process_exit](node::Environment* env, int exit_code) {
+        MOMO_LOG(INFO) << "process.exit(" << exit_code << ")";
+        if (on_exit) {
+          on_exit(exit_code);
+        }
+        node::Stop(env);
+      });
   // ui 线程独占本 isolate: 整个生命周期持锁并保持进入状态, 免去每次调用的 Locker / Isolate::Scope。
   impl->locker_ = std::make_unique<v8::Locker>(isolate);
   isolate->Enter();

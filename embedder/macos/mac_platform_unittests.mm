@@ -76,7 +76,8 @@ class RecordingDelegate final : public WindowDelegate {
   void OnKeyData(const platform::KeyData&) override {}
   bool OnCloseRequested() override { return true; }
   void OnFocusChanged(bool) override {}
-  void OnVisibilityChanged(bool) override {}
+  void OnWindowStateChanged(const momo::embedder::WindowStateFlags& s) override { states.push_back(s); }
+  std::vector<momo::embedder::WindowStateFlags> states;
   void OnTextInput(const momo::embedder::TextInputEvent& event) override { events.push_back(event); }
   std::vector<momo::embedder::TextInputEvent> events;
 };
@@ -99,7 +100,8 @@ class PointerRecordingDelegate final : public WindowDelegate {
   void OnKeyData(const platform::KeyData&) override {}
   bool OnCloseRequested() override { return true; }
   void OnFocusChanged(bool) override {}
-  void OnVisibilityChanged(bool) override {}
+  void OnWindowStateChanged(const momo::embedder::WindowStateFlags& s) override { states.push_back(s); }
+  std::vector<momo::embedder::WindowStateFlags> states;
   void OnTextInput(const momo::embedder::TextInputEvent&) override {}
   std::vector<platform::PointerPhase> phases;
   int64_t sequence_id = 0;
@@ -157,6 +159,28 @@ class MacPointerSequenceTest : public ::testing::Test {
 
 // 原生事件落在平台视图上(且没被 momo 内容盖住): 主线程直接交给原生视图, momo 收不到;盖住的部分归 momo。
 // 按下时决定的接收方固定到抬起, 即使拖动中几何变化。
+// 窗口状态: 显示/隐藏/缩放/还原经 OnWindowStateChanged 上报(最小化依赖窗口服务器的动画, 不在这里测)。
+TEST_F(MacPointerSequenceTest, WindowStateChangesAreReported) {
+  if (NSScreen.mainScreen == nil) GTEST_SKIP() << "No display";
+  PointerRecordingDelegate delegate;
+  momo::embedder::WindowSpec spec;
+  spec.size = {200, 100};
+  MacWindow window(spec, &delegate);
+  EXPECT_FALSE(window.state().visible) << "not shown yet";
+  window.Show();
+  ASSERT_FALSE(delegate.states.empty());
+  EXPECT_TRUE(delegate.states.back().visible);
+  ASSERT_TRUE(window.Hide().ok());
+  EXPECT_FALSE(delegate.states.back().visible);
+  EXPECT_FALSE(window.state().shown());
+  window.Show();
+  ASSERT_TRUE(window.Maximize().ok());
+  EXPECT_TRUE(window.state().maximized);
+  ASSERT_TRUE(window.Restore().ok());
+  EXPECT_FALSE(window.state().maximized);
+  EXPECT_TRUE(delegate.states.back().visible);
+}
+
 TEST_F(MacPointerSequenceTest, PlatformViewInputIsRoutedOnTheMainThreadByFrameGeometry) {
   PointerRecordingDelegate delegate;
   auto window = Window(&delegate);

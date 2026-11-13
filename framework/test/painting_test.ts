@@ -3,12 +3,12 @@ import {
   DecoratedBox, Image, ImageCache, ImageStreamCompleter, MemoryImage, Offset, Opacity, RepaintBoundary,
   SizedBox, Stack, TextPainter, TextSpan, TextStyle, Transform, Matrix4, paragraphCache, imageCache, OffsetLayer, OpacityLayer,
   PictureLayer, TransformLayer, ClipRRectLayer, ContainerLayer, Texture, TextureLayer, CustomPaint, CustomPainter, Size,
-  State, StatefulWidget, GlobalKey, type Widget, type Layer, RawImage, RenderImage, Positioned,
+  State, StatefulView, GlobalKey, type View, type Layer, RawImage, RenderImage, Positioned,
 } from "../packages/momo/src/index";
 import { Paint, type Canvas } from "momo:ui";
 import { expect, group, test } from "./harness";
 import type { RecordedOp } from "./host";
-import { testWidgets } from "./util";
+import { testViews } from "./util";
 
 
 function layerKinds(layer: Layer, depth = 0, out: string[] = []): string[] {
@@ -80,20 +80,20 @@ group("painting/images", () => {
     expect.isTrue(cache.containsKey("c"));
   });
 
-  testWidgets("Image.asset loads via loadAsset + decodeImage and is cached", async (t, ctx) => {
+  testViews("Image.asset loads via loadAsset + decodeImage and is cached", async (t, ctx) => {
     const m = ctx.host.mock!;
     const bytes = new Uint8Array(8);
     new DataView(bytes.buffer).setUint32(0, 40, true);
     new DataView(bytes.buffer).setUint32(4, 20, true);
     m.assets.set("img/logo.png", bytes);
     const decoded0 = m.decodedImages;
-    await t.pumpWidget(new Align({ alignment: Alignment.topLeft, child: Image.asset("img/logo.png") }));
+    await t.pumpView(new Align({ alignment: Alignment.topLeft, child: Image.asset("img/logo.png") }));
     await t.flushMicrotasks();
     await t.pump();
     const ro = t.one(t.byType(RawImage)).findRenderObject() as RenderImage;
     expect.deepEqual([ro.size.width, ro.size.height], [40, 20]);
     expect.notNull(ro.image);
-    await t.pumpWidget(new Align({ alignment: Alignment.topLeft, child: Image.asset("img/logo.png", { width: 20 }) }));
+    await t.pumpView(new Align({ alignment: Alignment.topLeft, child: Image.asset("img/logo.png", { width: 20 }) }));
     await t.flushMicrotasks();
     expect.equal(m.decodedImages - decoded0, 1, "second use hits the ImageCache");
     expect.isTrue(imageCache.containsKey(new AssetImage("img/logo.png").cacheKey));
@@ -116,8 +116,8 @@ class Painter extends CustomPainter {
   }
 }
 
-class Toggle extends StatefulWidget {
-  constructor(readonly builder: (v: number) => Widget, key: GlobalKey) {
+class Toggle extends StatefulView {
+  constructor(readonly builder: (v: number) => View, key: GlobalKey) {
     super(key);
   }
   createState(): State {
@@ -126,14 +126,14 @@ class Toggle extends StatefulWidget {
 }
 class ToggleState extends State<Toggle> {
   v = 0;
-  build(): Widget {
-    return this.widget.builder(this.v);
+  build(): View {
+    return this.view.builder(this.v);
   }
 }
 
 group("rendering/layers → SceneBuilder", () => {
-  testWidgets("root TransformLayer scales by devicePixelRatio; scene ops map 1:1", async (t, ctx) => {
-    await t.pumpWidget(new Stack({
+  testViews("root TransformLayer scales by devicePixelRatio; scene ops map 1:1", async (t, ctx) => {
+    await t.pumpView(new Stack({
       children: [
         new Positioned({ left: 10, top: 10, child: new Opacity({ opacity: 0.5, child: new Container({ width: 20, height: 20, color: Colors.red }) }) }),
         new Positioned({ left: 50, top: 0, child: new RepaintBoundary({ child: new Container({ width: 20, height: 20, color: Colors.blue }) }) }),
@@ -167,10 +167,10 @@ group("rendering/layers → SceneBuilder", () => {
     void PictureLayer;
   }, { mockOnly: true, dpr: 2 });
 
-  testWidgets("RepaintBoundary isolates repaints (picture reused)", async (t) => {
+  testViews("RepaintBoundary isolates repaints (picture reused)", async (t) => {
     const painter = new Painter();
     const key = new GlobalKey<ToggleState>();
-    await t.pumpWidget(new Stack({
+    await t.pumpView(new Stack({
       children: [
         new RepaintBoundary({ child: new CustomPaint({ painter, size: new Size(10, 10) }) }),
         new Positioned({ left: 20, top: 0, child: new Toggle((v) => new Container({ width: 10, height: 10, color: v === 0 ? Colors.red : Colors.green }), key) }),
@@ -182,8 +182,8 @@ group("rendering/layers → SceneBuilder", () => {
     expect.equal(painter.paints, 1, "sibling repaint does not repaint the boundary");
   });
 
-  testWidgets("BoxDecoration: shadow uses Paint.maskBlurSigma; rounded rect", async (t, ctx) => {
-    await t.pumpWidget(new Center({
+  testViews("BoxDecoration: shadow uses Paint.maskBlurSigma; rounded rect", async (t, ctx) => {
+    await t.pumpView(new Center({
       child: new DecoratedBox({
         decoration: new BoxDecoration({
           color: new Color(0xff112233),

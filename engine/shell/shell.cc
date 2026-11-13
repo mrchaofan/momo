@@ -15,7 +15,7 @@ namespace momo::engine {
 
 StatusOr<std::unique_ptr<Shell>> Shell::Create(
     const TaskRunners& task_runners, const Settings& settings,
-    const std::function<void(Shell&)>& on_created,
+    const std::function<void(Shell&)>& on_created, std::function<void(int)> on_exit_requested,
     std::vector<std::pair<std::string, MomoExtInitFn>> in_process_extensions) {
   if (!task_runners.IsValid()) {
     return InvalidArgumentError("Shell::Create requires all four task runners");
@@ -26,8 +26,15 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
 
   // raster 与 ui 并行初始化, platform 线程汇合等待。
   WaitableEvent raster_ready;
-  task_runners.raster->PostTask([raw, &raster_ready] {
+  WeakPtr<Shell> weak_shell = raw->weak_this_;
+  task_runners.raster->PostTask([raw, weak_shell, &raster_ready] {
     raw->rasterizer_ = std::make_unique<Rasterizer>();
+    // raster 线程回调, 投递回 platform 交给视图的宿主。
+    raw->rasterizer_->SetFirstFrameCallback([weak_shell](platform::ViewId view) {
+      PostToObject(weak_shell, [view](Shell& self) {
+        if (Delegate* delegate = self.DelegateOf(view)) delegate->OnFirstFramePresented();
+      });
+    });
     raster_ready.Signal();
   });
   WaitableEvent ui_ready;
@@ -75,6 +82,12 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
   host.hub = raw->hub_;
   host.extensions = raw->extensions_.get();
   host.textures = raw->textures_;
+  if (on_exit_requested) {
+    // ui 线程(JS 调用栈内)调用: 投递到 platform, 由宿主做有序关闭(它会与 ui 线程同步汇合, 不能在这里等)。
+    host.request_exit = [weak = raw->weak_this_, cb = std::move(on_exit_requested)](int code) {
+      PostToObject(weak, [cb, code](Shell&) { cb(code); });
+    };
+  }
   task_runners.ui->PostTask([raw, &settings, &host, &ui_status, &ui_ready] {
     Engine::Delegate& delegate = *raw;  // 私有基类: 在成员上下文内转换
     auto engine = Engine::Create(settings, delegate, raw->MakeVsyncWaiter({}), host);
@@ -291,6 +304,11 @@ void Shell::OnFocusChanged(platform::ViewId view, bool focused) {
   PostToEngine([view, focused](Engine& engine) { engine.OnFocusChanged(view, focused); });
 }
 
+void Shell::OnViewVisibilityChanged(platform::ViewId view, bool visible) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  PostToEngine([view, visible](Engine& engine) { engine.OnVisibilityChanged(view, visible); });
+}
+
 void Shell::OnPlatformViewFocused(int64_t view_id) {
   hub_->SendToJs("momo/platform_views",
                  EncodeMethodCall({"focused", EncodableValue(EncodableMap{{"id", view_id}})}));
@@ -315,8 +333,8 @@ void Shell::RequestHotRestart() {
   });
 }
 
-void Shell::NotifyLifecycleEvent(LifecycleEvent event) {
-  PostToEngine([event](Engine& engine) { engine.OnLifecycleEvent(event); });
+void Shell::SetAppSuspended(bool suspended) {
+  PostToEngine([suspended](Engine& engine) { engine.SetAppSuspended(suspended); });
 }
 
 // ---------------------------------------------------------------------------

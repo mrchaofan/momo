@@ -3,7 +3,7 @@ import { MethodChannel, type MethodCall } from "./platform_channel";
 
 /**
  * 平台视图服务(docs/05 §9): 经 momo/platform_views 通道创建/销毁/聚焦由扩展提供的系统原生视图。
- * 一般通过 {@link PlatformView} widget 使用;需要自管生命周期时用 {@link PlatformViewsService.create}。
+ * 一般通过 {@link PlatformView} view 使用;需要自管生命周期时用 {@link PlatformViewsService.create}。
  *
  * 视图 id 由 JS 分配: 高位是每个 JS 运行时随机的标签, 低 20 位递增。热重启后旧运行时的在途消息
  * 不会误伤新运行时的视图(引擎在热重启时销毁全部旧视图)。

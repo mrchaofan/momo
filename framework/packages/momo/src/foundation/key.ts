@@ -1,7 +1,7 @@
 import { shortHash } from "./diagnostics";
 
 /**
- * Widget 身份标识。canUpdate 判定 = 构造函数相同 且 key 相等({@link Key.equals})。
+ * View 身份标识。canUpdate 判定 = 构造函数相同 且 key 相等({@link Key.equals})。
  */
 export abstract class Key {
   /** 值语义相等。 */

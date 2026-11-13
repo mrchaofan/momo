@@ -38,7 +38,9 @@ class UiBindings {
   // view.onKeyData(data) 返回 true 表示已消费。
   bool KeyData(ViewId view, const platform::KeyData& data);
   void FocusChanged(ViewId view, bool focused);
-  // 视图集合变化: 更新 views 后调用 window.onViewsChanged()。
+  // 同步 viewport.visible 后调用 viewport.onVisibilityChanged(visible)。
+  void VisibilityChanged(ViewId view, bool visible);
+  // 视图集合变化: 更新 viewports 后调用 platformDispatcher.onViewportsChanged()。
   void ViewAdded(ViewId view);
   void ViewRemoved(ViewId view);
 

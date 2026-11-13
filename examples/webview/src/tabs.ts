@@ -6,9 +6,9 @@
 // 排序时被拖的标签原位置留空, 浮动副本跟随指针, 其他标签平移让位。
 import {
   AnimatedBuilder, AnimationController, Border, BorderRadius, BorderSide, GlobalKey, BoxDecoration, ClipRect, CurvedAnimation, Curves,
-  EdgeInsets, Expanded, GestureDetector, IgnorePointer, ImplicitlyAnimatedWidget, ImplicitlyAnimatedWidgetState, MouseRegion,
-  Offset, Opacity, Padding, Positioned, Row, SizedBox, Stack, State, StatefulWidget, Text, Transform, Tween, Container, Center, ValueKey,
-  type BuildContext, type DragDownDetails, type DragStartDetails, type Key, type TickerProvider, type Widget,
+  EdgeInsets, Expanded, GestureDetector, IgnorePointer, ImplicitlyAnimatedView, ImplicitlyAnimatedViewState, MouseRegion,
+  Offset, Opacity, Padding, Positioned, Row, SizedBox, Stack, State, StatefulView, Text, Transform, Tween, Container, Center, ValueKey,
+  type BuildContext, type DragDownDetails, type DragStartDetails, type Key, type TickerProvider, type View,
 } from "@momo/framework";
 import { WindowDragArea } from "./window_drag_area";
 import type { WebViewController, WebViewState } from "@momo-examples/ext-webview";
@@ -72,7 +72,7 @@ export class Tab {
 // ---------------------------------------------------------------------------
 
 /** 小号可点击文字图标(×、+), 悬停时出现浅灰底。 */
-export class IconTap extends StatefulWidget {
+export class IconTap extends StatefulView {
   constructor(readonly o: { glyph: string; onTap: (() => void) | null; size?: number; style?: typeof TextStyles.icon }) {
     super();
   }
@@ -83,8 +83,8 @@ export class IconTap extends StatefulWidget {
 
 class IconTapState extends State<IconTap> {
   #hover = false;
-  build(_c: BuildContext): Widget {
-    const { glyph, onTap, size = 28, style } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { glyph, onTap, size = 28, style } = this.view.o;
     const enabled = onTap !== null;
     return new MouseRegion({
       cursor: enabled ? "click" : "basic",
@@ -119,7 +119,7 @@ interface TabItemOptions {
 }
 
 /** 单个标签: 宽度与透明度跟随动画;激活时下方一条黑线。 */
-class TabItem extends StatefulWidget {
+class TabItem extends StatefulView {
   constructor(readonly o: TabItemOptions) {
     super(new ValueKey(o.tab.id));
   }
@@ -131,8 +131,8 @@ class TabItem extends StatefulWidget {
 class TabItemState extends State<TabItem> {
   #hover = false;
 
-  build(_c: BuildContext): Widget {
-    const { tab, active, width, onSelect, onClose, onContextMenu, placeholder = false } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { tab, active, width, onSelect, onClose, onContextMenu, placeholder = false } = this.view.o;
     const showClose = !tab.closing && (active || this.#hover);
     const face = new MouseRegion({
       cursor: "click",
@@ -206,8 +206,8 @@ export function dropIndex(left: number, tabWidth: number, count: number, leading
 }
 
 /** 水平平移, 目标变化时缓动过去;instant 时直接到位(排序提交那一帧, 避免回弹)。 */
-class AnimatedShift extends ImplicitlyAnimatedWidget {
-  constructor(readonly o: { key: Key; dx: number; instant: boolean; child: Widget }) {
+class AnimatedShift extends ImplicitlyAnimatedView {
+  constructor(readonly o: { key: Key; dx: number; instant: boolean; child: View }) {
     super({ key: o.key, duration: 150, curve: Curves.easeOutCubic });
   }
   createState(): State {
@@ -215,21 +215,21 @@ class AnimatedShift extends ImplicitlyAnimatedWidget {
   }
 }
 
-class AnimatedShiftState extends ImplicitlyAnimatedWidgetState<AnimatedShift> {
+class AnimatedShiftState extends ImplicitlyAnimatedViewState<AnimatedShift> {
   readonly #dx = new Tween<number>(0, 0);
   protected forEachTween(visitor: (tween: Tween<number>, target: number) => void): void {
-    visitor(this.#dx, this.widget.o.dx);
+    visitor(this.#dx, this.view.o.dx);
   }
-  override didUpdateWidget(old: AnimatedShift): void {
-    if (this.widget.o.instant) {
-      this.#dx.begin = this.widget.o.dx;
-      this.#dx.end = this.widget.o.dx;
+  override didUpdateView(old: AnimatedShift): void {
+    if (this.view.o.instant) {
+      this.#dx.begin = this.view.o.dx;
+      this.#dx.end = this.view.o.dx;
     }
-    super.didUpdateWidget(old);
+    super.didUpdateView(old);
   }
-  build(): Widget {
+  build(): View {
     const dx = this.#dx.transform(this.animation.value);
-    return dx === 0 ? this.widget.o.child : Transform.translate({ offset: new Offset(dx, 0), child: this.widget.o.child });
+    return dx === 0 ? this.view.o.child : Transform.translate({ offset: new Offset(dx, 0), child: this.view.o.child });
   }
 }
 
@@ -259,7 +259,7 @@ export interface TabStripOptions {
 }
 
 /** 标签栏: 标签 + 新建按钮, 底部一条细线;处理标签拖动。 */
-export class TabStrip extends StatefulWidget {
+export class TabStrip extends StatefulView {
   constructor(readonly o: TabStripOptions) {
     super();
   }
@@ -274,15 +274,15 @@ class TabStripState extends State<TabStrip> {
   /** 本帧刚结束排序: 让位平移直接归零(标签顺序已提交, 不再回弹)。 */
   #instant = false;
 
-  override didUpdateWidget(old: TabStrip): void {
-    super.didUpdateWidget(old);
-    this.#instant = old.o.drag !== null && this.widget.o.drag === null;
+  override didUpdateView(old: TabStrip): void {
+    super.didUpdateView(old);
+    this.#instant = old.o.drag !== null && this.view.o.drag === null;
   }
 
   /** 标签栏内 (x, y) 处的标签(按动画中的实际宽度累计)及其左边界;顶部缩放边上不算。 */
   #tabAt(x: number, y: number): { tab: Tab; left: number } | null {
     if (y < kTabStripTopInset) return null;
-    const { tabs, tabWidth, leading } = this.widget.o;
+    const { tabs, tabWidth, leading } = this.view.o;
     let left = leading;
     for (const tab of tabs) {
       const w = tabWidth * tab.curve.value;
@@ -301,11 +301,11 @@ class TabStripState extends State<TabStrip> {
     const hit = down !== null ? this.#tabAt(down.dx, down.dy) : null;
     if (hit === null) return;
     // 抓取点相对标签左上角(标签在顶部缩放边之下);位置用屏幕坐标, 拖到窗口外也成立。
-    this.widget.o.onDragStart(hit.tab, new Offset(down!.dx - hit.left, down!.dy - kTabStripTopInset), d.screenPosition);
+    this.view.o.onDragStart(hit.tab, new Offset(down!.dx - hit.left, down!.dy - kTabStripTopInset), d.screenPosition);
   };
 
-  build(_c: BuildContext): Widget {
-    const { tabs, activeId, tabWidth, leading, drag, onSelect, onClose, onContextMenu, onNew } = this.widget.o;
+  build(_c: BuildContext): View {
+    const { tabs, activeId, tabWidth, leading, drag, onSelect, onClose, onContextMenu, onNew } = this.view.o;
     const instant = this.#instant;
     this.#instant = false;
     const live = tabs.filter((t) => !t.closing);
@@ -319,7 +319,7 @@ class TabStripState extends State<TabStrip> {
       if (to < from && i >= to && i < from) return tabWidth;
       return 0;
     };
-    const item = (tab: Tab, placeholder: boolean): Widget => new TabItem({
+    const item = (tab: Tab, placeholder: boolean): View => new TabItem({
       tab,
       active: tab.id === activeId,
       width: tabWidth,

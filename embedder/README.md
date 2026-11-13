@@ -22,7 +22,7 @@
 
 | 目录 | 状态 | 说明 |
 |---|---|---|
-| `common/` | ✅ | Application 状态机与有序关闭、所有窗口对等(最后一个窗口关闭即退出)、OS 主线程 EventLoop(base::NativeMessagePump)、WindowController、宿主通道、AppConfig、AssetResolver;gtest `momo_embedder_unittests`(mock 平台) |
+| `common/` | ✅ | Application 状态机、退出流程(Quit/Exit)与有序关闭、WindowManager(所有窗口对等;最后一个窗口关闭不退出)、OS 主线程 EventLoop(base::NativeMessagePump)、WindowController、宿主通道(HostChannel: momo/app、momo/window…)、AppConfig、AssetResolver;gtest `momo_embedder_unittests`(mock 平台) |
 | `macos/` | ✅ | 窗口、原生循环、CVDisplayLink vsync(按需启停)、鼠标/触控板/滚轮/键盘归一化(keycode→HID 全表)、NSTextInputClient、NSCursor、CAMetalLayer surface(失败回退 IOSurface 软件 surface;`MOMO_SOFTWARE_RENDERING=1` 强制软件);产物 `Momo.app`;gtest `momo_embedder_macos_unittests` |
 | `windows/` | 🟡 已实现,**未在 Windows 上编译验证**;GPU(ANGLE)未实现 | Win32 窗口 + WndProc(Per-Monitor-V2 DPI)、隐藏消息窗口 NativeLoop、DwmFlush vsync、IMM32 输入法、GDI 软件 surface、剪贴板/OpenUrl;可选窗口能力只有定位与指针捕获(隐藏标题栏、系统拖动、移动循环、置顶、平台视图未实现);`win_platform_unittests.cc` 待在 Windows 上运行 |
 | `headless/` | ✅ | `HeadlessSmoke`、`FrameworkTests.EngineHeadless` |

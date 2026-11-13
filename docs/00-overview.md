@@ -8,7 +8,7 @@
 
 - 开发者用 JS/TS 编写 Windows / macOS 桌面应用,UI 完全自绘,双端像素一致。
 - 产物为原生可执行程序:原生入口启动 → 创建窗口与渲染表面 → 在合适时机创建 V8 执行环境 → 加载 JS bundle → 运行应用。
-- 向 JS 暴露一组稳定的底层 API(命名空间 `momo:ui`、`momo:services` 等,对标 `dart:ui` + Services),Widget 体系在 JS 侧实现。
+- 向 JS 暴露一组稳定的底层 API(命名空间 `momo:ui`、`momo:services` 等,对标 `dart:ui` + Services),View 体系(组件)、app 与 Widget(应用与窗口对象)在 JS 侧实现。
 - 提供三方扩展机制:扩展可以用原生代码(稳定 C ABI)借助 engine 层能力直接调用平台原生 API,再以 JS 包的形式提供给应用开发者。
 
 **非目标(首期)**
@@ -21,7 +21,7 @@
 
 | 层 | 语言 | 目录 | 职责 | 对标 Flutter |
 |---|---|---|---|---|
-| Framework | TS | `framework/` | Widget/Element/RenderObject 三树、布局、绘制组织、手势、动画、调度 | Framework (Dart) |
+| Framework | TS | `framework/` | View/Element/RenderObject 三树、布局、绘制组织、手势、动画、调度 | Framework (Dart) |
 | Engine | C++ | `engine/` | V8 运行时、`momo:ui` 原生绑定、DisplayList、LayerTree 合成、Skia 光栅化、文本排版、图片解码、扩展宿主、Shell 协调 | Engine (C++) |
 | Embedder | C++ | `embedder/` | 可执行程序入口、消息循环、生命周期、Engine 装配与驱动;平台抽象(`common/`)与 Win/Mac/headless 平台实现(窗口、Surface、输入、IME、剪贴板、VSync) | shell/platform/{darwin,windows} + runner |
 | Base | C++ | `base/` | 全项目基础库:对象模型(Object/DeleteLater/WeakPtr)、EventLoop/TaskRunner/线程、Status/logging(docs/12) | fml / Chromium base |

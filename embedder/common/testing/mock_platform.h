@@ -52,7 +52,29 @@ class MockWindow final : public PlatformWindow {
     }
   }
 
-  void Show() override { shown_ = true; }
+  void Show() override {
+    shown_ = true;
+    SetState([](WindowStateFlags& s) { s.visible = true; s.minimized = false; });
+  }
+  Status Hide() override {
+    SetState([](WindowStateFlags& s) { s.visible = false; });
+    return Status::Ok();
+  }
+  Status Minimize() override {
+    SetState([](WindowStateFlags& s) { s.minimized = true; });
+    return Status::Ok();
+  }
+  Status Maximize() override {
+    SetState([](WindowStateFlags& s) { s.maximized = true; s.minimized = false; });
+    return Status::Ok();
+  }
+  Status Restore() override {
+    SetState([](WindowStateFlags& s) {
+      if (s.minimized) s.minimized = false; else s.maximized = false;
+    });
+    return Status::Ok();
+  }
+  WindowStateFlags state() const override { return state_; }
   void SetTitle(std::string_view title) override { spec_.title = std::string(title); }
   void SetMinSize(Size size) override { spec_.min_size = size; }
   Size physical_size() const override {
@@ -69,7 +91,7 @@ class MockWindow final : public PlatformWindow {
   uint32_t capabilities() const override {
     return kCapabilityAlwaysOnTop | kCapabilityPosition | kCapabilityResizeOptions |
            kCapabilityHiddenTitleBar | kCapabilityWindowDrag | kCapabilityMoveLoop |
-           kCapabilityPointerCapture;
+           kCapabilityPointerCapture | kCapabilityVisibility | kCapabilityMinMax;
   }
   Status SetAlwaysOnTop(bool on) override {
     always_on_top_ = on;
@@ -110,6 +132,16 @@ class MockWindow final : public PlatformWindow {
     return Status::Ok();
   }
 
+  // 模拟系统改变窗口状态(用户最小化等)。
+  template <class Fn>
+  void SetState(Fn change) {
+    WindowStateFlags next = state_;
+    change(next);
+    if (next == state_) return;
+    state_ = next;
+    delegate_->OnWindowStateChanged(state_);
+  }
+
   WindowDelegate* delegate() const { return delegate_; }
   const WindowSpec& spec() const { return spec_; }
   bool shown() const { return shown_; }
@@ -143,6 +175,28 @@ class MockWindow final : public PlatformWindow {
   std::vector<int64_t> drags_;
   std::optional<Point> move_loop_;
   Rect frame_{100, 100, 0, 0};
+  WindowStateFlags state_{.visible = false};
+};
+
+class MockApp final : public PlatformApp {
+ public:
+  uint32_t capabilities() const override { return kAppCapabilityHide | kAppCapabilityActivate; }
+  Status Hide() override {
+    hidden = true;
+    return Status::Ok();
+  }
+  Status Show() override {
+    hidden = false;
+    return Status::Ok();
+  }
+  Status Activate(bool steal) override {
+    activations++;
+    last_steal = steal;
+    return Status::Ok();
+  }
+  bool hidden = false;
+  int activations = 0;
+  bool last_steal = false;
 };
 
 class MockServices final : public PlatformServices {
@@ -200,6 +254,7 @@ class MockPlatformIntegration final : public PlatformIntegration {
     return UnimplementedError("mock");
   }
   MockServices& services() override { return services_; }
+  MockApp& app() override { return app_; }
   std::vector<DisplayInfo> displays() const override { return {{}}; }
   NativeLoop& native_loop() override { return native_loop_; }
 
@@ -209,6 +264,7 @@ class MockPlatformIntegration final : public PlatformIntegration {
   std::shared_ptr<MockPlatformState> state_;
   MockNativeLoop native_loop_;
   MockServices services_;
+  MockApp app_;
 };
 
 }  // namespace momo::embedder::testing

@@ -109,7 +109,7 @@ view.onFocusChanged: (focused: boolean) => void
 view.render(scene: Scene): void
 ```
 
-窗口的标题、光标、位置、关闭询问等不在 `momo:ui` 里: 它们属于宿主, 经宿主注册的 `momo/window` 通道(框架的 `WindowService`)。
+应用生命周期与窗口的标题、光标、位置、关闭询问等不在 `momo:ui` 里: 它们属于宿主, 经宿主注册的 `momo/app` / `momo/window` 通道(框架的 `app` / `Widget`)。`process.exit(code)` 不直接退出进程: 运行时用 `node::SetProcessExitHandler` 停止 JS 并把退出码交给宿主有序关闭(ARCHITECTURE §3.8)。
 
 事件对象使用预分配的 TypedArray 视图复用,避免每事件分配。
 
@@ -117,7 +117,7 @@ view.render(scene: Scene): void
 M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS 声明见
 `framework/packages/momo/src/ui/momo-ui.d.ts`。消息通道实现: `engine/common/message_channel_hub.h`(回复总是投递,
 不在 JS 调用栈内同步重入)、`engine/common/standard_codec.h`、JS 端 `momo:services`(`engine/ui/services_bindings.cc`)。
-内置通道 momo/lifecycle、momo/clipboard、momo/url、momo/textinput、momo/extensions。
+内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/extensions、momo/platform_views。
 
 ## 7. 调试与诊断
 

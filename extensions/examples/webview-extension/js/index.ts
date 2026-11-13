@@ -1,9 +1,9 @@
-// @momo-examples/ext-webview 的 JS 门面: WebView widget + WebViewController。
+// @momo-examples/ext-webview 的 JS 门面: WebView view + WebViewController。
 // 原生侧(native/src/ext_webview.mm)注册平台视图类型 "momo.webview";本文件只用框架的公开 API。
 // 协议见 ext_webview.mm 文件头(JSON, 命令通道 momo.webview, 事件通道 momo.webview/events)。
 import {
-  BasicMessageChannel, JSONMessageCodec, PlatformView, State, StatefulWidget, utf8Encode,
-  type BuildContext, type FocusNode, type Key, type PlatformViewController, type Widget,
+  BasicMessageChannel, JSONMessageCodec, PlatformView, State, StatefulView, utf8Encode,
+  type BuildContext, type FocusNode, type Key, type PlatformViewController, type View,
 } from "@momo/framework";
 
 export const kWebViewType = "momo.webview";
@@ -124,27 +124,27 @@ export interface WebViewOptions {
   pages?: Record<string, string>;
   onCreated?: ((controller: WebViewController) => void) | null;
   onCreateError?: ((error: unknown) => void) | null;
-  placeholder?: Widget | null;
+  placeholder?: View | null;
   focusNode?: FocusNode | null;
 }
 
 /** 系统 WebView(macOS: WKWebView), 作为平台视图嵌入。尺寸取约束最大值。 */
-export class WebView extends StatefulWidget {
+export class WebView extends StatefulView {
   constructor(readonly opts: WebViewOptions = {}) {
     super(opts.key);
   }
   createState(): State {
-    return new WebViewWidgetState();
+    return new WebViewHostState();
   }
 }
 
-class WebViewWidgetState extends State<WebView> {
+class WebViewHostState extends State<WebView> {
   #controller: WebViewController | null = null;
   #params: Uint8Array | null = null;
 
   override initState(): void {
     super.initState();
-    const { initialUrl, initialHtml, baseUrl, pages } = this.widget.opts;
+    const { initialUrl, initialHtml, baseUrl, pages } = this.view.opts;
     this.#params = utf8Encode(JSON.stringify({ url: initialUrl, html: initialHtml, baseUrl, pages }));
   }
 
@@ -159,17 +159,17 @@ class WebViewWidgetState extends State<WebView> {
     const controller = new WebViewController(platformView);
     this.#controller = controller;
     controllers.set(controller.viewId, controller);
-    this.widget.opts.onCreated?.(controller);
+    this.view.opts.onCreated?.(controller);
   };
 
-  build(_context: BuildContext): Widget {
+  build(_context: BuildContext): View {
     return new PlatformView({
       viewType: kWebViewType,
       creationParams: this.#params,
       onCreated: this.#onCreated,
-      onCreateError: this.widget.opts.onCreateError ?? null,
-      placeholder: this.widget.opts.placeholder ?? null,
-      focusNode: this.widget.opts.focusNode ?? null,
+      onCreateError: this.view.opts.onCreateError ?? null,
+      placeholder: this.view.opts.placeholder ?? null,
+      focusNode: this.view.opts.focusNode ?? null,
     });
   }
 }
