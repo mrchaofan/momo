@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "base/waitable_event.h"
+#include "engine/common/standard_codec.h"
 #include "embedder/common/testing/mock_platform.h"
 #include "gtest/gtest.h"
 
@@ -41,7 +42,24 @@ class ApplicationTest : public ::testing::Test {
     std::filesystem::remove_all(resources_, ec);
   }
 
-  void WriteBundle() { std::ofstream(resources_ / "bundle.js") << "// test bundle\n"; }
+  // 导入 momo:services: JS 端点就位(宿主发往 JS 的询问由 JS 侧回复;没有处理器的通道回复空 = 允许)。
+  void WriteBundle() {
+    std::ofstream(resources_ / "bundle.js") << "import 'momo:services';\n// test bundle\n";
+  }
+
+  // 模拟 JS 经宿主通道发出的方法调用(从 ui 线程发送, 与 momo:services.send 相同的路径);
+  // 结果在 ui 线程回调。
+  static void SendFromJs(Application* app, const std::string& channel, engine::MethodCall call,
+                         std::function<void(StatusOr<engine::EncodableValue>)> done) {
+    app->task_runners().ui->PostTask([app, channel, call = std::move(call), done = std::move(done)]() mutable {
+      app->shell()->hub()->SendToNative(
+          channel, engine::EncodeMethodCall(call), app->task_runners().ui,
+          [done = std::move(done)](std::optional<engine::MessageBytes> reply) {
+            done(reply.has_value() ? engine::DecodeEnvelope(*reply)
+                                   : StatusOr<engine::EncodableValue>(NotFoundError("no handler")));
+          });
+    });
+  }
 
   std::unique_ptr<Application> MakeApp(AppConfig config = {},
                                        std::function<void(Application::Options&)> tweak = {}) {
@@ -117,7 +135,8 @@ TEST_F(ApplicationTest, LaunchRunTerminateInDocumentedOrder) {
   EXPECT_EQ(native_->quit_count(), 1);
 }
 
-TEST_F(ApplicationTest, WindowCloseIsInterceptedThenTerminatesViaEngine) {
+// 关闭按钮总是先被拦截: 询问 JS(momo/window closeRequested)后关闭该窗口;最后一个窗口关闭即退出应用。
+TEST_F(ApplicationTest, ClosingTheLastWindowExitsTheApplication) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok());
@@ -252,66 +271,137 @@ TEST_F(ApplicationTest, LaunchTwiceIsRejected) {
   app->Terminate();
 }
 
-TEST_F(ApplicationTest, EngineRequestsReachWindow) {
+// 窗口请求不经引擎: JS 经宿主注册的 momo/window 通道直接到达窗口(platform 线程)。
+TEST_F(ApplicationTest, WindowChannelRequestsReachTheWindow) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok());
   Application* raw = app.get();
-  // 引擎侧(此处从 ui 线程)请求改标题 → platform 线程上的窗口收到。
   std::string title;
-  raw->task_runners().ui->PostTask([&, raw] {
-    raw->shell()->SetWindowTitle("from engine");
-    // platform 队列 FIFO: 这个检查任务排在改标题之后。
-    raw->task_runners().platform->PostTask([&, raw] {
-      title = state_->window->spec().title;
-      raw->Terminate();
-    });
-  });
+  std::string unknown_view_error;
+  SendFromJs(raw, "momo/window",
+             {"setTitle", engine::EncodableMap{{"view", int64_t{0}}, {"title", "from js"}}},
+             [&, raw](StatusOr<engine::EncodableValue> result) {
+               EXPECT_TRUE(result.ok()) << result.status();
+               raw->task_runners().platform->PostTask([&, raw] {
+                 title = state_->window->spec().title;
+                 SendFromJs(raw, "momo/window",
+                            {"setTitle", engine::EncodableMap{{"view", int64_t{9}}, {"title", "x"}}},
+                            [&, raw](StatusOr<engine::EncodableValue> result) {
+                              unknown_view_error = std::string(result.status().message());
+                              raw->task_runners().platform->PostTask([raw] { raw->Terminate(); });
+                            });
+               });
+             });
   app->Run();
-  EXPECT_EQ(title, "from engine");
+  EXPECT_EQ(title, "from js");
+  EXPECT_NE(unknown_view_error.find("no window for view 9"), std::string::npos) << unknown_view_error;
 }
 
-// 多窗口: 引擎请求创建视图 → Application 建窗口并绑定;关闭按钮询问 JS 后只关该窗口;
+// 多窗口: JS 经 momo/window create 打开窗口 → 宿主分配 id、建窗口并绑定引擎;关闭按钮询问 JS 后只关该窗口;
 // 退出应用时其他窗口一并销毁。
-TEST_F(ApplicationTest, EngineCreatedWindowsOpenCloseAndShutDown) {
+TEST_F(ApplicationTest, JsCreatedWindowsOpenCloseAndShutDown) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok());
   Application* raw = app.get();
+  int64_t created_id = -1;
   size_t open_after_create = 0;
+  std::vector<engine::platform::ViewId> attached;
   std::string title;
   size_t open_after_close = 0;
-  std::vector<engine::platform::ViewId> attached;
-  // ui 线程上发起(JS createView 走的就是这条路): Shell 投递到 platform 线程分配 id 并让宿主建窗口。
-  raw->task_runners().ui->PostTask([&, raw] {
-    raw->shell()->CreateView(/*request=*/42, {"second", {400, 300}, {100, 100}, std::nullopt});
-    raw->task_runners().platform->PostTask([&, raw] {
-      open_after_create = raw->extra_window_count();
-      attached = raw->shell()->attached_views();
-      ASSERT_EQ(state_->windows.size(), 2u);
-      MockWindow* second = state_->windows[1];
-      title = second->spec().title;
-      // 用户点第二个窗口的关闭按钮(JS 未拦截): 只关闭它。
-      EXPECT_FALSE(second->delegate()->OnCloseRequested()) << "always intercepted";
-    });
-  });
+  SendFromJs(raw, "momo/window",
+             {"create", engine::EncodableMap{{"title", "second"}, {"width", 400.0}, {"height", 300.0}}},
+             [&, raw](StatusOr<engine::EncodableValue> result) {
+               ASSERT_TRUE(result.ok()) << result.status();
+               created_id = result->AsInt().value_or(-1);
+               raw->task_runners().platform->PostTask([&, raw] {
+                 open_after_create = raw->window_count();
+                 attached = raw->shell()->attached_views();
+                 ASSERT_EQ(state_->windows.size(), 2u);
+                 MockWindow* second = state_->windows[1];
+                 title = second->spec().title;
+                 // 用户点第二个窗口的关闭按钮(JS 未拦截): 只关闭它。
+                 EXPECT_FALSE(second->delegate()->OnCloseRequested()) << "always intercepted";
+               });
+             });
   // 关闭需要往返 ui 线程: 稍后检查, 然后再开一个窗口并直接退出应用。
   raw->task_runners().platform->PostDelayedTask(
       [&, raw] {
-        open_after_close = raw->extra_window_count();
-        raw->task_runners().ui->PostTask([raw] {
-          raw->shell()->CreateView(43, {"third", {200, 200}, {100, 100}, std::nullopt});
-          raw->task_runners().platform->PostTask([raw] { raw->RequestTerminate(); });
-        });
+        open_after_close = raw->window_count();
+        SendFromJs(raw, "momo/window",
+                   {"create", engine::EncodableMap{{"title", "third"}, {"width", 200.0}, {"height", 200.0}}},
+                   [raw](StatusOr<engine::EncodableValue>) {
+                     raw->task_runners().platform->PostTask([raw] { raw->RequestTerminate(); });
+                   });
       },
       std::chrono::milliseconds(200));
   EXPECT_EQ(app->Run(), 0);
-  EXPECT_EQ(open_after_create, 1u);
+  EXPECT_EQ(created_id, 1);
+  EXPECT_EQ(open_after_create, 2u);
   EXPECT_EQ(attached, (std::vector<engine::platform::ViewId>{0, 1}));
   EXPECT_EQ(title, "second");
-  EXPECT_EQ(open_after_close, 0u);
+  EXPECT_EQ(open_after_close, 1u);
   EXPECT_EQ(state_->windows_created, 3);
   EXPECT_EQ(state_->windows_destroyed, 3) << "the third window is destroyed on shutdown";
+}
+
+// 所有窗口对等: 启动窗口(隐式视图 0)关闭后应用照常运行, 由其他窗口继续;最后一个关闭才退出。
+TEST_F(ApplicationTest, StartupWindowCanCloseWhileOthersStayOpen) {
+  WriteBundle();
+  auto app = MakeApp();
+  ASSERT_TRUE(app->Launch().ok());
+  Application* raw = app.get();
+  State after_first_close = State::kNotRunning;
+  std::vector<engine::platform::ViewId> attached;
+  SendFromJs(raw, "momo/window",
+             {"create", engine::EncodableMap{{"width", 300.0}, {"height", 200.0}}},
+             [&, raw](StatusOr<engine::EncodableValue> result) {
+               ASSERT_TRUE(result.ok()) << result.status();
+               SendFromJs(raw, "momo/window", {"close", engine::EncodableMap{{"view", int64_t{0}}}},
+                          [&, raw](StatusOr<engine::EncodableValue>) {
+                            raw->task_runners().platform->PostDelayedTask(
+                                [&, raw] {
+                                  after_first_close = raw->state();
+                                  attached = raw->shell()->attached_views();
+                                  SendFromJs(raw, "momo/window",
+                                             {"close", engine::EncodableMap{{"view", int64_t{1}}}},
+                                             [](StatusOr<engine::EncodableValue>) {});
+                                },
+                                std::chrono::milliseconds(50));
+                          });
+             });
+  EXPECT_EQ(app->Run(), 0);
+  EXPECT_EQ(after_first_close, State::kRunning);
+  EXPECT_EQ(attached, (std::vector<engine::platform::ViewId>{1}));
+  EXPECT_EQ(app->state(), State::kTerminating) << "closing the last window exits";
+  EXPECT_EQ(state_->windows_destroyed, 2);
+}
+
+// 输入法会话交给获得焦点的窗口(momo/textinput 由宿主注册, 不经引擎)。
+TEST_F(ApplicationTest, TextInputGoesToTheFocusedWindow) {
+  WriteBundle();
+  auto app = MakeApp();
+  ASSERT_TRUE(app->Launch().ok());
+  Application* raw = app.get();
+  bool first_shown = false, second_shown = false;
+  SendFromJs(raw, "momo/window", {"create", engine::EncodableMap{{"width", 300.0}, {"height", 200.0}}},
+             [&, raw](StatusOr<engine::EncodableValue>) {
+               raw->task_runners().platform->PostTask([&, raw] {
+                 state_->windows[1]->delegate()->OnFocusChanged(true);
+                 SendFromJs(raw, "momo/textinput", {"show", engine::EncodableValue()},
+                            [&, raw](StatusOr<engine::EncodableValue>) {
+                              raw->task_runners().platform->PostTask([&, raw] {
+                                first_shown = state_->windows[0]->text_input().shown;
+                                second_shown = state_->windows[1]->text_input().shown;
+                                raw->Terminate();
+                              });
+                            });
+               });
+             });
+  app->Run();
+  EXPECT_FALSE(first_shown);
+  EXPECT_TRUE(second_shown);
 }
 
 }  // namespace

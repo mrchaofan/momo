@@ -22,47 +22,19 @@ class FakeWindowClient final : public WindowClient {
   void Render(std::unique_ptr<graphics::LayerTree> tree) override {
     rendered.push_back(std::move(tree));
   }
-  void SetTitle(ViewId, std::string t) override { title = std::move(t); }
-  void SetCursor(ViewId, platform::SystemCursor c) override { cursor = c; }
-  void SetMinSize(ViewId, Size s) override { min_size = s; }
   platform::ViewportMetrics metrics(ViewId view) const override {
     return view == platform::kImplicitViewId ? current : extra_metrics;
   }
   bool focused(ViewId) const override { return is_focused; }
   std::vector<ViewId> views() const override { return view_ids; }
-  void CreateView(uint64_t request, const platform::ViewOptions& options) override {
-    create_requests.emplace_back(request, options);
-  }
-  void CloseView(ViewId view) override { closed.push_back(view); }
-  void SetResizeOptions(ViewId, const platform::WindowResizeOptions& options) override {
-    resize_options.push_back(options);
-  }
-  std::vector<platform::WindowResizeOptions> resize_options;
-  void DispatchPlatformViewPointer(ViewId view, int64_t platform_view_id, uint64_t native_event_id,
-                                   platform::PlatformViewPointerAction action) override {
-    platform_view_pointer.push_back({view, platform_view_id, native_event_id, action});
-  }
 
-  struct PlatformViewPointer {
-    ViewId view;
-    int64_t platform_view_id;
-    uint64_t native_event_id;
-    platform::PlatformViewPointerAction action;
-  };
-  std::vector<PlatformViewPointer> platform_view_pointer;
   std::vector<ViewId> view_ids{platform::kImplicitViewId};
   platform::ViewportMetrics extra_metrics{{300, 200}, 2.0};
-  std::vector<std::pair<uint64_t, platform::ViewOptions>> create_requests;
-  std::vector<ViewId> closed;
-
-  platform::SystemCursor cursor = platform::SystemCursor::kArrow;
-  Size min_size;
   bool is_focused = false;
 
   platform::ViewportMetrics current{{400, 270}, 1.0};
   int scheduled = 0;
   std::vector<std::unique_ptr<graphics::LayerTree>> rendered;
-  std::string title;
 };
 
 class UiBindingsTest : public ::testing::Test {
@@ -110,13 +82,12 @@ TEST_F(UiBindingsTest, NotImportedMeansNoCallbacks) {
   EXPECT_FALSE(bindings_->is_imported());
   bindings_->BeginFrame(Clock::now());
   bindings_->DrawFrame();
-  EXPECT_TRUE(bindings_->CloseRequested());
   EXPECT_TRUE(client_.rendered.empty());
 }
 
 TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, PictureRecorder, Paint, SceneBuilder } from 'momo:ui';
+    import { window, views, PictureRecorder, Paint, SceneBuilder } from 'momo:ui';
     globalThis.calls = [];
     window.onBeginFrame = (t) => { calls.push(typeof t); };
     window.onDrawFrame = () => {
@@ -128,7 +99,7 @@ TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
       canvas.drawRect(10, 10, 20, 20, paint);
       const builder = new SceneBuilder();
       builder.pushOffset(5, 5).addPicture(0, 0, recorder.endRecording()).pop();
-      window.render(builder.build());
+      views.get(0).render(builder.build());
     };
     window.scheduleFrame();
   )JS").ok());
@@ -151,7 +122,7 @@ TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
 // drawPath 共享路径快照: 之后修改 Path 不影响已记录的内容(写时复制)。
 TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, PictureRecorder, Paint, Path, SceneBuilder } from 'momo:ui';
+    import { window, views, PictureRecorder, Paint, Path, SceneBuilder } from 'momo:ui';
     window.onDrawFrame = () => {
       const recorder = new PictureRecorder();
       const canvas = recorder.beginRecording();
@@ -163,7 +134,7 @@ TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
       canvas.drawPath(path, paint);
       const builder = new SceneBuilder();
       builder.addPicture(0, 0, recorder.endRecording());
-      window.render(builder.build());
+      views.get(0).render(builder.build());
     };
   )JS").ok());
   bindings_->DrawFrame();
@@ -177,7 +148,7 @@ TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
 // JS 画出的验收画面必须与 C++ 直接构建的 golden(graphics_unittests)逐像素一致。
 TEST_F(UiBindingsTest, JsAcceptanceSceneMatchesGolden) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
+    import { window, views, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
     window.onDrawFrame = () => {
       const recorder = new PictureRecorder();
       const c = recorder.beginRecording();
@@ -218,7 +189,7 @@ TEST_F(UiBindingsTest, JsAcceptanceSceneMatchesGolden) {
 
       const builder = new SceneBuilder();
       builder.addPicture(0, 0, recorder.endRecording());
-      window.render(builder.build());
+      views.get(0).render(builder.build());
     };
   )JS").ok());
   bindings_->DrawFrame();
@@ -245,7 +216,7 @@ TEST_F(UiBindingsTest, ArgumentAndStateErrorsThrow) {
                 .find("no longer recording"),
             std::string::npos);
   EXPECT_NE(ErrorOf("new ui.SceneBuilder().pop()").find("nothing to pop"), std::string::npos);
-  EXPECT_NE(ErrorOf("ui.window.render({})").find("must be a Scene"), std::string::npos);
+  EXPECT_NE(ErrorOf("ui.views.get(0).render({})").find("must be a Scene"), std::string::npos);
   EXPECT_EQ(ErrorOf("new ui.Path().moveTo(0, 0).lineTo(1, 1).close()"), "");
 }
 
@@ -261,29 +232,27 @@ TEST_F(UiBindingsTest, PaintPropertiesRoundTrip) {
             "true");
 }
 
-TEST_F(UiBindingsTest, MetricsTitleAndCloseRequest) {
+// window 只有全局职责(帧调度与帧回调);视图的尺寸与事件在 views 里(隐式视图 0 也一样)。
+TEST_F(UiBindingsTest, MetricsReachTheView) {
   ASSERT_TRUE(Run(R"JS(
-    import { window } from 'momo:ui';
+    import { window, views } from 'momo:ui';
     globalThis.window = window;
+    globalThis.view = views.get(0);
     globalThis.metricsCalls = 0;
-    window.onMetricsChanged = () => { metricsCalls++; };
-    window.title = 'Hello Momo';
+    view.onMetricsChanged = () => { metricsCalls++; };
   )JS").ok());
-  EXPECT_EQ(client_.title, "Hello Momo");
-  EXPECT_EQ(Eval("window.physicalSize.width + 'x' + window.physicalSize.height + '@' +"
-                 " window.devicePixelRatio"),
+  EXPECT_EQ(Eval("view.physicalSize.width + 'x' + view.physicalSize.height + '@' +"
+                 " view.devicePixelRatio"),
             "400x270@1");
+  EXPECT_EQ(Eval("[typeof window.render, typeof window.physicalSize, typeof window.title,"
+                 " typeof view.close, typeof view.setCursor].join()"),
+            "undefined,undefined,undefined,undefined,undefined")
+      << "window management is not part of momo:ui";
 
   client_.current = {{800, 600}, 2.0};
   bindings_->MetricsChanged();
   EXPECT_EQ(Eval("metricsCalls"), "1");
-  EXPECT_EQ(Eval("window.physicalSize.width + '@' + window.devicePixelRatio"), "800@2");
-
-  EXPECT_TRUE(bindings_->CloseRequested());  // 未设置 handler: 放行
-  Eval("window.onCloseRequested = () => false");
-  EXPECT_FALSE(bindings_->CloseRequested());
-  Eval("window.onCloseRequested = () => { throw new Error('oops'); }");
-  EXPECT_TRUE(bindings_->CloseRequested()) << "handler errors must not block closing";
+  EXPECT_EQ(Eval("view.physicalSize.width + '@' + view.devicePixelRatio"), "800@2");
 }
 
 TEST_F(UiBindingsTest, HostObjectsAreCollected) {
@@ -302,44 +271,21 @@ TEST_F(UiBindingsTest, HostObjectsAreCollected) {
 namespace momo::engine::ui {
 namespace {
 
-// view.setResizeOptions: 未给出的字段取默认值;border 可为数字(四边)或分边对象;负数按 0。
-TEST_F(UiBindingsTest, ResizeOptionsAreParsedWithDefaults) {
-  ASSERT_TRUE(Run("import { window } from 'momo:ui'; globalThis.window = window;").ok());
-  Eval("window.setResizeOptions({});");
-  Eval("window.setResizeOptions({ resizable: false, border: 3, liveResizeFrameWait: 0 });");
-  Eval("window.setResizeOptions({ border: { top: 0, left: 8, bottom: -2 } });");
-  ASSERT_EQ(client_.resize_options.size(), 3u);
-  const platform::WindowResizeOptions defaults;
-  EXPECT_TRUE(client_.resize_options[0].resizable);
-  EXPECT_EQ(client_.resize_options[0].border_top, defaults.border_top);
-  EXPECT_EQ(client_.resize_options[0].live_resize_frame_wait_ms, defaults.live_resize_frame_wait_ms);
-  EXPECT_FALSE(client_.resize_options[1].resizable);
-  EXPECT_EQ(client_.resize_options[1].border_left, 3);
-  EXPECT_EQ(client_.resize_options[1].border_bottom, 3);
-  EXPECT_EQ(client_.resize_options[1].live_resize_frame_wait_ms, 0);
-  EXPECT_EQ(client_.resize_options[2].border_top, 0);
-  EXPECT_EQ(client_.resize_options[2].border_left, 8);
-  EXPECT_EQ(client_.resize_options[2].border_bottom, 0) << "negative clamps to 0";
-  EXPECT_EQ(client_.resize_options[2].border_right, defaults.border_right) << "missing edge keeps the default";
-}
-
-// 平台视图输入(docs/05 §9): 指针包带原生事件 id 与滚动阶段;框架的处置经 dispatchPlatformViewPointer 回到宿主。
-TEST_F(UiBindingsTest, NativeEventIdsRoundTripToPlatformViews) {
+// 指针包带按下序列 id 与手势字段。
+TEST_F(UiBindingsTest, PointerPacketsCarrySequenceIdsAndGestures) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, POINTER_DATA_STRIDE } from 'momo:ui';
-    globalThis.window = window;
+    import { views, POINTER_DATA_STRIDE } from 'momo:ui';
     globalThis.log = [];
-    window.onPointerPacket = (data, count) => {
+    views.get(0).onPointerPacket = (data, count) => {
       for (let i = 0; i < count; i++) {
         const o = i * POINTER_DATA_STRIDE;
         log.push(`${POINTER_DATA_STRIDE}:${data[o + 12]}:${data[o + 13]}:${data[o + 14]}:${data[o + 15]}:${data[o + 16]}`);
-        window.dispatchPlatformViewPointer(77, data[o + 12], 0);
       }
     };
   )JS").ok());
   platform::PointerDataPacket packet(1);
   packet[0].phase = platform::PointerPhase::kScroll;
-  packet[0].native_event_id = 9007199254740991ull;  // 2^53 - 1: 以 double 精确往返
+  packet[0].sequence_id = 9007199254740991;  // 2^53 - 1: 以 double 精确往返
   packet[0].signal_phase = platform::SignalPhase::kUpdate;
   packet[0].phase = platform::PointerPhase::kGesture;
   packet[0].gesture_kind = platform::PointerGestureKind::kPressure;
@@ -347,35 +293,23 @@ TEST_F(UiBindingsTest, NativeEventIdsRoundTripToPlatformViews) {
   packet[0].gesture_stage = 2;
   bindings_->PointerPacket(packet);
   EXPECT_EQ(Eval("log.join(' ')"), "17:9007199254740991:2:6:0.5:2");
-  ASSERT_EQ(client_.platform_view_pointer.size(), 1u);
-  EXPECT_EQ(client_.platform_view_pointer[0].view, platform::kImplicitViewId);
-  EXPECT_EQ(client_.platform_view_pointer[0].platform_view_id, 77);
-  EXPECT_EQ(client_.platform_view_pointer[0].native_event_id, 9007199254740991ull);
-  EXPECT_EQ(client_.platform_view_pointer[0].action, platform::PlatformViewPointerAction::kEvent);
-  Eval("window.dispatchPlatformViewPointer(5, 0, 2); window.dispatchPlatformViewPointer(5, 0, 9);");
-  ASSERT_EQ(client_.platform_view_pointer.size(), 2u) << "invalid actions are ignored";
-  EXPECT_EQ(client_.platform_view_pointer[1].action, platform::PlatformViewPointerAction::kExit);
 }
 
 TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, POINTER_DATA_STRIDE } from 'momo:ui';
-    globalThis.window = window;
+    import { views, POINTER_DATA_STRIDE } from 'momo:ui';
+    const view = globalThis.view = views.get(0);
     globalThis.log = [];
-    window.onPointerPacket = (data, count) => {
+    view.onPointerPacket = (data, count) => {
       for (let i = 0; i < count; i++) {
         const o = i * POINTER_DATA_STRIDE;
         log.push(`p${data[o + 2]}@${data[o + 4]},${data[o + 5]}b${data[o + 6]}`);
       }
     };
-    window.onKeyData = (k) => { log.push(`k:${k.type}:${k.physicalKey.toString(16)}:${k.character}:${k.modifiers}`); return k.character === 'a'; };
-    window.onFocusChanged = (f) => { log.push(`f:${f}:${window.focused}`); };
-    window.setCursor('text');
-    window.setMinSize(320, 200);
+    view.onKeyData = (k) => { log.push(`k:${k.type}:${k.physicalKey.toString(16)}:${k.character}:${k.modifiers}`); return k.character === 'a'; };
+    view.onFocusChanged = (f) => { log.push(`f:${f}:${view.focused}`); };
   )JS").ok());
-  EXPECT_EQ(client_.cursor, platform::SystemCursor::kIBeam);
-  EXPECT_EQ(client_.min_size, (Size{320, 200}));
-  EXPECT_NE(ErrorOf("window.setCursor('banana')").find("unknown cursor"), std::string::npos);
+  EXPECT_EQ(Eval("typeof view.setCapture"), "undefined") << "pointer capture is not an engine concern";
 
   platform::PointerDataPacket packet(2);
   packet[0].phase = platform::PointerPhase::kDown;
@@ -442,7 +376,7 @@ TEST_F(UiBindingsTest, ServicesChannelRoundTrips) {
 
 TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, ParagraphBuilder, PictureRecorder, SceneBuilder } from 'momo:ui';
+    import { window, views, ParagraphBuilder, PictureRecorder, SceneBuilder } from 'momo:ui';
     globalThis.window = window;
     globalThis.ParagraphBuilder = ParagraphBuilder;
     const b = new ParagraphBuilder({ textAlign: 'left', maxLines: 3, ellipsis: '…',
@@ -468,7 +402,7 @@ TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
       c.drawParagraph(p, 10, 10);
       const sb = new SceneBuilder();
       sb.addPicture(0, 0, r.endRecording());
-      window.render(sb.build());
+      views.get(0).render(sb.build());
     };
   )JS").ok());
   EXPECT_EQ(Eval("info"), "true,true,1,false");
@@ -493,7 +427,7 @@ TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
 
 TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, decodeImage, loadAsset, imageFromPixels, instantiateCodec,
+    import { window, views, decodeImage, loadAsset, imageFromPixels, instantiateCodec,
              PictureRecorder, SceneBuilder, Paint } from 'momo:ui';
     globalThis.window = window;
     globalThis.state = 'pending';
@@ -519,7 +453,7 @@ TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
       c.drawImage(globalThis.img, 100, 0, p);
       const sb = new SceneBuilder();
       sb.addPicture(0, 0, r.endRecording());
-      window.render(sb.build());
+      views.get(0).render(sb.build());
     };
   )JS").ok());
   EXPECT_EQ(Eval("redSize"), "2x2");
@@ -539,7 +473,7 @@ TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
 // addPlatformView: 只记录占位层(视图由宿主合成), 并标记层树含平台视图;无效参数被忽略。
 TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, SceneBuilder } from 'momo:ui';
+    import { window, views, SceneBuilder } from 'momo:ui';
     globalThis.window = window;
     globalThis.draw = (withView) => {
       const sb = new SceneBuilder();
@@ -548,7 +482,7 @@ TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
       sb.addPlatformView(0, 0, 0, 10, 10);   // id 0: 忽略
       sb.addPlatformView(8, 0, 0, 0, 10);    // 空尺寸: 忽略
       sb.pop();
-      window.render(sb.build());
+      views.get(0).render(sb.build());
     };
   )JS").ok());
   Eval("window.onDrawFrame = () => draw(true)");
@@ -567,35 +501,28 @@ TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
   EXPECT_EQ(view->rect(), (Rect{0, 0, 300, 200}));
 }
 
-// 多视图: createView 经宿主创建 → views 中出现新视图 → Promise 解析为该视图;按视图 render / close。
-TEST_F(UiBindingsTest, ViewsCreateRenderAndClose) {
+// 多视图: 宿主绑定的视图出现在 views 里(onViewsChanged);按视图 render;移除后 render 为空操作。
+// 视图的创建与关闭由宿主决定(momo/window 通道), 不经 momo:ui。
+TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
   ASSERT_TRUE(Run(R"JS(
-    import { window, views, createView, SceneBuilder } from 'momo:ui';
+    import { window, views, SceneBuilder } from 'momo:ui';
     globalThis.window = window;
     globalThis.views = views;
     globalThis.changes = 0;
     window.onViewsChanged = () => { globalThis.changes++; };
-    createView({ title: 'second', width: 300, height: 200 }).then((v) => {
-      globalThis.created = v;
-    });
     globalThis.draw = () => {
       for (const v of views.values()) v.render(new SceneBuilder().build());
     };
   )JS").ok());
-  ASSERT_EQ(client_.create_requests.size(), 1u);
-  const auto& [request, options] = client_.create_requests[0];
-  EXPECT_EQ(options.title, "second");
-  EXPECT_EQ(options.size, (Size{300, 200}));
+  EXPECT_EQ(Eval("String(views.get(0) !== window && views.size === 1)"), "true");
 
-  // 宿主创建窗口: 视图先加入(onViewsChanged), 再结算 Promise。
   client_.view_ids = {0, 5};
   bindings_->ViewAdded(5);
-  bindings_->ViewCreateResult(request, platform::ViewId{5});
+  Eval("globalThis.created = views.get(5)");
   EXPECT_EQ(Eval("String(created.id)"), "5");
   EXPECT_EQ(Eval("String(views.size)"), "2");
   EXPECT_EQ(Eval("String(changes)"), "1");
   EXPECT_EQ(Eval("String(created.physicalSize.width)"), "300");  // extra_metrics
-  EXPECT_EQ(Eval("String(views.get(0) === window)"), "true");
 
   // 一帧里每个视图各提交一棵树, 带各自的 view id 与尺寸。
   Eval("window.onDrawFrame = () => draw()");
@@ -606,17 +533,16 @@ TEST_F(UiBindingsTest, ViewsCreateRenderAndClose) {
   EXPECT_EQ(client_.rendered[1]->frame_size(), (Size{300, 200}));
 
   // 按视图的事件只到达该视图的处理器。
-  Eval("globalThis.got = []; created.onFocusChanged = (f) => got.push('5:' + f); window.onFocusChanged = (f) => got.push('0:' + f)");
+  Eval("globalThis.got = []; created.onFocusChanged = (f) => got.push('5:' + f); views.get(0).onFocusChanged = (f) => got.push('0:' + f)");
   bindings_->FocusChanged(5, true);
   EXPECT_EQ(Eval("got.join()"), "5:true");
 
-  // view.close() 请求宿主关闭;主窗口不能从 JS 关闭。
-  Eval("created.close()");
-  EXPECT_EQ(client_.closed, (std::vector<ViewId>{5}));
-  EXPECT_EQ(Eval("(() => { try { window.close(); return 'no'; } catch (e) { return 'threw'; } })()"), "threw");
+  // 视图 0 与其他视图一样可以被移除。
+  client_.view_ids = {};
   bindings_->ViewRemoved(5);
-  EXPECT_EQ(Eval("String(views.size)"), "1");
-  EXPECT_EQ(Eval("String(changes)"), "2");
+  bindings_->ViewRemoved(0);
+  EXPECT_EQ(Eval("String(views.size)"), "0");
+  EXPECT_EQ(Eval("String(changes)"), "3");
   // 已移除视图的 render 为空操作。
   client_.rendered.clear();
   ASSERT_TRUE(Run(R"JS(
@@ -656,7 +582,6 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
     import { SceneBuilder } from 'momo:ui';
     globalThis.oldRender(new SceneBuilder().build());
     globalThis.keep.render(new SceneBuilder().build());
-    globalThis.keep.title = 'x';
   )JS").ok());
   EXPECT_TRUE(client_.rendered.empty());
   bindings_->FocusChanged(11, true);  // 已移除视图: 忽略
@@ -664,18 +589,6 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
   Eval("globalThis.oldRender = null; globalThis.keep = null; 'ok'");
   isolate->LowMemoryNotification();
   EXPECT_EQ(bindings_->detached_view_count_for_testing(), 0u);
-}
-
-// createView 失败: Promise 被拒绝。
-TEST_F(UiBindingsTest, CreateViewFailureRejects) {
-  ASSERT_TRUE(Run(R"JS(
-    import { createView } from 'momo:ui';
-    globalThis.err = '';
-    createView({ width: 100, height: 100 }).catch((e) => { globalThis.err = String(e.message); });
-  )JS").ok());
-  ASSERT_EQ(client_.create_requests.size(), 1u);
-  bindings_->ViewCreateResult(client_.create_requests[0].first, UnavailableError("no windows"));
-  EXPECT_NE(Eval("err").find("no windows"), std::string::npos);
 }
 
 TEST_F(UiBindingsTest, TexturesAndNewLayersComposite) {
@@ -687,7 +600,7 @@ TEST_F(UiBindingsTest, TexturesAndNewLayersComposite) {
   }
   ASSERT_TRUE(texture->UpdateRgba(blue.data(), 4, 4, 16).ok());
   ASSERT_TRUE(Run(R"JS(
-    import { window, SceneBuilder, PictureRecorder, Paint } from 'momo:ui';
+    import { window, views, SceneBuilder, PictureRecorder, Paint } from 'momo:ui';
     globalThis.window = window;
     globalThis.draw = (id) => {
       const r = new PictureRecorder();
@@ -698,7 +611,7 @@ TEST_F(UiBindingsTest, TexturesAndNewLayersComposite) {
       const sb = new SceneBuilder();
       sb.pushClipRRect(0, 0, 100, 100, 30).addPicture(0, 0, r.endRecording()).pop();
       sb.pushOpacity(128).addTexture(id, 200, 0, 50, 50).pop();
-      window.render(sb.build());
+      views.get(0).render(sb.build());
     };
   )JS").ok());
   const std::string id = std::to_string(texture->id());

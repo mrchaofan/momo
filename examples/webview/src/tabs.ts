@@ -1,20 +1,20 @@
 // 标签模型与标签栏。
 // 插入: 宽度 0 → 目标宽度、透明度 0 → 1(easeOutCubic);删除: 反向(easeInCubic), 动画结束后才从列表移除。
 // 标签内容始终按完整宽度排版, 外层按动画进度裁剪, 因此缓动过程中文字不会被挤压重排。
-// 拖拽(类似 Chromium): 标签栏识别拖动, 把指针的屏幕位置(DragUpdateDetails.screenPosition)交给应用;
+// 拖拽(类似 Chromium): 标签栏只识别拖动的开始, 应用随即捕获指针, 之后的移动与松开直接交给应用的拖动会话;
 // 应用据此决定在哪个窗口的标签栏里排序、何时拖出成窗口、何时并入另一个窗口(见 main.ts DragSession)。
 // 排序时被拖的标签原位置留空, 浮动副本跟随指针, 其他标签平移让位。
 import {
   AnimatedBuilder, AnimationController, Border, BorderRadius, BorderSide, GlobalKey, BoxDecoration, ClipRect, CurvedAnimation, Curves,
   EdgeInsets, Expanded, GestureDetector, IgnorePointer, ImplicitlyAnimatedWidget, ImplicitlyAnimatedWidgetState, MouseRegion,
   Offset, Opacity, Padding, Positioned, Row, SizedBox, Stack, State, StatefulWidget, Text, Transform, Tween, Container, Center, ValueKey,
-  WindowDragArea,
-  type BuildContext, type DragDownDetails, type DragStartDetails, type DragUpdateDetails, type Key, type TickerProvider, type Widget,
+  type BuildContext, type DragDownDetails, type DragStartDetails, type Key, type TickerProvider, type Widget,
 } from "@momo/framework";
+import { WindowDragArea } from "./window_drag_area";
 import type { WebViewController, WebViewState } from "@momo-examples/ext-webview";
 import type { BrowserWindow, DetachedWindow } from "./main";
 import { Spinner } from "./icons";
-import { Palette, TextStyles, kTabAnimationMs, kTabHeight, kTabStripHeight, kTabStripTopInset, kTrafficLightsWidth } from "./style";
+import { Palette, TextStyles, kTabAnimationMs, kTabHeight, kTabStripHeight, kTabStripTopInset } from "./style";
 
 let nextTabId = 1;
 
@@ -191,14 +191,17 @@ export function tabWidthFor(windowWidth: number, count: number): number {
   return Math.max(96, Math.min(220, (windowWidth - 48) / Math.max(1, count)));
 }
 
-/** 拖动中标签的左边界限制在标签区内(第一个到最后一个标签位)。 */
-export function clampDragLeft(left: number, tabWidth: number, count: number): number {
-  return Math.max(kTrafficLightsWidth, Math.min(kTrafficLightsWidth + (count - 1) * tabWidth, left));
+/**
+ * 拖动中标签的左边界限制在标签区内(第一个到最后一个标签位)。leading: 标签区左侧的留白——系统窗口控制按钮
+ * 占用的宽度(MediaQuery.windowControls, 由宿主报告)。
+ */
+export function clampDragLeft(left: number, tabWidth: number, count: number, leading: number): number {
+  return Math.max(leading, Math.min(leading + (count - 1) * tabWidth, left));
 }
 
 /** 被拖标签左边界为 left 时的落点下标(count 为未关闭的标签数)。 */
-export function dropIndex(left: number, tabWidth: number, count: number): number {
-  const slot = Math.round((clampDragLeft(left, tabWidth, count) - kTrafficLightsWidth) / tabWidth);
+export function dropIndex(left: number, tabWidth: number, count: number, leading: number): number {
+  const slot = Math.round((clampDragLeft(left, tabWidth, count, leading) - leading) / tabWidth);
   return Math.max(0, Math.min(count - 1, slot));
 }
 
@@ -240,16 +243,19 @@ export interface TabStripOptions {
   tabs: readonly Tab[];
   activeId: number;
   tabWidth: number;
+  /** 标签区左侧的留白(系统窗口控制按钮占用的宽度)。 */
+  leading: number;
   /** 正在本标签栏里排序的标签(拖出成窗口或在别的窗口时为 null)。 */
   drag: TabDrag | null;
   onSelect: (tab: Tab) => void;
   onClose: (tab: Tab) => void;
   onContextMenu: (tab: Tab, position: Offset) => void;
   onNew: () => void;
-  /** 开始拖动标签: grab 为按下点相对标签左上角的偏移, screen 为指针屏幕位置。 */
+  /**
+   * 开始拖动标签: grab 为按下点相对标签左上角的偏移, screen 为指针屏幕位置。接收方随即捕获指针
+   * (GestureBinding.capturePointer), 之后的移动与松开不再经过标签栏。
+   */
   onDragStart: (tab: Tab, grab: Offset, screen: Offset) => void;
-  onDragUpdate: (screen: Offset) => void;
-  onDragEnd: () => void;
 }
 
 /** 标签栏: 标签 + 新建按钮, 底部一条细线;处理标签拖动。 */
@@ -265,7 +271,6 @@ export class TabStrip extends StatefulWidget {
 class TabStripState extends State<TabStrip> {
   /** 按下位置(标签栏内;拖动开始时据此找到被按下的标签)。 */
   #downLocal: Offset | null = null;
-  #dragging = false;
   /** 本帧刚结束排序: 让位平移直接归零(标签顺序已提交, 不再回弹)。 */
   #instant = false;
 
@@ -274,20 +279,11 @@ class TabStripState extends State<TabStrip> {
     this.#instant = old.o.drag !== null && this.widget.o.drag === null;
   }
 
-  override dispose(): void {
-    // 持有拖动的标签栏被卸载(所在窗口关闭): 结束这次拖动。
-    if (this.#dragging) {
-      this.#dragging = false;
-      this.widget.o.onDragEnd();
-    }
-    super.dispose();
-  }
-
   /** 标签栏内 (x, y) 处的标签(按动画中的实际宽度累计)及其左边界;顶部缩放边上不算。 */
   #tabAt(x: number, y: number): { tab: Tab; left: number } | null {
     if (y < kTabStripTopInset) return null;
-    const { tabs, tabWidth } = this.widget.o;
-    let left = kTrafficLightsWidth;
+    const { tabs, tabWidth, leading } = this.widget.o;
+    let left = leading;
     for (const tab of tabs) {
       const w = tabWidth * tab.curve.value;
       if (x >= left && x < left + w) return tab.closing ? null : { tab, left };
@@ -304,28 +300,17 @@ class TabStripState extends State<TabStrip> {
     const down = this.#downLocal;
     const hit = down !== null ? this.#tabAt(down.dx, down.dy) : null;
     if (hit === null) return;
-    this.#dragging = true;
     // 抓取点相对标签左上角(标签在顶部缩放边之下);位置用屏幕坐标, 拖到窗口外也成立。
     this.widget.o.onDragStart(hit.tab, new Offset(down!.dx - hit.left, down!.dy - kTabStripTopInset), d.screenPosition);
   };
 
-  #onPanUpdate = (d: DragUpdateDetails): void => {
-    if (this.#dragging) this.widget.o.onDragUpdate(d.screenPosition);
-  };
-
-  #onPanEnd = (): void => {
-    if (!this.#dragging) return;
-    this.#dragging = false;
-    this.widget.o.onDragEnd();
-  };
-
   build(_c: BuildContext): Widget {
-    const { tabs, activeId, tabWidth, drag, onSelect, onClose, onContextMenu, onNew } = this.widget.o;
+    const { tabs, activeId, tabWidth, leading, drag, onSelect, onClose, onContextMenu, onNew } = this.widget.o;
     const instant = this.#instant;
     this.#instant = false;
     const live = tabs.filter((t) => !t.closing);
     const from = drag !== null ? live.indexOf(drag.tab) : -1;
-    const to = from >= 0 ? dropIndex(drag!.left, tabWidth, live.length) : -1;
+    const to = from >= 0 ? dropIndex(drag!.left, tabWidth, live.length, leading) : -1;
     /** 其他标签的让位平移: 被拖标签从 from 移到 to, 中间的标签向反方向挪一格。 */
     const shiftOf = (tab: Tab): number => {
       if (from < 0 || tab.closing) return 0;
@@ -345,8 +330,8 @@ class TabStripState extends State<TabStrip> {
     });
     const row = new Row({
       children: [
-        // 红绿灯所在的空白: 也可拖动窗口。
-        new SizedBox({ width: kTrafficLightsWidth, height: kTabHeight, child: new WindowDragArea() }),
+        // 系统窗口控制按钮所在的空白: 也可拖动窗口。
+        new SizedBox({ width: leading, height: kTabHeight, child: new WindowDragArea() }),
         ...tabs.map((tab) => new AnimatedShift({
           key: new ValueKey(tab.id),
           dx: shiftOf(tab),
@@ -361,7 +346,7 @@ class TabStripState extends State<TabStrip> {
     // 浮动副本: 跟随指针, 限制在标签区内。
     const floating = from >= 0
       ? [new Positioned({
-          left: clampDragLeft(drag!.left, tabWidth, live.length),
+          left: clampDragLeft(drag!.left, tabWidth, live.length, leading),
           top: 0,
           width: tabWidth,
           height: kTabHeight,
@@ -371,9 +356,6 @@ class TabStripState extends State<TabStrip> {
     return new GestureDetector({
       onPanDown: this.#onPanDown,
       onPanStart: this.#onPanStart,
-      onPanUpdate: this.#onPanUpdate,
-      onPanEnd: this.#onPanEnd,
-      onPanCancel: this.#onPanEnd,
       child: new Container({
         height: kTabStripHeight,
         decoration: new BoxDecoration({ color: Palette.white, border: new Border({ bottom: new BorderSide({ color: Palette.line, width: 1 }) }) }),

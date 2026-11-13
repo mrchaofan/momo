@@ -29,15 +29,20 @@ interface DeviceState {
 }
 
 /**
- * 跟踪鼠标所在的 MouseRegion 集合, 合成 enter/exit 事件并更新光标(window.setCursor)。
+ * 跟踪鼠标所在的 MouseRegion 集合, 合成 enter/exit 事件并更新光标(经 setCursor 交给指针所在的窗口)。
+ * 多窗口: 命中测试与光标都按事件所属的视图(PointerEvent.viewId)。
+ * 按下序列期间冻结(桌面惯例, 同 AppKit 跟踪区 / Chromium 捕获期间): 接收方固定, 指针经过别的区域(包括平台
+ * 视图、别的窗口)不进入、不离开, 光标保持按下时的样子;抬起(或取消)后按松开处重新计算。
  */
 export class MouseTracker {
   #devices = new Map<number, DeviceState>();
-  #hitTest: (position: Offset) => HitTestResult;
-  #setCursor: (cursor: SystemCursor) => void;
+  #hitTest: (position: Offset, viewId: number) => HitTestResult;
+  #setCursor: (cursor: SystemCursor, viewId: number) => void;
   #cursor: SystemCursor = "basic";
+  #cursorView = -1;
 
-  constructor(hitTest: (position: Offset) => HitTestResult, setCursor: (cursor: SystemCursor) => void) {
+  constructor(hitTest: (position: Offset, viewId: number) => HitTestResult,
+              setCursor: (cursor: SystemCursor, viewId: number) => void) {
     this.#hitTest = hitTest;
     this.#setCursor = setCursor;
   }
@@ -61,10 +66,16 @@ export class MouseTracker {
         this.#dispatch(state.annotations, new Map(), event);
         this.#devices.delete(event.device);
       }
-      this.#updateCursor();
+      this.#updateCursor(event.viewId);
       return;
     }
-    const hit = result ?? this.#hitTest(event.position);
+    if (event.down) {
+      // 按下序列期间冻结: 只记下位置, 松开后据此重新计算(updateAllDevices 同样跳过)。
+      const state = this.#devices.get(event.device);
+      if (state !== undefined) state.lastEvent = event;
+      return;
+    }
+    const hit = result ?? this.#hitTest(event.position, event.viewId);
     const next = new Map<MouseTrackerAnnotation, Matrix4 | null>();
     for (const entry of hit.path) {
       if (isAnnotation(entry.target) && entry.target.validForMouseTracker && !next.has(entry.target)) next.set(entry.target, entry.transform);
@@ -73,7 +84,7 @@ export class MouseTracker {
     const prev = state?.annotations ?? new Map<MouseTrackerAnnotation, Matrix4 | null>();
     this.#devices.set(event.device, { annotations: next, lastEvent: event });
     this.#dispatch(prev, next, event);
-    this.#updateCursor();
+    this.#updateCursor(event.viewId);
   }
 
   /** 布局变化后(帧尾)以最后位置重新计算 hover 状态。 */
@@ -90,7 +101,7 @@ export class MouseTracker {
       if (next.has(a)) continue;
       // 已从树上移除的区域不再接收 exit(与 Flutter 一致)。
       if (a.validForMouseTracker) {
-        a.onExit?.(new PointerExitEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition, nativeEventId: event.nativeEventId }).transformed(t));
+        a.onExit?.(new PointerExitEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition, sequenceId: event.sequenceId, viewId: event.viewId }).transformed(t));
       }
     }
     // enter:从外到内
@@ -98,11 +109,12 @@ export class MouseTracker {
     for (const [a, t] of next) if (!prev.has(a)) entering.push([a, t]);
     for (let i = entering.length - 1; i >= 0; i--) {
       const [a, t] = entering[i]!;
-      a.onEnter?.(new PointerEnterEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition, nativeEventId: event.nativeEventId }).transformed(t));
+      a.onEnter?.(new PointerEnterEvent({ timeStamp: event.timeStamp, pointer: event.pointer, kind: event.kind, device: event.device, position: event.position, screenPosition: event.screenPosition, sequenceId: event.sequenceId, viewId: event.viewId }).transformed(t));
     }
   }
 
-  #updateCursor(): void {
+  /** 光标交给指针所在的窗口(viewId);换了窗口时即使形状相同也重新设置。 */
+  #updateCursor(viewId: number): void {
     let cursor: SystemCursor = "basic";
     // 取任一设备(通常只有一个鼠标)最内层非 defer 的光标
     for (const state of this.#devices.values()) {
@@ -113,9 +125,10 @@ export class MouseTracker {
         }
       }
     }
-    if (cursor !== this.#cursor) {
+    if (cursor !== this.#cursor || viewId !== this.#cursorView) {
       this.#cursor = cursor;
-      this.#setCursor(cursor);
+      this.#cursorView = viewId;
+      this.#setCursor(cursor, viewId);
     }
   }
 
@@ -123,5 +136,6 @@ export class MouseTracker {
   reset(): void {
     this.#devices.clear();
     this.#cursor = "basic";
+    this.#cursorView = -1;
   }
 }

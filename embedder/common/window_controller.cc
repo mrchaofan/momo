@@ -46,7 +46,6 @@ void WindowController::AttachEngine(engine::Shell& shell,
   if (focused_) {
     shell.OnFocusChanged(view_id_, true);
   }
-  shell.OnWindowFrameChanged(view_id_, window_->screen_frame());
 }
 
 void WindowController::DetachEngine() {
@@ -91,6 +90,9 @@ void WindowController::OnFocusChanged(bool focused) {
   if (shell_ != nullptr) {
     shell_->OnFocusChanged(view_id_, focused);
   }
+  if (callbacks_.on_focus_changed) {
+    callbacks_.on_focus_changed(focused);
+  }
 }
 
 void WindowController::OnVisibilityChanged(bool visible) {
@@ -99,9 +101,9 @@ void WindowController::OnVisibilityChanged(bool visible) {
   }
 }
 
-void WindowController::OnTextInput(const platform::TextInputEvent& event) {
-  if (shell_ != nullptr) {
-    shell_->OnTextInput(event);
+void WindowController::OnTextInput(const TextInputEvent& event) {
+  if (callbacks_.on_text_input) {
+    callbacks_.on_text_input(event);
   }
 }
 
@@ -129,85 +131,19 @@ void WindowController::OnPlatformViewFocusRequested(int64_t view_id) {
   }
 }
 
-platform::TextInputConnection* WindowController::GetTextInput() {
-  return window_ ? &window_->text_input() : nullptr;
-}
-
 void* WindowController::GetNativeWindowHandle() {
   return window_ ? window_->native_handle() : nullptr;
 }
 
-void WindowController::OnEngineSetTitle(const std::string& title) {
-  if (window_) {
-    window_->SetTitle(title);
-  }
-}
-
-void WindowController::OnEngineSetMinSize(Size logical_size) {
-  if (window_) {
-    window_->SetMinSize(logical_size);
-  }
-}
-
-void WindowController::OnEngineSetAlwaysOnTop(bool on) {
-  if (window_) {
-    window_->SetAlwaysOnTop(on);
-  }
-}
-
-void WindowController::OnEngineSetResizeOptions(const platform::WindowResizeOptions& options) {
-  if (window_) {
-    window_->SetResizeOptions(options);
-  }
-}
-
-void WindowController::OnEngineSetTitleBar(bool hidden, double traffic_center_y) {
-  if (window_) {
-    window_->SetTitleBar(hidden, traffic_center_y);
-  }
-}
-
-void WindowController::OnEngineSetDragRegions(const std::vector<Rect>& rects) {
-  if (window_) {
-    window_->SetDragRegions(rects);
-  }
-}
-
 void WindowController::OnWindowFrameChanged(const Rect& screen_frame) {
-  if (shell_ != nullptr) {
-    shell_->OnWindowFrameChanged(view_id_, screen_frame);
+  if (callbacks_.on_frame_changed) {
+    callbacks_.on_frame_changed(screen_frame);
   }
 }
 
-void WindowController::OnEngineSetPosition(Point top_left) {
-  if (window_) {
-    window_->SetPosition(top_left);
-  }
-}
-
-void WindowController::OnEngineActivate() {
-  if (window_) {
-    window_->Activate();
-  }
-}
-
-void WindowController::OnEngineCapturePointer() {
-  if (window_) {
-    window_->CapturePointer();
-  }
-}
-
-void WindowController::OnEnginePlatformViewPointer(int64_t platform_view_id,
-                                                   uint64_t native_event_id,
-                                                   platform::PlatformViewPointerAction action) {
-  if (window_) {
-    window_->DispatchPlatformViewPointer(platform_view_id, native_event_id, action);
-  }
-}
-
-void WindowController::OnEngineSetCursor(platform::SystemCursor cursor) {
-  if (window_) {
-    window_->SetCursor(cursor);
+void WindowController::OnWindowControlsChanged(const std::optional<Rect>& rect) {
+  if (callbacks_.on_controls_changed) {
+    callbacks_.on_controls_changed(rect);
   }
 }
 

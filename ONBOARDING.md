@@ -107,7 +107,8 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | 要做的事 | 主要文件 | 别忘了同步 |
 |---|---|---|
 | 给 JS 新增/修改 `momo:ui` API | `engine/ui/*_bindings.cc`（用 `ClassBuilder`） | `framework/packages/momo/src/ui/momo-ui.d.ts`（JS⇄C++ 契约）、`framework/test/mock/momo_ui.ts`（Node mock） |
-| 新增平台服务（对话框、菜单…） | `engine/platform/platform_services.h` → `embedder/macos/mac_platform_integration.mm`（`MacServices`）→ `engine/shell/shell.cc` 的 `RegisterPlatformChannels` | 框架 `services/` 加 JS 封装；`embedder/windows/win_services.cc`；mock 平台 |
+| 新增平台服务（对话框、菜单…） | `embedder/common/platform_services.h` → `embedder/macos/mac_platform_integration.mm`（`MacServices`）→ `embedder/common/platform_channels.cc` 注册通道 | 框架 `services/` 加 JS 封装；`embedder/windows/win_services.cc`；mock 平台。**不改 engine** |
+| 新增窗口能力（全屏、透明、阴影…） | `embedder/common/platform_window.h`（可选能力 + `WindowCapability`）→ `embedder/macos/mac_window.mm` → `embedder/common/window_channel.cc` 加方法名 | 框架 `services/window.ts`（`WindowService`），需要声明式时加到 `Window` / `WindowChrome`；Node mock 的宿主实现（`framework/test/mock/momo_ui.ts`）。**不改 engine** |
 | 窗口/输入行为 | `embedder/macos/mac_window.mm`（`MomoContentView`） | 输入类型在 `engine/platform/input_types.h`；JS 侧解码在 `gestures/converter.ts` |
 | 帧调度、背压 | `engine/shell/animator.cc`、`base/pipeline.h` | `animator_unittests.cc` |
 | 渲染（层、DisplayList、Skia） | `engine/graphics/` | golden 基准图 `engine/graphics/testdata/` |
@@ -149,6 +150,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 ### 4.4 依赖方向
 
 - engine **不得** include `embedder/` 下的任何文件。engine 需要平台能力时，在 `engine/platform/` 声明纯接口，由 embedder 实现（依赖倒置）。
+- **engine 只认识视图**（画面、尺寸、输入、焦点、捕获）。窗口的外观与行为（标题、位置、标题栏、拖动、关闭询问）、剪贴板、打开 URL、输入法属于宿主：embedder 在 `Shell::Create` 的 `on_created` 里往 `hub()` 注册通道处理器（`window_channel.h`、`platform_channels.h`），JS 与宿主直接往返。不要为这类需求往 `Shell::Delegate`、`Engine::Delegate`、`WindowClient` 加方法。
 - `v8.h` 只能出现在 `engine/runtime/`、`engine/ui/` 的**实现文件**里；Skia 头只能出现在 `engine/graphics/`、`text/`、`assets/` 的实现文件里。其他模块只看到不含 V8/Skia 类型的接口。
 - 平台实现库 `momo_embedder_macos` 只链接 `momo_engine_platform`（接口）和系统 SDK。
 
@@ -160,7 +162,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 ### 4.6 Windows 代码
 
-`embedder/windows/` 已写完但**从未在 Windows 上编译过**。修改 `embedder/common/` 的接口（`PlatformWindow`、`WindowDelegate`、`PlatformIntegration`）或 `engine/platform/` 契约时，要手动同步 Windows 实现，并在改动说明里写明"未编译验证"。
+`embedder/windows/` 已写完但**从未在 Windows 上编译过**。修改 `embedder/common/` 的接口（`PlatformWindow`、`WindowDelegate`、`PlatformIntegration`）或 `engine/platform/` 契约时，要手动同步 Windows 实现，并在改动说明里写明"未编译验证"。Windows 目前只声明了 `position`、`pointerCapture` 两项可选窗口能力，其余（隐藏标题栏、拖动区域、移动循环、置顶、平台视图…）对 JS 回复 `unimplemented`。
 
 ## 5. 常见改动的步骤
 
@@ -175,13 +177,21 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 ### 5.2 新增一个平台服务通道（以"显示通知"为例）
 
-1. `engine/platform/platform_services.h`：加纯虚方法（返回 `Status`）。
+1. `embedder/common/platform_services.h`：加纯虚方法（返回 `Status`）。
 2. `embedder/macos/mac_platform_integration.mm` 的 `MacServices` 实现它；同步 `embedder/windows/win_services.cc` 和 `embedder/common/testing/mock_platform.h`。
-3. `engine/shell/shell.cc` 的 `RegisterPlatformChannels`：注册通道 `momo/notification`，handler 跑在 platform 线程，调用 `services_`。
+3. `embedder/common/platform_channels.cc`：注册通道 `momo/notification`，handler 跑在 platform 线程，调用 `services_`。
 4. 框架 `services/` 加一个基于 `MethodChannel` 的 JS 封装，并从 `services/index.ts` 导出。
-5. 测试：`shell_unittests.cc`（假的 PlatformServices）+ `services_test.ts`。
+5. 测试：`embedder/common/*_unittests.cc`（mock 平台）+ `services_test.ts`。
 
-不需要改 `momo:ui` 绑定：低频能力一律走消息通道。
+不需要改 engine，也不需要改 `momo:ui` 绑定：低频能力一律走宿主注册的消息通道。
+
+### 5.2.1 新增一个窗口能力（以"全屏"为例）
+
+1. `embedder/common/platform_window.h`：加可选方法（默认返回 `Unsupported(...)`）和一个 `WindowCapability` 位。
+2. `embedder/macos/mac_window.mm` 实现并在 `capabilities()` 里声明；Windows 不支持就不动（JS 收到 `unimplemented`）。
+3. `embedder/common/window_channel.cc`：加方法名（`setFullscreen {view, on}`）与能力名；`window_channel_unittests.cc` 加用例。
+4. 框架 `services/window.ts` 的 `WindowService` 加方法；需要声明式写法时加到 `Window` 的属性里。
+5. Node mock 的宿主实现（`framework/test/mock/momo_ui.ts` 的 `handleWindowCall`）同步。
 
 ### 5.3 新增一个 Widget
 

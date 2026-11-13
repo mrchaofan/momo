@@ -1,10 +1,26 @@
 // examples/hello_frame — M1 验收示例: 直接用 momo:ui 底层 API 画帧(docs/11 M1)。
 // 渐变圆角卡片 + 旋转的路径星形 + 描边图形;每帧重新请求下一帧, 驱动整条帧管线:
-//   onBeginFrame → onDrawFrame → window.render → Animator/Pipeline → raster 软件光栅 → present。
+//   onBeginFrame → onDrawFrame → view.render → Animator/Pipeline → raster 软件光栅 → present。
 // 坐标以逻辑像素书写, 场景根部按 devicePixelRatio 缩放到物理像素(与 Flutter 相同的分工)。
-import { window, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
+// 分工: momo:ui 只管画面与输入(window = 全局帧回调, views = 视图);窗口标题等窗口属性属于宿主,
+// 经宿主注册的 momo/window 通道设置(StandardMethodCodec, 这里手写最小编码)。
+import { window, views, PictureRecorder, Paint, Path, Gradient, SceneBuilder } from 'momo:ui';
+import { send } from 'momo:services';
 
-window.title = 'Momo · hello_frame';
+// 隐式视图: 宿主启动时创建的窗口(bundle 执行前即存在)。
+const view = views.get(0);
+
+// StandardMethodCodec 最小编码: string 与 {string: string | int32} 的 map。
+function utf8(s) { return [...new TextEncoder().encode(s)]; }
+function str(s) { const b = utf8(s); return [7, b.length, ...b]; }
+function i32(n) { return [3, n & 255, (n >> 8) & 255, (n >> 16) & 255, (n >>> 24) & 255]; }
+function map(o) {
+  const entries = Object.entries(o);
+  return [13, entries.length, ...entries.flatMap(([k, v]) => [...str(k), ...(typeof v === 'number' ? i32(v) : str(v))])];
+}
+function invoke(method, args) { return send('momo/window', new Uint8Array([...str(method), ...map(args)]).buffer); }
+
+invoke('setTitle', { view: 0, title: 'Momo · hello_frame' });
 
 let frameTime = 0;
 let frames = 0;
@@ -77,8 +93,9 @@ window.onBeginFrame = (frameTimeMs) => {
 };
 
 window.onDrawFrame = () => {
-  const dpr = window.devicePixelRatio;
-  const { width, height } = window.physicalSize;
+  if (!views.has(0)) return;  // 窗口已关闭
+  const dpr = view.devicePixelRatio;
+  const { width, height } = view.physicalSize;
   const seconds = (frameTime - started) / 1000;
   const picture = drawScene(width / dpr, height / dpr, seconds);
 
@@ -87,7 +104,7 @@ window.onDrawFrame = () => {
   builder.pushTransform([dpr, 0, 0, 0, 0, dpr, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
   builder.addPicture(0, 0, picture);
   builder.pop();
-  window.render(builder.build());
+  view.render(builder.build());
 
   frames++;
   if (frames % 120 === 0) {
@@ -97,11 +114,6 @@ window.onDrawFrame = () => {
   window.scheduleFrame();  // 持续动画
 };
 
-window.onMetricsChanged = () => window.scheduleFrame();
-
-window.onCloseRequested = () => {
-  console.log(`hello_frame: closing after ${frames} frames`);
-  return true;
-};
+view.onMetricsChanged = () => window.scheduleFrame();
 
 window.scheduleFrame();

@@ -69,9 +69,9 @@ void WinTextInput::SetCaretRect(Rect physical_rect) {
   UpdateImePosition();
 }
 
-void WinTextInput::SetEditingState(const platform::TextEditingState& state) { state_ = state; }
+void WinTextInput::SetEditingState(const TextEditingState& state) { state_ = state; }
 
-void WinTextInput::Emit(const platform::TextInputEvent& event) {
+void WinTextInput::Emit(const TextInputEvent& event) {
   if (active_ && delegate_ != nullptr) {
     delegate_->OnTextInput(event);
   }
@@ -175,8 +175,8 @@ bool WinTextInput::HandleImeMessage(UINT message, WPARAM wparam, LPARAM lparam, 
         const std::wstring text = GetCompositionString(himc, GCS_RESULTSTR);
         if (!text.empty()) {
           composing_ = false;
-          platform::TextInputEvent event;
-          event.type = platform::TextInputEvent::Type::kCommit;
+          TextInputEvent event;
+          event.type = TextInputEvent::Type::kCommit;
           event.text = WideToUtf8(text);
           Emit(event);
         }
@@ -192,23 +192,23 @@ bool WinTextInput::HandleImeMessage(UINT message, WPARAM wparam, LPARAM lparam, 
             }
           }
           composing_ = true;
-          platform::TextInputEvent event;
-          event.type = platform::TextInputEvent::Type::kComposing;
+          TextInputEvent event;
+          event.type = TextInputEvent::Type::kComposing;
           event.text = WideToUtf8(text);
           event.cursor = cursor;
           Emit(event);
         } else if (composing_) {
           // 预编辑被清空(如退格删光拼音)。
           composing_ = false;
-          platform::TextInputEvent event;
-          event.type = platform::TextInputEvent::Type::kComposingEnd;
+          TextInputEvent event;
+          event.type = TextInputEvent::Type::kComposingEnd;
           Emit(event);
         }
       } else if (!(lparam & GCS_RESULTSTR) && composing_) {
         // 既无结果串也无预编辑串: 输入法取消了预编辑。
         composing_ = false;
-        platform::TextInputEvent event;
-        event.type = platform::TextInputEvent::Type::kComposingEnd;
+        TextInputEvent event;
+        event.type = TextInputEvent::Type::kComposingEnd;
         Emit(event);
       }
       ::ImmReleaseContext(hwnd_, himc);
@@ -223,8 +223,8 @@ bool WinTextInput::HandleImeMessage(UINT message, WPARAM wparam, LPARAM lparam, 
       }
       if (composing_) {
         composing_ = false;
-        platform::TextInputEvent event;
-        event.type = platform::TextInputEvent::Type::kComposingEnd;
+        TextInputEvent event;
+        event.type = TextInputEvent::Type::kComposingEnd;
         Emit(event);
       }
       *result = 0;
@@ -285,8 +285,8 @@ void WinTextInput::OnChar(wchar_t code_unit) {
     }
     text.push_back(code_unit);
   }
-  platform::TextInputEvent event;
-  event.type = platform::TextInputEvent::Type::kCommit;
+  TextInputEvent event;
+  event.type = TextInputEvent::Type::kCommit;
   event.text = WideToUtf8(text);
   Emit(event);
 }

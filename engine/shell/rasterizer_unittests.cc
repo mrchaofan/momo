@@ -222,6 +222,7 @@ std::unique_ptr<graphics::LayerTree> TreeWithPlatformView(bool with_view) {
     graphics::DisplayListBuilder builder;
     graphics::Paint paint;
     paint.color = color;
+    builder.AddHitRegion({0, 0, 10, 10});
     builder.DrawRect({0, 0, 10, 10}, paint);
     return builder.Build();
   };

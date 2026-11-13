@@ -27,8 +27,9 @@
   泵送**直到求值完成(同 Electron `JoinAppCode`):模块图的文件读取、顶层 await 的 Node IO 都在这里完成。保活句柄在泵送期间
   不计入存活:uv 无事可做时停止泵送,剩下的求值(如顶层 await 等待 momo 的平台通道)继续异步进行。加载/求值错误以
   Promise 拒绝返回宿主,转成 `Status`(含 JS 栈)。
-- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):直接调用 V8,结束后 `DrainMicrotasks()`——
-  以一个空的 `node::CallbackScope` 收尾,按 Node 语义排空 `process.nextTick` 与 microtask(nextTick 先于 Promise)。
+- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):`JsRuntimeImpl::Call` 在 `node::CallbackScope`
+  里调用(同 `node::MakeCallback`),最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask(nextTick 先于
+  Promise)。入口都是 ui 线程上的任务,与 uv 回调同属一个循环,顺序即到达顺序。之后 `DrainMicrotasks()` 唤醒 poll 线程。
 - **错误**:C++ 调用 JS 的异常收敛为 `Status` 并记日志;uv 回调里的未捕获异常与未处理的 Promise 拒绝由 bootstrap 注册的
   `process.on('uncaughtException' / 'unhandledRejection')` 打印到 stderr,**不退出进程**(Node 默认会退出)。
   `process.exit()` 保持 Node 默认行为(退出进程)。
@@ -94,18 +95,21 @@ C++: hub.SetHandler(channel, handler(bytes, reply_cb))   // 任意线程注册, 
 
 ## 6. 事件入口与帧回调
 
-`momo:ui` 的 window 对象上暴露(由 `ui::EventDispatcher` 调用):
+`momo:ui` 的全局 `window` 与每个视图(`views.get(id)`)上暴露(由 `UiBindings` 调用):
 
 ```ts
 window.onBeginFrame: (frameTimeMs: number) => void      // 动画推进 + build/layout/paint(单调时钟毫秒)
-window.onDrawFrame: () => void                          // 提交 scene
-window.onPointerPacket: (packet: PointerDataView) => void
-window.onKeyData: (data: KeyDataView) => boolean        // 返回 true 表示已消费
-window.onMetricsChanged: () => void                     // 读 window.physicalSize / devicePixelRatio
-window.onCloseRequested: () => boolean | void           // 返回 false 取消关闭
+window.onDrawFrame: () => void                          // 各视图提交 scene
+window.onViewsChanged: () => void                       // 宿主打开/关闭了窗口
 window.scheduleFrame(): void
-window.render(scene: Scene): void
+view.onPointerPacket: (data: Float64Array, count: number) => void
+view.onKeyData: (data: KeyData) => boolean              // 返回 true 表示已消费
+view.onMetricsChanged: () => void                       // 读 view.physicalSize / devicePixelRatio
+view.onFocusChanged: (focused: boolean) => void
+view.render(scene: Scene): void
 ```
+
+窗口的标题、光标、位置、关闭询问等不在 `momo:ui` 里: 它们属于宿主, 经宿主注册的 `momo/window` 通道(框架的 `WindowService`)。
 
 事件对象使用预分配的 TypedArray 视图复用,避免每事件分配。
 

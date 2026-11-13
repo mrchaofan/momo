@@ -4,12 +4,13 @@
 // 网页本身是同一个 WebView(GlobalKey), 在两处之间迁移时原生网页视图换窗口, 页面不刷新。
 import {
   Align, Alignment, Border, BorderRadius, BorderSide, BoxDecoration, Center, Column, Container, EdgeInsets, Expanded,
-  FontWeight, FractionallySizedBox, GestureDetector, MouseRegion, Padding, Row, SizedBox, State, StatefulWidget,
-  StatelessWidget, Text, TextStyle, WindowChrome, WindowDragArea, type BuildContext, type Widget,
+  FontWeight, FractionallySizedBox, GestureDetector, MediaQuery, MouseRegion, Padding, Row, SizedBox, State, StatefulWidget,
+  StatelessWidget, Text, TextStyle, WindowChrome, type BuildContext, type Widget,
 } from "@momo/framework";
+import { WindowDragArea } from "./window_drag_area";
 import type { BrowserAppState, DetachedWindow } from "./main";
 import { IconButton } from "./icons";
-import { Palette, TextStyles, kTitleBarHeight, kToolbarHeight, kTrafficLightsWidth } from "./style";
+import { Palette, TextStyles, kStripLeadingPadding, kTitleBarHeight, kToolbarHeight } from "./style";
 import { IconTap, type Tab } from "./tabs";
 
 /** 胶囊按钮: primary 为黑底白字, 否则浅灰底黑字;active 用于开关的"开"状态(同 primary 外观)。 */
@@ -110,14 +111,14 @@ export class DetachedPlaceholder extends StatelessWidget {
 }
 
 /**
- * 单独窗口的内容(无边框窗口): 顶栏(红绿灯、网页标题、置顶与恢复图标按钮)+ 工具栏(后退/前进/刷新、地址)
- * + 加载进度 + 网页。顶栏除按钮外都可拖动窗口。
+ * 单独窗口的内容(无边框窗口): 顶栏(窗口控制按钮、网页标题、置顶与恢复图标按钮)+ 工具栏(后退/前进/刷新、地址)
+ * + 加载进度 + 网页。顶栏除按钮外都可拖动窗口(标题文字上也可以)。
  */
 export class DetachedPage extends StatelessWidget {
   constructor(readonly o: { app: BrowserAppState; detached: DetachedWindow; page: Widget }) {
     super();
   }
-  build(_c: BuildContext): Widget {
+  build(context: BuildContext): Widget {
     const { app, detached: d, page } = this.o;
     const tab = d.tab;
     const web = tab.controller;
@@ -131,7 +132,8 @@ export class DetachedPage extends StatelessWidget {
       padding: EdgeInsets.only({ right: 8 }),
       child: new Row({
         children: [
-          new SizedBox({ width: kTrafficLightsWidth, height: kTitleBarHeight, child: new WindowDragArea() }),
+          // 系统窗口控制按钮占用的宽度(宿主报告), 也可拖动窗口。
+          new SizedBox({ width: MediaQuery.of(context).windowControls?.right ?? kStripLeadingPadding, height: kTitleBarHeight, child: new WindowDragArea() }),
           new Expanded({
             child: new WindowDragArea({
               child: new Align({
@@ -147,7 +149,7 @@ export class DetachedPage extends StatelessWidget {
         ],
       }),
     });
-    return new WindowChrome({ trafficLightsCenterY: kTitleBarHeight / 2, child: new Container({
+    return new WindowChrome({ titleBarHeight: kTitleBarHeight, child: new Container({
       color: Palette.white,
       child: new Column({
         children: [

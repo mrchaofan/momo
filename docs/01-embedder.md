@@ -37,9 +37,10 @@ embedder/
 3. Application::Create(options, platform)
    a. 平台集成由入口创建并注入(mac: CreateMacPlatformIntegration();win: CreateWinPlatformIntegration())
    b. 创建 OS 主线程的 `EventLoop`(`base::NativeMessagePump` 包装 `platform.native_loop()`)并绑定当前线程(Application 自身是归属它的 `momo::Object`);ui/raster/io 由 Application 持有的 `engine::ThreadHost` 创建;四者组成 TaskRunners
-4. Application::Launch(): 创建主窗口 PlatformWindow + RenderSurface 并 Show(此时只有原生空窗口,显示闪屏底色)
+4. Application::Launch(): 创建启动窗口(隐式视图 0)的 PlatformWindow + RenderSurface 并 Show(此时只有原生空窗口,显示闪屏底色)
 5. AssetResolver 解析 bundle → Shell::Create() → WindowController::AttachEngine()(Application::LaunchEngine)
-   a. engine::Shell::Create(TaskRunners, Settings, &platform.services());主显示器刷新率作为 vsync 回退定时器频率
+   a. engine::Shell::Create(TaskRunners, Settings, on_created);主显示器刷新率作为 vsync 回退定时器频率。on_created 在 JS bundle
+      执行前回调: 注册宿主通道(WindowChannel: momo/window、momo/app;PlatformChannels: momo/clipboard、momo/url、momo/textinput)
    a'. AttachWindow: platform.CreateVsyncSource(window)(不支持时为空 → 定时器回退)随 Shell::AttachView 移交 Shell
    b. ui 线程: 创建 JsRuntime(V8 Isolate/Context) → 安装 momo:* 绑定
    c. ExtensionHost 扫描并加载声明的原生扩展(见 docs/07)
@@ -66,24 +67,24 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 
 Suspended = 应用被隐藏(Mac `applicationDidHide`,经 `OnAppVisibilityChanged`)**或**所有窗口都最小化(`WindowDelegate::OnVisibilityChanged`);任一窗口可见且应用未隐藏才回到 Running。进入 Running/Suspended/Terminating 时经 `Shell::NotifyLifecycleEvent` 分发 `resumed/suspended/terminating` 给 JS(M2 起走 `momo/lifecycle` 通道)。
 
-退出:`RequestTerminate()`(关窗、Cmd+Q、WM_CLOSE)先经 `Shell::RequestClose` 询问 JS(可取消,如"未保存提示"),放行后 `Terminate()`;重复请求合并。`Terminate()` 幂等,直接执行 §4。可选 `Application::Observer` 观察状态变化与关闭步骤(日志/测试)。
+退出应用:`RequestTerminate()`(Cmd+Q、系统注销)先经 `momo/app requestExit` 询问 JS(可取消,如"未保存提示"),放行后 `Terminate()`;重复请求合并;JS 长时间不回复(ui 线程卡死)时强制退出。`Terminate()` 幂等,直接执行 §4。可选 `Application::Observer` 观察状态变化与关闭步骤(日志/测试)。
 
-多窗口(docs/02 §2 多视图):Application 实现 `engine::Shell::HostDelegate`,按 JS `createView` 的请求创建其他窗口(每个一个 `WindowController`,以视图 id 绑定到同一个 Shell),`CloseView` 时先解绑再在安全点销毁窗口。非主窗口的关闭按钮经 `Shell::RequestCloseView` 询问该视图的 `onCloseRequested`,允许后只关闭该窗口;主窗口关闭仍是退出应用,`Terminate()` 先解绑并销毁全部其他窗口。
+窗口(docs/02 §2 多视图):**所有窗口对等**。Application 持有全部窗口(视图 id → `WindowController`), 是 `WindowChannel::Host`:按 JS 的 `momo/window create` 分配视图 id、建窗口并绑定到同一个 Shell;`close` 时先解绑再在安全点销毁窗口。任一窗口的关闭按钮都先经 `momo/window closeRequested` 询问 JS, 允许后只关闭该窗口;**最后一个窗口关闭后退出应用**(同 Electron 的 window-all-closed 默认行为)。启动窗口(视图 0)只是 bundle 执行前就存在的那个窗口, 同样可以被关闭。
 
 ### 引擎装配(Application::LaunchEngine)
 
-Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果 + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, &platform.services())`;为主窗口 `CreateVsyncSource`(不支持则为空, Shell 回退定时器)后 `WindowController::AttachEngine`。关闭时先 `DetachEngine`(raster 停用 surface)再 `Shell::Shutdown`。
+Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果 + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_created)`(on_created 里注册宿主通道);为启动窗口 `CreateVsyncSource`(不支持则为空, Shell 回退定时器)后 `WindowController::AttachEngine`。关闭时先移除宿主通道, 再 `DetachEngine`(raster 停用 surface), 再 `Shell::Shutdown`。
 
 ### WindowController(common)
 
-把 `platform::PlatformWindow` 的回调(尺寸/DPI 变化、输入事件、关闭请求、焦点)转发给 `engine::Shell` 对应的视图;反向把引擎请求(设置标题、光标、最小尺寸)下发给窗口。输入事件在 platform 线程收到后打包为 `PointerDataPacket`/`KeyData` 投递至 ui 线程。引擎附着前收到的 metrics/焦点会被缓存,附着时补发。原生关闭请求**总是先拦截**(`OnCloseRequested` 返回 false),交给 `Application::RequestTerminate` 异步处理。
+把 `PlatformWindow` 的视图相关回调(尺寸/DPI 变化、输入事件、焦点)转发给 `engine::Shell` 对应的视图;窗口级事件(关闭请求、最小化、IME、屏幕框、窗口控制按钮占用区域)交给 Application, 由它经宿主通道通知 JS;反向只承接引擎对视图的请求(指针捕获转交、平台视图挂载/聚焦、原生句柄)。窗口外观与行为(标题、光标、位置、标题栏…)的请求不经过这里: `momo/window` 通道直接调用 `PlatformWindow`。输入事件在 platform 线程收到后打包为 `PointerDataPacket`/`KeyData` 投递至 ui 线程。引擎附着前收到的 metrics/焦点会被缓存,附着时补发。原生关闭请求**总是先拦截**(`OnCloseRequested` 返回 false),交给 `Application::RequestCloseWindow` 异步询问 JS。
 
 ## 4. 生命周期与关闭顺序
 
 关闭必须严格有序,否则会在线程销毁上踩崩溃:
 
 ```
-用户关闭 → JS 侧 onCloseRequested(可取消) → Application::Terminate
+最后一个窗口关闭 / 用户退出应用(JS 可取消) → Application::Terminate
  → 0) WindowController 解绑: raster 线程同步停止使用 surface
  → 1) ui 线程: 停止帧调度,通知扩展 unload,销毁 JsRuntime(Isolate Dispose)
  → 2) raster 线程: 释放 LayerTree 与 GPU 资源,销毁 GrDirectContext

@@ -7,8 +7,8 @@
 //   - 事件循环: NodeBindings 把 libuv 接到 ui 线程(见 node_bindings.h, 对照 Electron)。
 //   - 模块: Node 的 ESM 加载器;momo:* / ext:* 经 module.registerHooks 映射到 node::AddLinkedBinding
 //     注册的原生绑定(node_bootstrap.cc)。入口模块经 uv_run 泵送直到求值完成(或 uv 无事可做)。
-//   - 从 momo 进入 JS(帧、输入、通道回调)直接调用 V8, 之后 DrainMicrotasks: 以 node::CallbackScope
-//     收尾, 按 Node 语义排空 process.nextTick 与 microtask。
+//   - 从 momo 进入 JS(帧、输入、通道回调): Call 在 node::CallbackScope 里调用(同 node::MakeCallback),
+//     返回时按 Node 语义排空 process.nextTick 与 microtask;DrainMicrotasks 另外唤醒 poll 线程。
 
 #include <filesystem>
 #include <functional>
@@ -72,7 +72,8 @@ class JsRuntimeImpl {
   // 从 momo 进入 JS 之后调用: 按 Node 语义排空 nextTick 与 microtask, 并让 uv poll 线程按新状态等待。
   void DrainMicrotasks();
 
-  // 调用 JS 函数(在本 context 中), 异常转为 Status 并记录日志。之后不自动排空 microtask。
+  // 调用 JS 函数(在本 context 中, 于 node::CallbackScope 内), 异常转为 Status 并记录日志。最外层的调用返回前
+  // 按 Node 语义排空 nextTick 与 microtask(嵌套调用由最外层排空)。
   StatusOr<v8::Local<v8::Value>> Call(v8::Local<v8::Function> fn, v8::Local<v8::Value> receiver,
                                       int argc, v8::Local<v8::Value> argv[],
                                       std::string_view what);

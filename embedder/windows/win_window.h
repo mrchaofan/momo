@@ -42,17 +42,21 @@ class WinWindow final : public PlatformWindow {
   Size physical_size() const override;
   double device_pixel_ratio() const override;
   platform::RenderSurface& surface() override;
-  void SetCursor(platform::SystemCursor cursor) override;
-  void CapturePointer() override;
+  void SetCursor(SystemCursor cursor) override;
+  // 可选能力: 窗口定位与指针捕获(隐藏标题栏、拖动区域、移动循环等尚未实现, 对应调用回复 Unimplemented)。
+  uint32_t capabilities() const override { return kCapabilityPosition | kCapabilityPointerCapture; }
+  StatusOr<bool> CapturePointer(int64_t sequence_id) override;
+  void ReleasePointerCapture() override;
   Rect screen_frame() const override;
-  void SetPosition(Point top_left) override;
-  platform::TextInputConnection& text_input() override;
+  Status SetPosition(Point top_left) override;
+  TextInputConnection& text_input() override;
   void* native_handle() const override { return hwnd_; }
 
   HWND hwnd() const { return hwnd_; }
 
  private:
   WinWindow(const WindowSpec& spec, WindowDelegate* delegate);
+  static WinWindow* FromHwnd(HWND hwnd);
 
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
@@ -94,6 +98,7 @@ class WinWindow final : public PlatformWindow {
 
   // 指针状态
   uint32_t buttons_ = 0;          // 当前按下的按钮位图
+  int64_t sequence_id_ = 0;       // 本窗口接收的按下序列(进程内递增;0 = 无)
   bool pointer_added_ = false;    // 已发出 kAdd(尚未 kRemove)
   bool tracking_leave_ = false;   // 已 TrackMouseEvent(TME_LEAVE)
   double last_x_ = 0;

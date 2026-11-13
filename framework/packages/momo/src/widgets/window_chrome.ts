@@ -1,58 +1,42 @@
-// 无边框窗口(隐藏系统标题栏, 保留红绿灯)、缩放行为与拖动区域。
-//   WindowChrome: 把所在窗口设为无边框外观;trafficLightsCenterY 让红绿灯与应用自绘的顶栏垂直居中;
-//     resizable / resizeBorder / liveResizeFrameWait 配置窗口的缩放行为(见 WindowChrome 的说明)。
-//   WindowDragArea: 声明可拖动窗口的区域(无子节点时填满约束);每帧结束后按窗口汇总成矩形交给宿主。
-//     宿主在这些区域里接管鼠标: 拖动移动窗口, 双击缩放(遵循系统设置);momo 不会收到这些点击。
-import type { View as UiView } from "momo:ui";
+// 自绘窗口外观: 隐藏系统标题栏与缩放行为。
+//   WindowChrome: 所在窗口的外观与缩放边框(声明式;经宿主的 momo/window 通道生效, 不经引擎)。
+//     隐藏标题栏后系统窗口控制按钮浮在内容之上, 占用区域由宿主报告(MediaQuery.windowControls), 应用据此
+//     避让——框架与应用都不写死平台尺寸。
+// 拖动窗口: 框架只提供能力(WindowService.startDrag(view, sequenceId), 以进行中的按下序列开始系统拖动),
+//   哪里可以拖动由应用自己决定(例如在按下时调用;见 examples/webview 的 WindowDragArea)。
 import type { Key } from "../foundation/key";
 import { EdgeInsets } from "../painting/edge_insets";
-import { Offset, Size } from "../painting/geometry";
-import { RenderProxyBox } from "../rendering/box";
-import type { BoxConstraints } from "../rendering/box_constraints";
-import type { PipelineOwner } from "../rendering/object";
-import { State, StatefulWidget, SingleChildRenderObjectWidget, type BuildContext, type Widget } from "./framework";
+import { WindowService } from "../services/window";
+import { State, StatefulWidget, type BuildContext, type Widget } from "./framework";
 import { ViewScope } from "./view_scope";
 
-/** WindowChrome 的缩放默认值(与宿主一致)。 */
-export const kDefaultResizeBorder = 5;
-export const kDefaultLiveResizeFrameWait = 100;
-
 /**
- * 所在窗口的外观与缩放行为。
+ * 所在窗口的外观(声明式, 随 widget 更新;窗口的属性如标题、可否缩放在 Window 上声明)。
  *
- * 外观: hiddenTitleBar(缺省 true)隐藏系统标题栏、内容铺满窗口、保留红绿灯;trafficLightsCenterY 让红绿灯与
- * 应用自绘的顶栏垂直居中。
+ * - hiddenTitleBar(缺省 true): 隐藏系统标题栏、内容铺满窗口、保留系统窗口控制按钮;titleBarHeight 是应用自绘
+ *   标题栏的高度——宿主让控制按钮在这个高度内垂直居中。控制按钮占用的区域见 MediaQuery.windowControls。
+ * - resizeBorder: 窗口内侧的系统缩放边框(逻辑像素, 数字或各边独立的 EdgeInsets;未给出时用宿主默认 5)。在这里
+ *   光标显示为缩放形状、按下交给系统缩放, 优先于应用内容。0 = 该边没有内侧边框, 应用内容收到这里的全部输入
+ *   (系统在窗口外侧的缩放区仍可用)——例如顶栏铺满可点击的标签页时用 EdgeInsets.only({ left: 5, right: 5, bottom: 5 })。
  *
- * 缩放(任一项给出时生效, 未给出的项取缺省值;都不给出时不改动窗口——保持 Window 打开时的 resizable):
- *   - resizable(true): 用户能否拖动边框缩放窗口。
- *   - resizeBorder(5): 窗口内侧的系统缩放边框(逻辑像素, 数字或各边独立的 EdgeInsets)。在这里光标显示为缩放形状、
- *     按下交给系统缩放, 优先于 WindowDragArea 与应用内容。0 = 该边没有内侧边框, 应用内容收到这里的全部输入
- *     (系统在窗口外侧的缩放区仍可用)——例如顶栏铺满可点击的标签页时用 EdgeInsets.only({ left: 5, right: 5, bottom: 5 })。
- *   - liveResizeFrameWait(100): 拖拽缩放时等待一帧新尺寸内容的上限(毫秒)。应用在此之内出帧则缩放无拉伸;
- *     0 = 不等待(松手前内容按旧帧拉伸, 窗口拖动最跟手)。
+ * 平台不支持某项(如隐藏标题栏)时该项不生效, windowControls 保持 null。
  */
 export class WindowChrome extends StatefulWidget {
   readonly hiddenTitleBar: boolean;
-  readonly trafficLightsCenterY: number | null;
-  readonly resizable: boolean | null;
+  readonly titleBarHeight: number | null;
   readonly resizeBorder: EdgeInsets | number | null;
-  readonly liveResizeFrameWait: number | null;
   readonly child: Widget;
   constructor(o: {
     key?: Key | null;
     hiddenTitleBar?: boolean;
-    trafficLightsCenterY?: number | null;
-    resizable?: boolean | null;
+    titleBarHeight?: number | null;
     resizeBorder?: EdgeInsets | number | null;
-    liveResizeFrameWait?: number | null;
     child: Widget;
   }) {
     super(o.key);
     this.hiddenTitleBar = o.hiddenTitleBar ?? true;
-    this.trafficLightsCenterY = o.trafficLightsCenterY ?? null;
-    this.resizable = o.resizable ?? null;
+    this.titleBarHeight = o.titleBarHeight ?? null;
     this.resizeBorder = o.resizeBorder ?? null;
-    this.liveResizeFrameWait = o.liveResizeFrameWait ?? null;
     this.child = o.child;
   }
   createState(): State {
@@ -67,24 +51,19 @@ class WindowChromeState extends State<WindowChrome> {
     const view = ViewScope.maybeOf(this.context);
     if (view === null) return;
     const w = this.widget;
-    const key = `${view.id}:${w.hiddenTitleBar}:${w.trafficLightsCenterY}`;
+    const windows = WindowService.instance;
+    const key = `${view.id}:${w.hiddenTitleBar}:${w.titleBarHeight}`;
     if (key !== this.#applied) {
       this.#applied = key;
-      view.setTitleBarStyle(w.hiddenTitleBar ? "hidden" : "default", w.trafficLightsCenterY ?? undefined);
+      windows.setTitleBar(view.id, { hidden: w.hiddenTitleBar, height: w.titleBarHeight ?? undefined });
     }
-    if (w.resizable === null && w.resizeBorder === null && w.liveResizeFrameWait === null) return;
-    const border = w.resizeBorder ?? kDefaultResizeBorder;
-    const options = {
-      resizable: w.resizable ?? true,
-      border: typeof border === "number"
-        ? border
-        : { left: border.left, top: border.top, right: border.right, bottom: border.bottom },
-      liveResizeFrameWait: w.liveResizeFrameWait ?? kDefaultLiveResizeFrameWait,
-    };
-    const resizeKey = `${view.id}:${JSON.stringify(options)}`;
+    const border = w.resizeBorder;
+    if (border === null) return;
+    const edges = typeof border === "number" ? border : { left: border.left, top: border.top, right: border.right, bottom: border.bottom };
+    const resizeKey = `${view.id}:${JSON.stringify(edges)}`;
     if (resizeKey === this.#appliedResize) return;
     this.#appliedResize = resizeKey;
-    view.setResizeOptions(options);
+    windows.setResizeBorder(view.id, edges);
   }
   override didChangeDependencies(): void {
     this.#apply();
@@ -94,67 +73,5 @@ class WindowChromeState extends State<WindowChrome> {
   }
   build(_c: BuildContext): Widget {
     return this.widget.child;
-  }
-}
-
-// ---------------------------------------------------------------------------
-
-/** 当前挂在渲染树上的拖动区域。 */
-const dragAreas = new Set<RenderWindowDragArea>();
-
-export class RenderWindowDragArea extends RenderProxyBox {
-  override attach(owner: PipelineOwner): void {
-    super.attach(owner);
-    dragAreas.add(this);
-  }
-  override detach(): void {
-    dragAreas.delete(this);
-    super.detach();
-  }
-  protected override computeSizeForNoChild(constraints: BoxConstraints): Size {
-    return constraints.biggest;
-  }
-  override hitTestSelf(): boolean {
-    return true;  // 吞掉 momo 侧的命中(宿主已接管该区域)
-  }
-}
-
-/** 可拖动窗口的区域。无子节点时填满约束(常用于顶栏的空白处: Expanded(WindowDragArea()))。 */
-export class WindowDragArea extends SingleChildRenderObjectWidget {
-  constructor(o: { key?: Key | null; child?: Widget | null } = {}) {
-    super(o);
-  }
-  createRenderObject(): RenderWindowDragArea {
-    return new RenderWindowDragArea();
-  }
-}
-
-/**
- * @internal 帧尾由 WidgetsBinding 调用: 按窗口汇总拖动区域(逻辑像素, 窗口左上原点), 有变化时交给宿主。
- * rootOf 把渲染树根映射到其窗口。
- */
-export function flushDragRegions(viewOfRoot: (root: unknown) => UiView | null, last: Map<UiView, string>): void {
-  const byView = new Map<UiView, number[]>();
-  for (const area of dragAreas) {
-    if (!area.hasSize) continue;
-    let root: unknown = area;
-    for (let p = area.parent; p !== null; p = p.parent) root = p;
-    const view = viewOfRoot(root);
-    if (view === null) continue;
-    const o = area.localToGlobal(Offset.zero);
-    const list = byView.get(view) ?? [];
-    list.push(o.dx, o.dy, area.size.width, area.size.height);
-    byView.set(view, list);
-  }
-  for (const view of new Set([...last.keys(), ...byView.keys()])) {
-    const rects = byView.get(view) ?? [];
-    const key = rects.map((v) => Math.round(v * 10) / 10).join(",");
-    if (last.get(view) === key) continue;
-    last.set(view, key);
-    try {
-      view.setDragRegions(rects);
-    } catch {
-      last.delete(view);  // 窗口已关闭
-    }
   }
 }

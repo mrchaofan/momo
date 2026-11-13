@@ -30,6 +30,8 @@ export class PaintingContext {
   #currentLayer: PictureLayer | null = null;
   #recorder: PictureRecorder | null = null;
   #canvas: Canvas | null = null;
+  /** 正在绘制被忽略命中的子树(IgnorePointer): 其中的节点不记录可命中区域。 */
+  ignoringPointer = false;
 
   constructor(containerLayer: ContainerLayer, estimatedBounds: Rect) {
     this.#containerLayer = containerLayer;
@@ -46,6 +48,7 @@ export class PaintingContext {
       layer.removeAllChildren();
     }
     const ctx = new PaintingContext(layer, child.paintBounds);
+    for (let p = child.parent; p !== null && !ctx.ignoringPointer; p = p.parent) ctx.ignoringPointer = p.ignoresPointer;
     child._paintWithContext(ctx, Offset.zero);
     ctx.stopRecordingIfNeeded();
   }
@@ -106,6 +109,7 @@ export class PaintingContext {
     childLayer.removeAllChildren();
     this.appendLayer(childLayer);
     const ctx = new PaintingContext(childLayer, childPaintBounds ?? this.estimatedBounds);
+    ctx.ignoringPointer = this.ignoringPointer;
     painter(ctx, offset);
     ctx.stopRecordingIfNeeded();
   }
@@ -557,12 +561,28 @@ export abstract class RenderObject implements HitTestTarget {
   _paintWithContext(context: PaintingContext, offset: Offset): void {
     if (this._needsLayout) return;
     this._needsPaint = false;
+    const outer = context.ignoringPointer;
+    if (this.ignoresPointer) context.ignoringPointer = true;
     try {
+      if (!context.ignoringPointer) this.paintHitRegion(context, offset);
       this.paint(context, offset);
     } catch (e) {
       reportError(e, `during paint() of ${describeIdentity(this)}`);
+    } finally {
+      context.ignoringPointer = outer;
     }
   }
+
+  /** 本节点及其子树对指针不可见(IgnorePointer)。改变时须重绘子树(可命中区域随之变化)。 */
+  get ignoresPointer(): boolean {
+    return false;
+  }
+
+  /**
+   * 记录本节点自身的可命中区域(Canvas.addHitRegion, 包围盒)。宿主据此判断平台视图上方是否有 momo 内容
+   * 接收指针(docs/05 §9)。在 paint 之前调用, 因此区域与本节点的绘制同属一层、同一 z 序。
+   */
+  paintHitRegion(_context: PaintingContext, _offset: Offset): void {}
 
   /** 局部绘制范围(RepaintBoundary 用作录制的 cull rect)。 */
   abstract get paintBounds(): Rect;

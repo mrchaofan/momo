@@ -1,8 +1,7 @@
 import {
   Align, Alignment, runApp, setErrorReporter, GestureDetector, MouseRegion, Offset, PointerEventConverter, PointerDownEvent, PointerMoveEvent,
   PointerUpEvent, PointerAddedEvent, PointerScrollEvent, Stack, Positioned, ValueKey, Center, Column,
-  GestureArenaManager, Container, Colors, GestureBinding, type Widget, type GestureArenaMember, type DragUpdateDetails, type DragEndDetails,
-  type PointerEvent,
+  GestureArenaManager, Container, Colors, GestureBinding, type PointerCapture, type Widget, type GestureArenaMember, type DragUpdateDetails, type DragEndDetails,
 } from "../packages/momo/src/index";
 import { expect, group, test } from "./harness";
 import { Kind, Phase } from "./tester";
@@ -41,19 +40,39 @@ group("gestures", () => {
     set(0, Phase.down, 20, 40);
     set(1, Phase.move, 30, 40);
     set(2, Phase.up, 30, 40);
-    const events = c.expand(d, 3, 2, 12);
+    const events = c.expand(d, 3, 2, 0, 12);
     expect.deepEqual(events.map((e) => e.constructor.name), ["PointerAddedEvent", "PointerDownEvent", "PointerMoveEvent", "PointerUpEvent"]);
     expect.isTrue(events[0] instanceof PointerAddedEvent);
     const down = events[1] as PointerDownEvent;
     expect.deepEqual([down.position.dx, down.position.dy], [10, 20]);
     expect.deepEqual([down.screenPosition.dx, down.screenPosition.dy], [510, 320], "screen position is already in logical points");
     expect.equal((events[2] as PointerMoveEvent).delta.dx, 5);
-    const again = c.expand(d, 1, 2, 12);
+    const again = c.expand(d, 1, 2, 0, 12);
     expect.notEqual((again[0] as PointerDownEvent).pointer, down.pointer, "new down sequence gets a new pointer id");
     d.set([0, 0, Phase.scroll, 7, 0, 0, 0, 0, 30, 0], 0);
-    const s = c.expand(d, 1, 2, 12)[0] as PointerScrollEvent;
+    const s = c.expand(d, 1, 2, 0, 12)[0] as PointerScrollEvent;
     expect.equal(s.scrollDelta.dy, 15);
     void PointerUpEvent;
+  });
+
+  // 宿主的包语义: 同一序列带同一个 sequenceId;cancel 取消进行中的序列;remove 只是离开。
+  test("PointerEventConverter: sequence ids, cancel and remove", () => {
+    const c = new PointerEventConverter();
+    const d = new Float64Array(17 * 3);
+    const set = (i: number, phase: number, sequenceId: number): void => {
+      d.set([0, 0, phase, 0, 10, 10, phase === Phase.down || phase === Phase.move ? 1 : 0, 0, 0, 0, 0, 0, sequenceId], i * 17);
+    };
+    set(0, Phase.down, 42);
+    set(1, Phase.move, 42);
+    set(2, Phase.cancel, 42);
+    const events = c.expand(d, 3, 1);
+    expect.deepEqual(events.map((e) => e.constructor.name), ["PointerAddedEvent", "PointerDownEvent", "PointerMoveEvent", "PointerCancelEvent"]);
+    expect.equal(events[1]!.sequenceId, 42);
+    expect.equal(c.activePointer(), null);
+    set(0, Phase.hover, 0);
+    set(1, Phase.remove, 0);
+    const left = c.expand(d, 2, 1);
+    expect.deepEqual(left.map((e) => e.constructor.name), ["PointerHoverEvent", "PointerRemovedEvent"]);
   });
 
   test("GestureArena: sweep picks first member; eager winner on close; hold/release", async () => {
@@ -152,29 +171,98 @@ group("gestures", () => {
     expect.isTrue(screens.some((l) => l.startsWith("start ")));
   });
 
-  // transferPointerCapture: 宿主补发的按下及该指针之后的事件只交给接收者, 不经命中测试与竞技场
-  // (目标窗口里的手势不会把它当成新的点击/拖动);抬起后结束;没有可转交的序列时返回 null。
-  testWidgets("a transferred pointer capture bypasses hit testing until the pointer is released", async (t) => {
-    const gestures: string[] = [];
-    await t.pumpWidget(new Center({ child: new GestureDetector({
-      onTap: () => gestures.push("tap"),
-      onPanStart: () => gestures.push("pan"),
-      child: square("c"),
-    }) }));
-    const p = t.centerOf(t.one(t.byKey(new ValueKey("c"))));
-    expect.equal(GestureBinding.instance.transferPointerCapture({ id: 0, setCapture: () => false }, () => {}), null);
+  // ---- 指针捕获: 拖动开始即固定接收方 ----
+
+  // 在拖动回调里捕获(典型用法): 原手势在当前事件分发完后收到取消, 之后这个指针的事件——不论来自哪个窗口——
+  // 只交给捕获者, 不做命中测试、不更新悬停;松开后捕获结束, 悬停按松开处重新计算。
+  testWidgets("capturing a pointer fixes its receiver until release", async (t, ctx) => {
+    const log: string[] = [];
     const routed: string[] = [];
-    const stop = GestureBinding.instance.transferPointerCapture({ id: 0, setCapture: () => true }, (e: PointerEvent) => routed.push(e.constructor.name));
-    expect.isTrue(stop !== null);
-    t.sendPointer(Phase.down, p);  // 宿主补发的按下
-    t.sendPointer(Phase.move, p.plus(new Offset(40, 0)));
-    t.sendPointer(Phase.up, p.plus(new Offset(40, 0)), { buttons: 0 });
+    let capture: PointerCapture | null = null;
+    await t.pumpWidget(new Stack({ children: [
+      new Positioned({ left: 0, top: 0, width: 100, height: 100, child: new GestureDetector({
+        onPanStart: () => {
+          log.push("start");
+          capture = GestureBinding.instance.capturePointer((e) => routed.push(`${e.constructor.name}@${e.viewId}`));
+        },
+        onPanUpdate: () => log.push("update"),
+        onPanEnd: () => log.push("end"),
+        onPanCancel: () => log.push("cancel"),
+        child: square("drag"),
+      }) }),
+      new Positioned({ left: 300, top: 0, width: 100, height: 100, child: new MouseRegion({
+        onEnter: () => log.push("enter"),
+        onExit: () => log.push("exit"),
+        cursor: "click",
+        child: square("hover"),
+      }) }),
+    ] }));
+    t.sendPointer(Phase.down, new Offset(50, 50));
+    t.sendPointer(Phase.move, new Offset(80, 50));  // 越过拖动阈值: onPanStart → 捕获
+    expect.isTrue(capture !== null);
+    const afterStart = log.length;
+    expect.isTrue(log.slice(0, afterStart).includes("start"));
+    expect.isTrue(log.includes("end") || log.includes("cancel"), `the original gesture lost the pointer: ${log}`);
+    t.sendPointer(Phase.move, new Offset(350, 50));  // 经过 MouseRegion
+    expect.deepEqual(routed, ["PointerMoveEvent@0"]);
+    expect.isFalse(log.includes("update"), "the original gesture gets nothing after the capture");
+    expect.isFalse(log.includes("enter"), "hover is frozen while the pointer is held");
+    expect.equal(ctx.host.mock?.cursor ?? "basic", "basic");
+    // 同一个指针改由另一个窗口上报(宿主改交了原生接收窗口): 照样交给捕获者。
+    const d = new Float64Array(17);
+    d[0] = t.now * 1000; d[2] = Phase.move; d[4] = 10; d[5] = 10; d[6] = 1;
+    GestureBinding.instance.handlePointerPacket(d, 1, 1, 1);
+    expect.deepEqual(routed.at(-1), "PointerMoveEvent@1");
+    t.sendPointer(Phase.up, new Offset(350, 50), { buttons: 0 });
+    expect.deepEqual(routed.at(-1), "PointerUpEvent@0");
+    expect.isFalse(capture!.active);
+    expect.isTrue(log.includes("enter"), "hover is recomputed where the pointer was released");
     await t.pump();
-    expect.deepEqual(routed, ["PointerDownEvent", "PointerMoveEvent", "PointerUpEvent"]);
-    expect.deepEqual(gestures, [], "the widget under the pointer never sees the transferred sequence");
-    await t.tap(p);
-    expect.deepEqual(gestures, ["tap"], "normal hit testing resumes after the release");
-    expect.equal(routed.length, 3);
+    // 捕获结束后照常命中测试。
+    log.length = 0;
+    await t.drag(new Offset(50, 50), new Offset(40, 0));
+    expect.isTrue(log.includes("start"));
+  }, { mockOnly: true });
+
+  // 任何按下序列期间(不只是显式捕获)悬停都冻结: 在空白处按下拖过 MouseRegion, 不进入;松开后进入。
+  testWidgets("hover is frozen during any press", async (t) => {
+    const log: string[] = [];
+    await t.pumpWidget(new Stack({ children: [
+      new Positioned({ left: 300, top: 0, width: 100, height: 100, child: new MouseRegion({
+        onEnter: () => log.push("enter"), onExit: () => log.push("exit"), child: square("hover"),
+      }) }),
+    ] }));
+    t.sendPointer(Phase.hover, new Offset(50, 50));
+    t.sendPointer(Phase.down, new Offset(50, 50));
+    t.sendPointer(Phase.move, new Offset(350, 50));
+    expect.deepEqual(log, []);
+    t.sendPointer(Phase.up, new Offset(350, 50), { buttons: 0 });
+    expect.deepEqual(log, ["enter"]);
+    // 从区域内按下拖出去: 按下期间不离开, 松开后离开。
+    t.sendPointer(Phase.down, new Offset(350, 50));
+    t.sendPointer(Phase.move, new Offset(50, 50));
+    expect.deepEqual(log, ["enter"]);
+    t.sendPointer(Phase.up, new Offset(50, 50), { buttons: 0 });
+    expect.deepEqual(log, ["enter", "exit"]);
+    await t.pump();
+  });
+
+  testWidgets("capturePointer needs a pressed pointer; release drops the rest of the sequence", async (t) => {
+    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => {}, child: square("c") }) }));
+    expect.equal(GestureBinding.instance.capturePointer(() => {}), null, "no pointer is down");
+    const routed: string[] = [];
+    t.sendPointer(Phase.down, new Offset(400, 300));
+    const capture = GestureBinding.instance.capturePointer((e) => routed.push(e.constructor.name))!;
+    t.sendPointer(Phase.move, new Offset(410, 300));
+    capture.release();
+    expect.isFalse(capture.active);
+    t.sendPointer(Phase.move, new Offset(420, 300));
+    t.sendPointer(Phase.up, new Offset(420, 300), { buttons: 0 });
+    expect.deepEqual(routed, ["PointerMoveEvent"], "events after release are dropped until the pointer is up");
+    let taps = 0;
+    await t.pumpWidget(new Center({ child: new GestureDetector({ onTap: () => taps++, child: square("c") }) }));
+    await t.tap(new Offset(400, 300));
+    expect.equal(taps, 1, "the next sequence is hit-tested normally");
   });
 
   testWidgets("double tap wins over tap; single tap fires after timeout", async (t) => {

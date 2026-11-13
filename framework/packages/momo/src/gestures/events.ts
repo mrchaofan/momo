@@ -23,10 +23,12 @@ export interface PointerEventInit {
   down?: boolean;
   /** 触控板惯性滚动阶段。 */
   momentum?: boolean;
-  /** 屏幕位置(逻辑点, 主屏左上原点;与 View.screenFrame 同一坐标系)。缺省为零点(来源未提供)。 */
+  /** 屏幕位置(逻辑点, 主屏左上原点;与 WindowService.frameOf 同一坐标系)。缺省为零点(来源未提供)。 */
   screenPosition?: Offset;
-  /** 宿主为对应原生事件分配的 id(0 = 合成事件)。交给平台视图时据此投递原始事件(docs/05 §9)。 */
-  nativeEventId?: number;
+  /** 宿主的按下序列 id(0 = 不在序列内)。 */
+  sequenceId?: number;
+  /** 事件来自的视图(窗口)id;position 是该视图里的坐标。缺省 0(隐式视图)。 */
+  viewId?: number;
 }
 
 /**
@@ -44,15 +46,20 @@ export abstract class PointerEvent {
   readonly down: boolean;
   readonly momentum: boolean;
   /**
-   * 指针的屏幕位置(逻辑点, 主屏左上原点, 与 View.screenFrame 同一坐标系)。
+   * 指针的屏幕位置(逻辑点, 主屏左上原点, 与 WindowService.frameOf 同一坐标系)。
    * 不随窗口移动而变化: 跨窗口交互(如把标签拖出成窗口、拖动窗口本身)用它计算。
    */
   readonly screenPosition: Offset;
   /**
-   * 宿主为对应原生事件分配的 id(0 = 合成事件, 如补发的 add/cancel)。落在平台视图上的事件经
-   * {@link GestureBinding.forwardToPlatformView} 回送, 宿主据此把原始事件投递给原生视图。
+   * 宿主的按下序列 id(首个按下到最后一个抬起相同, > 0;不在序列内为 0)。调用依赖进行中序列的窗口能力时
+   * 回送给宿主校验: WindowService.startDrag(业务层的拖动区域)、PointerCapture.moveToView。
    */
-  readonly nativeEventId: number;
+  readonly sequenceId: number;
+  /**
+   * 事件来自的视图(窗口)id(同 Flutter PointerEvent.viewId)。position 是该视图里的坐标;命中测试、光标、
+   * 平台视图的投递都按它找窗口——多窗口共用一套指针状态, 不存在"当前视图"这种全局状态。
+   */
+  readonly viewId: number;
   /** 局部坐标位置。 */
   readonly localPosition: Offset;
   /** 局部坐标位移。 */
@@ -73,7 +80,8 @@ export abstract class PointerEvent {
     this.down = init.down ?? false;
     this.momentum = init.momentum ?? false;
     this.screenPosition = init.screenPosition ?? Offset.zero;
-    this.nativeEventId = init.nativeEventId ?? 0;
+    this.sequenceId = init.sequenceId ?? 0;
+    this.viewId = init.viewId ?? 0;
     this.localPosition = this.position;
     this.localDelta = this.delta;
     this.transform = null;

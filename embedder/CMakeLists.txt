@@ -6,13 +6,19 @@
 #   headless/ 无窗口宿主(测试运行器)
 # 依赖方向: embedder → engine(含 engine/platform 契约)→ base;engine 不依赖 embedder。
 
+# 指针派发(PointerDispatcher): 平台无关的决策, 平台实现直接使用;只依赖引擎的输入类型。
+add_library(momo_embedder_pointer STATIC common/pointer_dispatcher.cc)
+target_link_libraries(momo_embedder_pointer PUBLIC momo_engine_platform)
+
 add_library(momo_embedder_common STATIC
   common/app_config.cc
   common/application.cc
   common/asset_resolver.cc
+  common/platform_channels.cc
+  common/window_channel.cc
   common/window_controller.cc)
 # 只依赖平台抽象接口: 平台实现由入口注入, common 可用 mock 单测。
-target_link_libraries(momo_embedder_common PUBLIC momo::engine momo_engine_platform)
+target_link_libraries(momo_embedder_common PUBLIC momo::engine momo_engine_platform momo_embedder_pointer)
 
 if(APPLE)
   # ---- macOS 平台实现(原 platform/macos)----
@@ -30,7 +36,7 @@ if(APPLE)
     macos/mac_window.mm)
   # 实现只需要接口头(embedder/common/platform_*.h 为 header-only), 不链接引擎库。
   target_link_libraries(momo_embedder_macos
-    PUBLIC momo_engine_platform
+    PUBLIC momo_engine_platform momo_embedder_pointer
     PRIVATE "-framework Cocoa" "-framework QuartzCore" "-framework CoreVideo"
             "-framework IOSurface" "-framework Metal")
 
@@ -170,7 +176,9 @@ if(MOMO_BUILD_TESTS)
   add_executable(momo_embedder_unittests
     common/app_config_unittests.cc
     common/application_unittests.cc
-    common/asset_resolver_unittests.cc)
+    common/asset_resolver_unittests.cc
+    common/pointer_dispatcher_unittests.cc
+    common/window_channel_unittests.cc)
   target_link_libraries(momo_embedder_unittests PRIVATE momo_embedder_common GTest::gtest_main)
   gtest_discover_tests(momo_embedder_unittests)
 endif()

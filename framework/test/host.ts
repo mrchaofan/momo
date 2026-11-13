@@ -20,35 +20,49 @@ export interface MockControl {
   decodedImages: number;
   setPhysicalSize(width: number, height: number, dpr: number): void;
   pictureOps(picture: unknown): RecordedOp[];
-  // ---- 多视图 ----
+  // ---- 多视图与宿主窗口(momo/window 的 mock 实现)----
   /** 每个视图最近一次提交的场景(键为视图 id)。 */
   sceneOpsByView: Map<number, RecordedOp[]>;
   /** 每个视图的标题。 */
   titles: Map<number, string>;
-  /** 宿主是否已"打开"视图(createView 完成且未关闭)。 */
+  /** 宿主是否已"打开"视图(创建完成且未关闭;不含视图 0)。 */
   openViews(): number[];
-  /** 模拟用户点击某个视图的关闭按钮(询问 onCloseRequested, 允许则关闭)。返回是否关闭。 */
-  requestCloseView(id: number): boolean;
-  /** 下一次 createView 失败。 */
+  /** 视图是否存在(含视图 0)。 */
+  hasView(id: number): boolean;
+  /** 模拟用户点击某个视图的关闭按钮(询问 JS 的 closeRequested, 允许则关闭)。返回是否关闭。 */
+  requestCloseView(id: number): Promise<boolean>;
+  /** 模拟用户/系统请求退出应用(momo/app requestExit)。返回是否允许。 */
+  requestAppExit(): Promise<boolean>;
+  /** 下一次 create 失败。 */
   failNextCreateView: boolean;
   /** 置顶状态(键为视图 id)。 */
   alwaysOnTop: Map<number, boolean>;
-  /** activate() 调用过的视图 id(按顺序)。 */
+  /** activate 调用过的视图 id(按顺序)。 */
   activated: number[];
-  /** view.setCapture() 调用过的视图。 */
+  /** momo/window capturePointer 调用过的视图(原生接收窗口改交)。 */
   captures: number[];
-  /** view.dispatchPlatformViewPointer() 的调用(按顺序)。 */
-  platformViewPointer: { view: number; platformViewId: number; nativeEventId: number; action: number }[];
-  /** 以 panel: true 创建的视图。 */
+  /** 以 nonActivating: true 创建的视图。 */
   panelViews: Set<number>;
-  /** 最近一次 createView 的参数。 */
-  lastCreateViewOptions: { resizable?: boolean; panel?: boolean; width: number; height: number } | null;
-  /** setTitleBarStyle 的最近一次设置(键为视图 id)。 */
-  titleBars: Map<number, { style: string; center: number | null }>;
-  /** setResizeOptions 的最近一次设置(键为视图 id)。 */
-  resizeOptions: Map<number, { resizable?: boolean; border?: number | { left?: number; top?: number; right?: number; bottom?: number }; liveResizeFrameWait?: number }>;
-  /** setDragRegions 的最近一次设置(键为视图 id, 扁平的 x,y,w,h)。 */
-  dragRegions: Map<number, number[]>;
+  /** 最近一次 create 的参数。 */
+  lastCreateViewOptions: { resizable?: boolean; nonActivating?: boolean; width: number; height: number } | null;
+  /** setTitleBar 的最近一次设置(键为视图 id)。 */
+  titleBars: Map<number, { hidden: boolean; height: number }>;
+  /** setResizable 的最近一次设置(键为视图 id)。 */
+  resizable: Map<number, boolean>;
+  /** setResizeBorder 合并后的边框(键为视图 id)。 */
+  resizeBorders: Map<number, { left?: number; top?: number; right?: number; bottom?: number }>;
+  /** 宿主侧的窗口屏幕框(键为视图 id)。 */
+  frames: Map<number, { x: number; y: number; width: number; height: number }>;
+  /** startDrag 的调用(按顺序)。 */
+  windowDrags: { view: number; sequenceId: number }[];
+  /** 进行中的移动循环(键为视图 id, 值为抓取偏移)。 */
+  moveLoops: Map<number, { x: number; y: number }>;
+  /** setMinSize 的最近一次设置。 */
+  minSizes: Map<number, { width: number; height: number }>;
+  /** 以宿主身份投递指针包(先执行移动循环, 再交给视图)。 */
+  deliverPointer(view: number, data: Float64Array, count: number): void;
+  /** 测试复位: 视图 0 被关闭过时重新打开它。 */
+  debugRestoreImplicitView(): void;
 }
 
 /** 测试宿主。 */

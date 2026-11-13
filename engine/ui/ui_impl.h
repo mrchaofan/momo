@@ -51,7 +51,7 @@ struct UiBindings::Impl final : public Object {
   // 资源读取(io 线程使用;无可变状态, 以 shared_ptr 随任务传递)。
   const assets::AssetManager assets;
 
-  v8::Global<v8::Object> window;  // momo:ui 被导入后才存在(= 视图 0 的对象 + 帧回调)
+  v8::Global<v8::Object> window;  // momo:ui 被导入后才存在(全局帧调度与帧回调;不是视图)
   v8::Global<v8::Map> views_map;  // 导出的 views: Map<id, View>
   std::map<ViewId, std::unique_ptr<ViewBinding>> views;
   // 已移除、等待 JS 侧对象被回收的视图绑定(object 为弱句柄)。
@@ -79,7 +79,7 @@ struct UiBindings::Impl final : public Object {
   void Reject(uint64_t id, const std::string& message);
   const WeakPtr<Impl>& weak() const { return weak_this_; }
 
-  // 安装导出: window / views / createView。
+  // 安装导出: window / views。
   void InstallExports(v8::Isolate* isolate, v8::Local<v8::Context> context,
                       v8::Local<v8::Object> exports);
   // 创建视图对象并登记进 views(已存在则返回已有的)。
@@ -92,7 +92,6 @@ struct UiBindings::Impl final : public Object {
   size_t detached_view_count() const { return detached_views.size(); }
   void SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
   void SyncFocus(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
-  void SyncFrame(v8::Isolate* isolate, v8::Local<v8::Context> context, ViewId id);
   // 调用 target[name](args...);未设置或非函数时返回空。
   v8::MaybeLocal<v8::Value> CallHandler(v8::Local<v8::Object> target, const char* name,
                                         int argc, v8::Local<v8::Value>* argv);

@@ -11,7 +11,7 @@ engine/
 ├── common/          # 无 V8/Skia 的公共设施: Settings、TaskRunners、MessageChannelHub、StandardCodec、JSON
 ├── shell/           # 协调中枢: Shell、Engine、Animator、Rasterizer、ThreadHost
 ├── runtime/         # V8 集成: isolate/context 管理、绑定基建、模块加载、inspector
-├── ui/              # momo:ui 原生实现: View/window、views/createView、Canvas、SceneBuilder、事件入口
+├── ui/              # momo:ui 原生实现: window(全局帧回调)、views(视图)、Canvas、SceneBuilder、事件入口
 ├── graphics/        # DisplayList、LayerTree、Skia 封装、GPU 后端(compositor)
 ├── text/            # SkParagraph 封装: 字体管理、段落排版
 ├── assets/          # 资源与图片: AssetManager、图片解码(codec)、缓存
@@ -47,13 +47,13 @@ common, platform → base
 
 ### 多视图(多窗口)
 
-一个 Shell(一个 JS 运行时)驱动多个视图,每个视图对应宿主的一个原生窗口(`engine/platform/view.h`:`ViewId`,视图 0 = 主窗口)。
+一个 Shell(一个 JS 运行时)驱动多个视图,每个视图对应宿主的一个原生窗口(`engine/platform/view.h`:`ViewId`;视图 0 = 隐式视图, 即宿主启动时创建、bundle 执行前就存在的窗口, 与其他视图一样可被移除)。
 
-- **共享**:JS 状态、帧时钟(一个 Animator;VsyncSource 优先用视图 0 的)、平台视图表、纹理表、扩展。
-- **按视图**:surface 与 GPU 后端、ViewportMetrics、焦点、指针/键盘事件、窗口标题/光标/最小尺寸、合成状态。
-- **创建/关闭**:JS `createView(options)` → Engine → Shell 在 platform 线程分配 id → `Shell::HostDelegate::CreateView`(embedder 的 Application 建窗口并 `AttachView`)→ 结果回到 ui 线程结算 Promise(此前 JS 已收到 `onViewsChanged`)。`view.close()` → `HostDelegate::CloseView`(`DetachView` 后销毁窗口)。用户点非主窗口的关闭按钮先问 `view.onCloseRequested`。
+- **共享**:JS 状态、帧时钟(一个 Animator;VsyncSource 优先用视图 0 的)、平台视图表、纹理表、扩展。指针序列的接收方(捕获)由宿主与框架决定, 引擎按视图原样转发输入(ARCHITECTURE §3.10)。
+- **按视图**:surface 与 GPU 后端、ViewportMetrics、焦点、指针/键盘事件、合成状态。
+- **引擎不管窗口**:窗口的创建与关闭、标题、光标、位置、标题栏都属于宿主(embedder 的 `momo/window` 通道, docs/03 §5)。宿主建好窗口后以自己分配的 id `AttachView`(JS 收到 `onViewsChanged`), 关闭时 `DetachView`。引擎的接口(`Shell::Delegate`、`Engine::Delegate`、`ui::WindowClient`)里只有视图本身的事。
 - **帧路径**:一次 `onDrawFrame` 中各视图各自 `view.render(scene)`(每视图每帧至多一次),Animator 把它们打包成一个 `FrameItem`,raster 按 view_id 分别光栅化与呈现。
-- **输入法**:`momo/textinput` 发往当前获得焦点的窗口。热重启时其他窗口一并关闭。
+- **输入法**:由宿主的 `momo/textinput` 交给当前获得焦点的窗口。热重启时宿主关闭视图 0 之外的窗口(视图 0 已关闭则重新打开)。
 - 扩展 `get_window_handle(view_id)` 对所有视图有效。
 
 ## 3. runtime/ — V8 集成(详见 docs/04)
@@ -74,7 +74,7 @@ common, platform → base
 
 | JS 可见对象 | C++ 实现(`engine/ui/`) | 说明 |
 |---|---|---|
-| `window` | `window_binding.cc`(`UiBindings::Impl`)→ `WindowClient`(由 `Engine` 实现) | 尺寸、DPR、焦点;`window.render(scene)` 提交一帧 |
+| `window` / `views` | `window_binding.cc`(`UiBindings::Impl`)→ `WindowClient`(由 `Engine` 实现) | `window`: 全局帧调度与帧回调;每个视图: 尺寸、DPR、焦点、输入回调, `view.render(scene)` 提交一帧 |
 | `Canvas` / `Paint` / `Path` / `Gradient` | `painting_bindings.cc`(`JsCanvas` 等)→ `graphics::DisplayListBuilder` | JS 调 drawRect/drawPath/drawParagraph,记录为 DisplayList |
 | `PictureRecorder` / `Picture` | 同上(`JsPictureRecorder` / `JsPicture`) | Picture = 不可变 DisplayList |
 | `SceneBuilder` / `Scene` | `scene_bindings.cc`(`JsSceneBuilder` / `JsScene`)→ `graphics::LayerTree` | pushOffset/pushClipRect/addPicture,组装图层树 |

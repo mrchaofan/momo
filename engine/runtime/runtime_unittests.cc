@@ -198,6 +198,28 @@ TEST_F(JsRuntimeTest, DrainRunsNextTicksBeforeMicrotasks) {
   EXPECT_EQ(Eval("order.join(',')"), "sync,tick,promise");
 }
 
+// 从 momo 调用 JS 函数(帧、输入、通道回调)与 node::MakeCallback 相同: 返回前已按 Node 语义排空
+// nextTick 与微任务, 调用方不必另外排空;嵌套调用由最外层排空。
+TEST_F(JsRuntimeTest, CallsDrainNextTicksAndMicrotasksBeforeReturning) {
+  Eval("globalThis.order = [];\n"
+       "globalThis.f = () => {\n"
+       "  Promise.resolve().then(() => order.push('promise'));\n"
+       "  process.nextTick(() => order.push('tick'));\n"
+       "  order.push('call');\n"
+       "}; 0");
+  JsRuntimeImpl& impl = runtime_->impl();
+  v8::HandleScope handle_scope(impl.isolate());
+  v8::Local<v8::Context> context = impl.context();
+  v8::Context::Scope context_scope(context);
+  v8::Local<v8::Value> f =
+      context->Global()->Get(context, v8::String::NewFromUtf8Literal(impl.isolate(), "f")).ToLocalChecked();
+  ASSERT_TRUE(impl.Call(f.As<v8::Function>(), v8::Undefined(impl.isolate()), 0, nullptr, "f").ok());
+  v8::Local<v8::Value> order =
+      context->Global()->Get(context, v8::String::NewFromUtf8Literal(impl.isolate(), "order")).ToLocalChecked();
+  v8::String::Utf8Value text(impl.isolate(), order);
+  EXPECT_STREQ(*text, "call,tick,promise");
+}
+
 // 顶层 await 等待 Node IO: 入口经 uv_run 泵送, 返回时求值已完成。
 TEST_F(JsRuntimeTest, EntryTopLevelAwaitIsPumpedThroughUv) {
   ASSERT_TRUE(runtime_

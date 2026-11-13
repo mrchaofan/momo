@@ -1,5 +1,5 @@
 // momo_headless 冒烟测试: 等两帧、画一个红色方块、截图、经 momo/test 通道报告结果。
-import { window, PictureRecorder, Paint, SceneBuilder, ParagraphBuilder } from 'momo:ui';
+import { window, views, PictureRecorder, Paint, SceneBuilder, ParagraphBuilder } from 'momo:ui';
 import { send } from 'momo:services';
 
 // 最小 StandardMethodCodec 编码(只用到 string 与 map{passed, failed: int32})。
@@ -28,11 +28,11 @@ window.onDrawFrame = () => {
   c.drawParagraph(para, 10, 70);
   const sb = new SceneBuilder();
   sb.addPicture(0, 0, r.endRecording());
-  window.render(sb.build());
+  views.get(0).render(sb.build());
   if (frames < 3) {
     window.scheduleFrame();
   } else {
-    check(window.physicalSize.width === 320, 'physicalSize');
+    check(views.get(0).physicalSize.width === 320, 'physicalSize');
     check(para.height > 0, 'paragraph layout');
     send('momo/test', call('screenshot', [0])).then(() => {
       send('momo/test', call('done', [13, 2, ...str('passed'), ...i32(passed), ...str('failed'), ...i32(failed)]));

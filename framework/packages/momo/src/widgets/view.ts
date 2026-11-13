@@ -5,17 +5,19 @@
 //     与主窗口一起 layout/paint, 再提交到该窗口(momo:ui View.render);
 //   - 每个窗口有自己的 MediaQuery(尺寸/dpr/焦点)、Overlay(对话框只出现在本窗口)与根焦点作用域
 //     (挂在焦点树根下, 与主窗口并列;窗口获得系统焦点时恢复其上次的焦点)。
-// Window 是声明式封装: 挂载即 createView 打开窗口, 卸载即关闭;用户点关闭按钮时先问 onCloseRequested,
-// 关闭后回调 onClosed(应用据此从状态里移除该窗口)。
-import { createView, views, type View as UiView } from "momo:ui";
+// Window 是声明式封装: 挂载即打开窗口(或接管已有视图, 如宿主启动时创建的视图 0), 卸载即关闭;窗口的全部属性
+// (标题、尺寸限制、置顶、可缩放…)都在 Window 上声明, 随 widget 更新;用户点关闭按钮时先问 onCloseRequested,
+// 关闭后回调 onClosed(应用据此从状态里移除该窗口)。窗口操作经 WindowService(宿主的 momo/window 通道)。
+import { views, type View as UiView } from "momo:ui";
 import { reportError } from "../foundation/assert";
 import type { Key } from "../foundation/key";
-import { Size } from "../painting/geometry";
+import { Rect, Size } from "../painting/geometry";
 import type { RenderBox } from "../rendering/box";
 import { PipelineOwner, type RenderObject } from "../rendering/object";
 import { RenderView, type ViewConfiguration } from "../rendering/view";
 import { SchedulerBinding } from "../scheduler/binding";
 import { HardwareKeyboard } from "../services/hardware_keyboard";
+import { WindowService } from "../services/window";
 import { Actions, Shortcuts, defaultActions, defaultShortcuts } from "./actions";
 import { WidgetsBinding, type ViewRenderHost } from "./binding";
 import { FocusManager, FocusScopeNode } from "./focus_manager";
@@ -188,9 +190,13 @@ class ViewState extends State<View> {
   readonly #shortcuts = defaultShortcuts();
   readonly #actions = defaultActions();
   #focused = false;
+  readonly #onWindowChange = (view: number): void => {
+    if (view === this.widget.view.id && this.mounted) this.setState();
+  };
 
   override initState(): void {
     const binding = WidgetsBinding.instance;
+    WindowService.instance.addListener(this.#onWindowChange);
     const scheduler = SchedulerBinding.instance;
     const pipelineOwner = new PipelineOwner(() => scheduler.ensureVisualUpdate());
     const renderView = new RenderView(configurationOf(this.widget.view));
@@ -212,9 +218,11 @@ class ViewState extends State<View> {
 
   override dispose(): void {
     const view = this.widget.view;
-    for (const k of ["onMetricsChanged", "onPointerPacket", "onKeyData", "onFocusChanged", "onCloseRequested"] as const) {
+    for (const k of ["onMetricsChanged", "onPointerPacket", "onKeyData", "onFocusChanged"] as const) {
       (view as unknown as Record<string, unknown>)[k] = null;
     }
+    WindowService.instance.setCloseRequestHandler(view.id, null);
+    WindowService.instance.removeListener(this.#onWindowChange);
     WidgetsBinding.instance.unregisterView(this.#host);
     this.#host.pipelineOwner.rootNode = null;
     this.#scope.dispose();
@@ -247,13 +255,17 @@ class ViewState extends State<View> {
       if (focused && !this.#scope.hasFocus) this.#scope.requestFocus();
       if (this.mounted) this.setState(() => (this.#focused = focused));
     };
-    view.onCloseRequested = () => this.widget.onCloseRequested?.();
+    WindowService.instance.setCloseRequestHandler(view.id, () => this.widget.onCloseRequested?.());
   }
 
   build(_context: BuildContext): Widget {
     const cfg = this.#host.renderView.configuration;
+    const controls = WindowService.instance.controlsOf(this.widget.view.id);
     return new RawView(this.#host.renderView, new ViewScope({ view: this.widget.view, child: new MediaQuery({
-      data: new MediaQueryData({ size: cfg.size, devicePixelRatio: cfg.devicePixelRatio, windowFocused: this.#focused }),
+      data: new MediaQueryData({
+        size: cfg.size, devicePixelRatio: cfg.devicePixelRatio, windowFocused: this.#focused,
+        windowControls: controls !== null ? Rect.fromLTWH(controls.x, controls.y, controls.width, controls.height) : null,
+      }),
       child: new Shortcuts({
         debugLabel: "View Shortcuts",
         shortcuts: this.#shortcuts,
@@ -273,26 +285,36 @@ class ViewState extends State<View> {
 // ---------------------------------------------------------------------------
 // Window: 声明式地打开/关闭一个窗口
 
-/** Window 参数(尺寸为逻辑像素)。 */
+/**
+ * Window 参数(逻辑像素)。一个窗口的全部属性都在这里声明:
+ *   - 打开时生效: width/height(新开窗口时必需)、x/y、nonActivating;
+ *   - 随 widget 更新: title、minWidth/minHeight、alwaysOnTop、resizable。
+ * 外观(隐藏标题栏、缩放边框)由窗口内容里的 WindowChrome 声明。
+ */
 export interface WindowOptions {
   key?: Key | null;
+  /**
+   * 接管一个已打开的视图(而不是新开窗口), 如宿主启动时创建的视图 0: Window({ view: views.get(0), ... })。
+   * 接管后与新开的窗口没有区别: 属性随 widget 更新, 卸载即关闭。
+   */
+  view?: UiView | null;
   title?: string;
-  width: number;
-  height: number;
+  width?: number;
+  height?: number;
   minWidth?: number;
   minHeight?: number;
   /** 置顶: 窗口浮在普通窗口之上。 */
   alwaysOnTop?: boolean;
+  /** 用户能否拖动边框缩放窗口。缺省 true。 */
+  resizable?: boolean;
   /** 初始位置: 内容区左上角的屏幕坐标(逻辑点, 主屏左上原点), x 与 y 同时给出时生效;缺省居中。 */
   x?: number;
   y?: number;
   /**
-   * 面板(同 Electron 的 type: 'panel'): 可接收键盘(key), 但不成为 main window, 聚焦它也不激活应用。
-   * 适合浮动的辅助窗口。仅在打开时生效。缺省 false。
+   * 辅助窗口: 可接收键盘, 但不成为应用的主窗口, 聚焦它也不激活应用(同 Electron 的 type: 'panel')。
+   * 适合浮动的辅助窗口。仅在新开窗口时生效。缺省 false。
    */
-  panel?: boolean;
-  /** 用户能否拖动边框缩放窗口(打开时的初值;之后由 WindowChrome 的 resizable 修改)。缺省 true。 */
-  resizable?: boolean;
+  nonActivating?: boolean;
   /** 用户点了窗口的关闭按钮: 返回 false 取消关闭。 */
   onCloseRequested?: (() => boolean | void) | null;
   /** 窗口已打开(child 将在下一帧渲染进去)。适合在此把已有子树(GlobalKey)移进新窗口。 */
@@ -305,8 +327,8 @@ export interface WindowOptions {
 }
 
 /**
- * 一个原生窗口。放在 {@link ViewAnchor} 的 views 中: 挂载时打开窗口, 卸载时关闭;child 渲染在窗口里,
- * 与主窗口共享 JS 状态。title 变化时更新窗口标题。
+ * 一个原生窗口。放在 {@link ViewAnchor} 的 views 中(或作为 runWidget 的窗口): 挂载时打开窗口(或接管 view),
+ * 卸载时关闭;child 渲染在窗口里, 与其他窗口共享 JS 状态。
  */
 export class Window extends StatefulWidget {
   readonly opts: WindowOptions;
@@ -332,42 +354,77 @@ export class WindowState extends State<Window> {
   override initState(): void {
     const o = this.widget.opts;
     WidgetsBinding.instance.addViewsListener(this.#onViewsChanged);
-    createView({ title: o.title, width: o.width, height: o.height, minWidth: o.minWidth, minHeight: o.minHeight, x: o.x, y: o.y, panel: o.panel, resizable: o.resizable }).then(
-      (view) => {
+    if (o.view != null) {
+      // 接管已有视图: 立即可用;onOpened 推迟到构建之外(回调里通常会 setState)。
+      const view = o.view;
+      this.#view = view;
+      this.#applyProperties(view.id, null);
+      void Promise.resolve().then(() => {
+        if (!this.#disposed && this.#view === view) this.widget.opts.onOpened?.(view);
+      });
+      return;
+    }
+    const windows = WindowService.instance;
+    windows.create({
+      title: o.title, width: o.width ?? 800, height: o.height ?? 600, minWidth: o.minWidth, minHeight: o.minHeight,
+      x: o.x, y: o.y, nonActivating: o.nonActivating, resizable: o.resizable,
+    }).then(
+      (id) => {
+        const view = views.get(id);
         if (this.#disposed) {
-          view.close();  // 打开期间已被移除
+          windows.close(id);  // 打开期间已被移除
           return;
         }
-        if (this.widget.opts.title !== undefined) view.title = this.widget.opts.title;
-        if (this.widget.opts.alwaysOnTop) view.setAlwaysOnTop(true);
+        if (view === undefined) {
+          this.#fail(new Error("Window: the host closed the window before it opened"));
+          return;
+        }
+        // 打开期间属性可能已变化: 以当前 widget 为准补齐(创建时已带 title/resizable)。
+        this.#applyProperties(id, { ...o, alwaysOnTop: false });
         this.setState(() => (this.#view = view));
         this.widget.opts.onOpened?.(view);
       },
-      (e: unknown) => {
-        if (this.#disposed) return;
-        const onError = this.widget.opts.onCreateError;
-        if (onError) onError(e);
-        else reportError(e, "opening a window");
-      },
+      (e: unknown) => this.#fail(e),
     );
   }
 
+  #fail(e: unknown): void {
+    if (this.#disposed) return;
+    const onError = this.widget.opts.onCreateError;
+    if (onError) onError(e);
+    else reportError(e, "opening a window");
+  }
+
+  /** 把与 old 不同的可更新属性交给宿主(old 为 null: 全部)。 */
+  #applyProperties(id: number, old: WindowOptions | null): void {
+    const o = this.widget.opts;
+    const windows = WindowService.instance;
+    if (o.title !== undefined && o.title !== old?.title) windows.setTitle(id, o.title);
+    if ((o.minWidth !== undefined || o.minHeight !== undefined) &&
+        (o.minWidth !== old?.minWidth || o.minHeight !== old?.minHeight)) {
+      windows.setMinSize(id, o.minWidth ?? 0, o.minHeight ?? 0);
+    }
+    const top = o.alwaysOnTop ?? false;
+    if (top !== (old?.alwaysOnTop ?? false) || (old === null && top)) windows.setAlwaysOnTop(id, top);
+    const resizable = o.resizable ?? true;
+    if (old === null ? o.resizable !== undefined : resizable !== (old.resizable ?? true)) {
+      windows.setResizable(id, resizable);
+    }
+  }
+
   override didUpdateWidget(old: Window): void {
-    const title = this.widget.opts.title;
-    if (this.#view !== null && title !== undefined && title !== old.opts.title) this.#view.title = title;
-    const top = this.widget.opts.alwaysOnTop ?? false;
-    if (this.#view !== null && top !== (old.opts.alwaysOnTop ?? false)) this.#view.setAlwaysOnTop(top);
+    if (this.#view !== null) this.#applyProperties(this.#view.id, old.opts);
   }
 
   /** 把窗口带到最前。 */
   activate(): void {
-    this.#view?.activate();
+    if (this.#view !== null) WindowService.instance.activate(this.#view.id);
   }
 
   override dispose(): void {
     this.#disposed = true;
     WidgetsBinding.instance.removeViewsListener(this.#onViewsChanged);
-    if (this.#view !== null && !this.#closedByHost && views.has(this.#view.id)) this.#view.close();
+    if (this.#view !== null && !this.#closedByHost && views.has(this.#view.id)) WindowService.instance.close(this.#view.id);
   }
 
   #onViewsChanged = (): void => {

@@ -34,7 +34,6 @@ class JsAppDriver final : public AppDriver {
     bindings_->BeginFrame(frame_start);
     bindings_->DrawFrame();
   }
-  bool OnCloseRequested(ViewId view) override { return bindings_->CloseRequested(view); }
   void OnPointerPacket(ViewId view, const platform::PointerDataPacket& packet) override {
     bindings_->PointerPacket(view, packet);
   }
@@ -45,11 +44,7 @@ class JsAppDriver final : public AppDriver {
     bindings_->FocusChanged(view, focused);
   }
   void OnViewAdded(ViewId view) override { bindings_->ViewAdded(view); }
-  void OnWindowFrameChanged(ViewId view) override { bindings_->WindowFrameChanged(view); }
   void OnViewRemoved(ViewId view) override { bindings_->ViewRemoved(view); }
-  void OnViewCreateResult(uint64_t request, StatusOr<ViewId> result) override {
-    bindings_->ViewCreateResult(request, std::move(result));
-  }
 
  private:
   // 声明顺序即逆序析构: bindings_ 先于 runtime_ 销毁。

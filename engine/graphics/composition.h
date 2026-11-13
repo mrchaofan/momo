@@ -40,7 +40,8 @@ class Composition {
   std::optional<Rect> slice_bounds(size_t slice) const;
   // 分片 i 中各叶子的设备空间范围(已与帧求交)。
   const std::vector<Rect>& slice_leaf_rects(size_t slice) const;
-  // 位于 views[view_index] 之上、与其可见范围相交的 momo 内容(已与之求交)。
+  // 位于 views[view_index] 之上、与其可见范围相交的可命中 momo 内容(已与之求交)。只算可命中区域
+  // (DisplayList::hit_regions), 不算绘制范围: 画在平台视图之上但不接收指针的内容不挡住它。
   std::vector<Rect> OccludersAbove(size_t view_index) const;
   // 平台视图的可见范围: 设备 frame ∩ 祖先裁剪 ∩ 帧。完全不可见为 nullopt。
   std::optional<Rect> VisibleFrame(size_t view_index) const;

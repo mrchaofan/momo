@@ -368,6 +368,11 @@ void CanvasClipRect(JsCanvas& c, const Args& a) {
   double v[4];
   if (auto* b = Builder(c, a); b && Numbers(a, 0, 4, v)) b->ClipRect(RectOf(v));
 }
+// addHitRegion(x, y, w, h): 记录可命中区域(不绘制), 平台层据此判断平台视图是否被 momo 内容盖住。
+void CanvasAddHitRegion(JsCanvas& c, const Args& a) {
+  double v[4];
+  if (auto* b = Builder(c, a); b && Numbers(a, 0, 4, v)) b->AddHitRegion(RectOf(v));
+}
 void CanvasClipRRect(JsCanvas& c, const Args& a) {
   double v[5];
   if (auto* b = Builder(c, a); b && Numbers(a, 0, 5, v)) b->ClipRRect(RectOf(v), v[4]);
@@ -580,6 +585,7 @@ void InstallPaintingClasses(v8::Isolate* isolate, v8::Local<v8::Context> context
       .Method("transform", &CanvasTransform)
       .Method("clipRect", &CanvasClipRect)
       .Method("clipRRect", &CanvasClipRRect)
+      .Method("addHitRegion", &CanvasAddHitRegion)
       .Method("clipPath", &CanvasClipPath)
       .Method("saveLayer", &CanvasSaveLayer)
       .Method("drawDRRect", &CanvasDrawDRRect)

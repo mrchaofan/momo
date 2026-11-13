@@ -1,16 +1,17 @@
-// WidgetTester:对标 flutter_test,通过 window 回调驱动帧、指针、键盘,经 BinaryMessenger 模拟平台消息。
-// 只依赖框架公开的 window 回调与 messenger,因此在 mock 宿主和真实引擎宿主下都可用。
+// WidgetTester:对标 flutter_test,通过 window / view 回调驱动帧、指针、键盘,经 BinaryMessenger 模拟平台消息。
+// 只依赖框架公开的 momo:ui 回调与 messenger,因此在 mock 宿主和真实引擎宿主下都可用。
 import { views, window } from "momo:ui";
+import { currentHost } from "./harness";
 import {
   Element, GlobalKey, Key, Offset, Rect, RenderBox, RichText, SchedulerBinding, Size, StandardMethodCodec, MethodCall,
   WidgetsBinding, defaultBinaryMessenger, keysEqual, runApp, paragraphCache, type Type, type Widget, HardwareKeyboard,
-  FocusManager, imageCache, TextInput,
+  FocusManager, imageCache, TextInput, WindowService,
 } from "../packages/momo/src/index";
 
 /** 指针设备类型码(与 momo:ui 指针包一致)。 */
 export const Kind = { mouse: 0, trackpad: 1, touch: 2, stylus: 3 } as const;
 /** phase 码。 */
-export const Phase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6, gesture: 7 } as const;
+export const Phase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6, gesture: 7, cancel: 8 } as const;
 
 export interface PointerOptions {
   kind?: number;
@@ -18,12 +19,12 @@ export interface PointerOptions {
   buttons?: number;
   scrollDeltaX?: number;
   scrollDeltaY?: number;
-  /** 目标视图(窗口)id, 缺省主窗口。坐标为该窗口的逻辑坐标。 */
+  /** 目标视图(窗口)id, 缺省隐式视图 0。坐标为该窗口的逻辑坐标。 */
   view?: number;
   /** 指针的屏幕位置(逻辑点)。缺省 = 窗口屏幕框左上 + position。 */
   screen?: Offset;
-  /** 宿主为原生事件分配的 id(缺省 0 = 合成事件)。 */
-  nativeEventId?: number;
+  /** 按下序列 id(缺省 0;mock 宿主像真实宿主一样自行分配)。 */
+  sequenceId?: number;
   /** 滚动/手势阶段(0 none, 1 start, 2 update, 3 end)。 */
   scrollPhase?: number;
   /** gesture 事件的种类、值、阶段(见 POINTER_DATA_STRIDE)。 */
@@ -156,17 +157,20 @@ export class WidgetTester {
     d[7] = (o.scrollDeltaX ?? 0) * this.#dpr;
     d[8] = (o.scrollDeltaY ?? 0) * this.#dpr;
     d[9] = 0;
-    const target = o.view !== undefined && o.view !== 0 ? views.get(o.view) : window;
+    const viewId = o.view ?? 0;
     // 屏幕位置 = 窗口屏幕框左上 + 窗口内位置(逻辑点)。
-    const frame = target?.screenFrame ?? { x: 0, y: 0 };
+    const mock = currentHost?.mock ?? null;
+    const frame = mock?.frames.get(viewId) ?? WindowService.instance.frameOf(viewId) ?? { x: 0, y: 0 };
     d[10] = o.screen?.dx ?? frame.x + position.dx;
     d[11] = o.screen?.dy ?? frame.y + position.dy;
-    d[12] = o.nativeEventId ?? 0;
+    d[12] = o.sequenceId ?? 0;
     d[13] = o.scrollPhase ?? 0;
     d[14] = o.gestureKind ?? 0;
     d[15] = o.gestureValue ?? 0;
     d[16] = o.gestureStage ?? 0;
-    target?.onPointerPacket?.(d, 1);
+    // mock 宿主: 经宿主投递(移动循环等宿主行为生效);真实引擎: 直接交给视图。
+    if (mock !== null) mock.deliverPointer(viewId, d, 1);
+    else views.get(viewId)?.onPointerPacket?.(d, 1);
   }
 
   #pos(target: Element | Offset): Offset {
@@ -216,7 +220,7 @@ export class WidgetTester {
 
   /** 发送一条 KeyData;返回框架是否消费。 */
   sendKeyData(type: "down" | "up" | "repeat", logicalKey: number, physicalKey: number, o: { character?: string; modifiers?: number } = {}): boolean {
-    const r = window.onKeyData?.({ type, timeStampUs: this.now * 1000, physicalKey, logicalKey, character: o.character ?? "", modifiers: o.modifiers ?? 0 });
+    const r = views.get(0)?.onKeyData?.({ type, timeStampUs: this.now * 1000, physicalKey, logicalKey, character: o.character ?? "", modifiers: o.modifiers ?? 0 });
     return r === true;
   }
 
@@ -251,6 +255,7 @@ export class WidgetTester {
 
   /** 复位整个框架状态(每个测试之后)。 */
   async reset(): Promise<void> {
+    currentHost?.mock?.debugRestoreImplicitView();
     this.binding.debugResetForTest();
     defaultBinaryMessenger.debugReset();
     paragraphCache.clear();

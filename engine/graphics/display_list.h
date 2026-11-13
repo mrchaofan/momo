@@ -84,6 +84,9 @@ class DisplayList {
   // 绘制内容在本地坐标系下的保守包围盒(已考虑记录期的变换与裁剪)。
   // 含无界绘制(drawColor/drawPaint)且无 cull rect 时为 nullopt。
   const std::optional<Rect>& bounds() const { return bounds_; }
+  // 可命中区域(本地坐标, 已考虑记录期的变换与裁剪;嵌套列表的已并入)。不参与绘制, 只告诉宿主
+  // "这里的 momo 内容会接收指针事件"(docs/05 §9: 宿主据此判断平台视图是否被 momo 内容盖住)。
+  const std::vector<Rect>& hit_regions() const { return hit_regions_; }
   size_t op_count() const { return ops_.size(); }
 
   // 转换后的 Skia 对象(定义在 graphics 内部头 skia/paint_context.h, 外部不可用)。首次调用时创建。
@@ -104,6 +107,7 @@ class DisplayList {
   std::vector<std::shared_ptr<const ExternalPicture>> externals_;
   std::vector<std::shared_ptr<Texture>> textures_;
   std::optional<Rect> bounds_;
+  std::vector<Rect> hit_regions_;
   bool dynamic_ = false;
 
   mutable std::once_flag raster_cache_once_;
@@ -152,6 +156,8 @@ class DisplayListBuilder {
   void DrawExternal(std::shared_ptr<const ExternalPicture> picture, Point offset,
                     const Rect& local_bounds);
   void DrawTexture(std::shared_ptr<Texture> texture, const Rect& dst);
+  // 记录一块可命中区域(本地坐标;不绘制)。
+  void AddHitRegion(const Rect& rect);
 
   // 冻结并返回结果;未配平的 Save 自动 Restore。之后 builder 回到初始状态可复用。
   std::shared_ptr<const DisplayList> Build();
@@ -170,6 +176,8 @@ class DisplayListBuilder {
   void AccumulateLocal(const Rect& local, const Paint* paint);
   void AccumulateUnbounded();
   void AccumulateDevice(const Rect& device);
+  // 本地矩形按当前变换与裁剪变为记录根坐标;完全被裁掉时为 nullopt。
+  std::optional<Rect> ToRoot(const Rect& local) const;
 
   std::optional<Rect> cull_rect_;
   std::unique_ptr<DisplayList> list_;

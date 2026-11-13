@@ -38,7 +38,7 @@ Engine::Engine(const Settings& settings, Delegate& delegate,
       settings_(settings),
       host_(host),
       animator_(*this, task_runner(), std::move(waiter)) {
-  views_[platform::kImplicitViewId];  // 主窗口始终存在
+  views_[platform::kImplicitViewId];  // 隐式视图: bundle 执行前即存在(宿主随后绑定其窗口)
 }
 
 Engine::~Engine() {
@@ -92,20 +92,11 @@ void Engine::AddView(platform::ViewId view) {
 }
 
 void Engine::RemoveView(platform::ViewId view) {
-  if (view == platform::kImplicitViewId || views_.erase(view) == 0) {
+  if (views_.erase(view) == 0) {
     return;
   }
   MOMO_LOG(VERBOSE) << "View removed: " << view;
-  // 持有捕获的视图被移除(拖动中窗口关闭): 补一个 remove, 让框架取消进行中的手势。
-  const platform::PointerDataPacket released = pointer_capture_.ReleaseView(view);
-  if (!released.empty()) {
-    driver_->OnPointerPacket(platform::kImplicitViewId, released);
-  }
   driver_->OnViewRemoved(view);
-}
-
-void Engine::OnViewCreateResult(uint64_t request, StatusOr<platform::ViewId> result) {
-  driver_->OnViewCreateResult(request, std::move(result));
 }
 
 void Engine::Render(std::unique_ptr<graphics::LayerTree> layer_tree) {
@@ -149,39 +140,14 @@ void Engine::OnPointerPacket(platform::ViewId view, const platform::PointerDataP
   if (packet.empty() || views_.count(view) == 0) {
     return;
   }
-  const platform::PointerDataPacket filtered = pointer_capture_.Filter(view, packet);
-  if (!filtered.empty()) {
-    driver_->OnPointerPacket(view, filtered);
-  }
-}
-
-bool Engine::SetPointerCapture(platform::ViewId view) {
-  // 先在 ui 线程转交(原窗口此后的事件立即作废), 再请宿主窗口接管系统层的鼠标事件。
-  if (views_.count(view) == 0 || !pointer_capture_.TransferTo(view)) {
-    return false;
-  }
-  delegate_.CaptureWindowPointer(view);
-  return true;
+  // 指针序列的接收方由宿主(原生捕获)与框架(逻辑捕获)决定, 引擎原样转发。
+  driver_->OnPointerPacket(view, packet);
 }
 
 void Engine::OnKeyData(platform::ViewId view, const platform::KeyData& data) {
   if (views_.count(view) != 0) {
     driver_->OnKeyData(view, data);
   }
-}
-
-Rect Engine::screen_frame(platform::ViewId view) const {
-  auto it = views_.find(view);
-  return it != views_.end() ? it->second.frame : Rect{};
-}
-
-void Engine::OnWindowFrameChanged(platform::ViewId view, const Rect& frame) {
-  auto it = views_.find(view);
-  if (it == views_.end() || it->second.frame == frame) {
-    return;
-  }
-  it->second.frame = frame;
-  driver_->OnWindowFrameChanged(view);
 }
 
 void Engine::OnFocusChanged(platform::ViewId view, bool focused) {
