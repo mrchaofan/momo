@@ -24,6 +24,8 @@ class ViewSlicer {
  public:
   // 叶子即将在 leaf 上绘制 local_bounds(leaf 当前坐标系;nullopt = 无界), 用于计算各分片的内容范围。
   virtual void NoteLeafDraw(SkCanvas* leaf, const std::optional<Rect>& local_bounds) = 0;
+  // 叶子的可命中区域(leaf 当前坐标系), 用于判断平台视图之上哪里的 momo 内容会接收指针事件。
+  virtual void NoteHitRegions(SkCanvas* leaf, const std::vector<Rect>& local_regions) = 0;
   // 绘制遍历遇到一个平台视图: 返回之后的叶子应画入的分片画布。
   virtual SkCanvas* OnPlatformView() = 0;
 

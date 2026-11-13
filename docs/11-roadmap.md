@@ -73,6 +73,10 @@
 - [~] material 精简版(Theme/Button/Checkbox/TextField/Scaffold/Dialog);文本选择拖柄、撤销重做未做
 - [~] 打包:.app + DMG(`momo build --dmg`)✅;MSIX、崩溃上报、性能浮层/Perfetto ⬜
 - [x] 多窗口支持(Shell 多视图, macOS;docs/02 §2、docs/06 §2);Windows embedder 未实现
+- [x] 分层整理: 窗口外观与行为、剪贴板/URL/输入法移出 engine, 改为 embedder 注册的宿主通道(`momo/window`、`momo/app`…,
+      ARCHITECTURE §3.10);可选窗口能力显式声明(`WindowCapability`);所有窗口对等(视图 0 可关闭, `runWidget`);
+      标题栏改为"应用声明高度、宿主报告控制按钮区域";拖动区域改为命中测试 + 手势竞技场;窗口跟随指针改为宿主移动循环;
+      指针序列的接收方固定(框架 `capturePointer` 定逻辑接收方, 宿主定原生接收窗口, 引擎不参与);`PointerEvent.viewId`。Windows 只实现了定位与指针捕获两项可选能力(未编译验证)
 - [ ] 无障碍(语义树 → UIA/AX)——设计预留,独立立项(未做)
 
 ## M7 · 接入 Node.js(参照 Electron `NodeBindings`)

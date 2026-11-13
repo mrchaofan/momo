@@ -10,3 +10,4 @@ export * from "./text_input";
 export * from "./keyboard_key";
 export * from "./hardware_keyboard";
 export * from "./platform_views";
+export * from "./window";

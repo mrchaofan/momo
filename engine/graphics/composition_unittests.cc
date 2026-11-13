@@ -19,8 +19,10 @@ Paint Fill(uint32_t color) {
   return paint;
 }
 
+// 可命中的色块(框架里自身可命中的节点会同时记录可命中区域)。
 std::shared_ptr<const DisplayList> Square(const Rect& rect, uint32_t color) {
   DisplayListBuilder builder;
+  builder.AddHitRegion(rect);
   builder.DrawRect(rect, Fill(color));
   return builder.Build();
 }
@@ -123,6 +125,32 @@ TEST(CompositionTest, AncestorClipAppliesToLaterSlices) {
   OwnedPixelBuffer overlay(50, 50);
   ASSERT_TRUE(composition->RasterizeSlice(1, overlay.view(), {0, 0}).ok());
   EXPECT_EQ(overlay.GetColor(45, 45), 0xFF00FF00u);
+}
+
+// 遮挡只看可命中区域, 不看绘制: 不可命中的绘制(阴影、IgnorePointer 下的内容)不遮挡, 只有命中区域(透明的
+// 手势层)也遮挡;区域经变换与裁剪换算到设备空间, 嵌套的 DisplayList 一并计入。
+TEST(CompositionTest, OccludersComeFromHitRegionsNotDrawing) {
+  DisplayListBuilder inner;
+  inner.AddHitRegion({0, 0, 30, 30});
+  auto nested = inner.Build();
+
+  DisplayListBuilder above;
+  above.DrawRect({0, 0, 50, 50}, Fill(0x80000000));  // 只绘制
+  above.Save();
+  above.Translate(5, 5);
+  above.ClipRect({0, 0, 10, 10});
+  above.AddHitRegion({0, 0, 20, 20});  // 被裁剪为 (5,5,10,10)
+  above.Restore();
+  above.Translate(60, 60);
+  above.DrawDisplayList(nested);  // (60,60,30,30)
+
+  auto root = std::make_shared<ContainerLayer>();
+  root->Add(std::make_shared<PlatformViewLayer>(Rect{0, 0, 100, 100}, 1));
+  root->Add(std::make_shared<PictureLayer>(Point{0, 0}, above.Build()));
+  LayerTree tree({100, 100}, 1.0, root);
+  auto composition = Composition::Build(tree);
+  EXPECT_EQ(composition->OccludersAbove(0), (std::vector<Rect>{{5, 5, 10, 10}, {60, 60, 30, 30}}))
+      << "drawing alone does not occlude";
 }
 
 // 两个视图: 三个分片, 遮挡只算视图之上的分片。

@@ -29,20 +29,20 @@
 #include "embedder/common/engine_platform.h"
 #include "embedder/common/platform_window.h"
 #include "embedder/windows/win_util.h"
-#include "engine/platform/text_input_connection.h"
+#include "embedder/common/text_input.h"
 
 namespace momo::embedder::windows {
 
-class WinTextInput final : public platform::TextInputConnection {
+class WinTextInput final : public TextInputConnection {
  public:
   WinTextInput(HWND hwnd, WindowDelegate* delegate);
   ~WinTextInput() override;
 
-  // platform::TextInputConnection
+  // TextInputConnection
   void Show() override;
   void Hide() override;
   void SetCaretRect(Rect physical_rect) override;
-  void SetEditingState(const platform::TextEditingState& state) override;
+  void SetEditingState(const TextEditingState& state) override;
 
   bool active() const { return active_; }
   bool composing() const { return composing_; }
@@ -56,7 +56,7 @@ class WinTextInput final : public platform::TextInputConnection {
   void OnFocusChanged(bool focused);
 
  private:
-  void Emit(const platform::TextInputEvent& event);
+  void Emit(const TextInputEvent& event);
   void UpdateImePosition();
   void DestroySystemCaret();
 
@@ -67,7 +67,7 @@ class WinTextInput final : public platform::TextInputConnection {
   bool caret_created_ = false;
   wchar_t pending_high_surrogate_ = 0;
   Rect caret_rect_;            // 物理像素, 相对客户区左上角
-  platform::TextEditingState state_;
+  TextEditingState state_;
 };
 
 }  // namespace momo::embedder::windows

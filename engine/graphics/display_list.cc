@@ -39,6 +39,19 @@ void DisplayListBuilder::AccumulateDevice(const Rect& device) {
   }
 }
 
+std::optional<Rect> DisplayListBuilder::ToRoot(const Rect& local) const {
+  std::optional<Rect> r = state_.matrix.MapRect(local.Normalized());
+  if (r && state_.clip) r = r->Intersect(*state_.clip);
+  if (r && cull_rect_) r = r->Intersect(*cull_rect_);
+  return r;
+}
+
+void DisplayListBuilder::AddHitRegion(const Rect& rect) {
+  if (std::optional<Rect> r = ToRoot(rect)) {
+    list_->hit_regions_.push_back(*r);
+  }
+}
+
 void DisplayListBuilder::AccumulateLocal(const Rect& local, const Paint* paint) {
   Rect r = local.Normalized();
   if (paint != nullptr && paint->style == Paint::Style::kStroke) {
@@ -193,6 +206,9 @@ void DisplayListBuilder::DrawDisplayList(std::shared_ptr<const DisplayList> disp
     AccumulateUnbounded();
   }
   list_->dynamic_ = list_->dynamic_ || display_list->is_dynamic();
+  for (const Rect& r : display_list->hit_regions()) {
+    if (std::optional<Rect> mapped = ToRoot(r)) list_->hit_regions_.push_back(*mapped);
+  }
   list_->display_lists_.push_back(std::move(display_list));
   Push(DisplayList::OpType::kDrawDisplayList, 0,
         static_cast<uint32_t>(list_->display_lists_.size() - 1));

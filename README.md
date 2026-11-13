@@ -180,15 +180,17 @@ API 形状与 Flutter 基本一致，主要差异：
 
 绝大多数应用用 Widget 框架（上一节）。如果你要写游戏、可视化，或者想了解引擎边界，也可以绕开框架、直接用引擎提供的 `momo:ui` 模块画帧。它对标 Flutter 的 `dart:ui`，完整类型声明见 [framework/packages/momo/src/ui/momo-ui.d.ts](framework/packages/momo/src/ui/momo-ui.d.ts)。
 
-```js
-import { window, PictureRecorder, Paint, SceneBuilder } from "momo:ui";
+`momo:ui` 只有引擎职责：`window` 是全局的帧调度与帧回调，`views` 是视图（窗口）的画面、尺寸与输入。窗口的标题、位置、标题栏等属于宿主，经宿主注册的 `momo/window` 通道设置（框架里是 `WindowService` 与 `Window` / `WindowChrome`）。
 
-window.title = "momo:ui demo";
+```js
+import { window, views, PictureRecorder, Paint, SceneBuilder } from "momo:ui";
+
+const view = views.get(0);  // 宿主启动时创建的窗口（隐式视图）
 
 window.onBeginFrame = (timeMs) => {
-  const dpr = window.devicePixelRatio;
-  const w = window.physicalSize.width / dpr;          // 以逻辑像素绘制
-  const h = window.physicalSize.height / dpr;
+  const dpr = view.devicePixelRatio;
+  const w = view.physicalSize.width / dpr;            // 以逻辑像素绘制
+  const h = view.physicalSize.height / dpr;
 
   const recorder = new PictureRecorder();
   const canvas = recorder.beginRecording(0, 0, w, h);  // Canvas 只记录指令（DisplayList），不立即绘制
@@ -203,14 +205,14 @@ window.onBeginFrame = (timeMs) => {
     .addPicture(0, 0, recorder.endRecording())
     .pop()
     .build();
-  window.render(scene);       // 提交本帧
+  view.render(scene);         // 提交本视图本帧的画面
   window.scheduleFrame();     // 请求下一帧（不请求就不会出帧，空闲零功耗）
 };
-window.onMetricsChanged = () => window.scheduleFrame();
+view.onMetricsChanged = () => window.scheduleFrame();
 window.scheduleFrame();
 ```
 
-这类脚本不需要构建，直接运行：`Momo --dev --bundle=path/to/main.js`。更完整的例子见 `examples/hello_frame`。
+这类脚本不需要构建，直接运行：`Momo --dev --bundle=path/to/main.js`。更完整的例子（含经 `momo/window` 通道设置窗口标题）见 `examples/hello_frame`。
 
 ---
 
@@ -233,8 +235,10 @@ window.scheduleFrame();
 | 剪贴板 | `await Clipboard.setData("text")`、`await Clipboard.getData()` |
 | 打开链接 | `await openUrl("https://example.com")` |
 | 生命周期 | `AppLifecycle.instance.addListener((state) => ...)`，`state` 为 `"resumed"` / `"suspended"` / `"terminating"`；窗口最小化或应用隐藏时为 `suspended`，期间不出帧 |
-| 拦截关闭 | `WidgetsBinding.instance.addObserver({ didRequestClose: () => false })`，返回 `false` 取消本次关闭（例如提示"有未保存内容"） |
-| 窗口 | `window.title = "..."`、`window.setMinSize(w, h)`（从 `momo:ui` 导入 `window`） |
+| 拦截关闭 | 关窗：`WidgetsBinding.instance.addObserver({ didRequestClose: () => false })`（`runApp` 的窗口）或 `Window({ onCloseRequested })`；退出应用（Cmd+Q）：`didRequestAppExit`。返回 `false` 取消（例如提示"有未保存内容"）。最后一个窗口关闭后应用退出 |
+| 窗口 | `MaterialApp({ title })` 设置所在窗口的标题；多窗口用 `ViewAnchor({ views: [new Window({ title, width, height, minWidth, alwaysOnTop, resizable, ... })] })`；所有窗口对等的写法用 `runWidget` + `Window({ view: views.get(0) })` 接管启动窗口 |
+| 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`；`WindowDragArea` 声明可拖动窗口的区域 |
+| 其他窗口操作 | `WindowService.instance`：`setPosition`、`activate`、`frameOf`、`capabilitiesOf`（平台不支持的能力是空操作，可先查询） |
 | 与原生通信 | `new MethodChannel("acme/foo").invokeMethod("bar", args)`；对端由原生扩展注册（见下文） |
 
 完整用法可参考 `examples/counter`（按钮、主题、快捷键）、`examples/todo`（输入框、列表、勾选、删除、滚动），以及 `framework/test/` 下的测试用例。
@@ -400,7 +404,7 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 }
 ```
 
-宿主 API 还提供：Promise（在 worker 线程完成后 `promise_resolve_*`）、消息通道（`channel_set_handler` 可指定 platform / ui / io / worker pool 线程）、任务投递、主窗口句柄（`NSView*`，用于托盘、子窗口等系统集成）、帧回调、纹理注入（扩展自己生成像素，在界面中用 `Texture` widget 显示）。
+宿主 API 还提供：Promise（在 worker 线程完成后 `promise_resolve_*`）、消息通道（`channel_set_handler` 可指定 platform / ui / io / worker pool 线程）、任务投递、窗口句柄（按视图 id 取得 `NSView*`，用于托盘、子窗口等系统集成）、帧回调、纹理注入（扩展自己生成像素，在界面中用 `Texture` widget 显示）。
 
 **回调线程规则**：宿主只在你注册回调的那个线程上调用它，或者在注册时用 `MomoTaskRunner` 显式指定的线程上调用；不会在宿主内部线程上调用扩展代码。因此帧回调（`add_frame_callback`）只能在 ui 线程注册；acquire/release 方式的纹理必须在注册线程上调用 `texture_mark_frame_available`，否则返回 `kMomoErrWrongThread`。
 

@@ -215,6 +215,8 @@ declare module "momo:ui" {
     clipRect(x: number, y: number, width: number, height: number): void;
     clipRRect(x: number, y: number, width: number, height: number, radius: number): void;
     clipPath(path: Path): void;
+    /** 记录可命中区域(局部坐标, 不绘制): 宿主据此判断这块 momo 内容是否盖住下面的平台视图。 */
+    addHitRegion(x: number, y: number, width: number, height: number): void;
     drawColor(color: Color): void;
     drawPaint(paint: Paint): void;
     drawRect(x: number, y: number, width: number, height: number, paint: Paint): void;
@@ -273,11 +275,11 @@ declare module "momo:ui" {
   /**
    * 指针包: 每个事件占 POINTER_DATA_STRIDE(= 17)个 Float64, 字段顺序:
    *   0 timeStampUs  1 kind(0 mouse, 1 trackpad, 2 touch, 3 stylus)
-   *   2 phase(0 add, 1 down, 2 move, 3 up, 4 remove, 5 hover, 6 scroll, 7 gesture)
+   *   2 phase(0 add, 1 down, 2 move, 3 up, 4 remove(离开), 5 hover, 6 scroll, 7 gesture, 8 cancel(按下序列被取消))
    *   3 device  4 physicalX  5 physicalY(物理像素)  6 buttons(位图: 1 主键, 2 次键, 4 中键)
    *   7 scrollDeltaX  8 scrollDeltaY(物理像素)  9 momentum(1 = 惯性滚动阶段)
-   *   10 screenX  11 screenY(屏幕位置, 逻辑点, 主屏左上原点;与 View.screenFrame 同一坐标系)
-   *   12 nativeEventId(宿主为原生事件分配的 id, 0 = 合成事件;见 View.dispatchPlatformViewPointer)
+   *   10 screenX  11 screenY(屏幕位置, 逻辑点, 主屏左上原点;与宿主 momo/window 报告的窗口 frame 同一坐标系)
+   *   12 sequenceId(宿主的按下序列 id, 0 = 不在序列内;momo/window startDrag / capturePointer 回送校验)
    *   13 signalPhase(scroll / gesture 事件的触控板手势阶段: 0 none(无阶段, 如普通滚轮) 1 start 2 update 3 end)
    *   14 gestureKind(gesture 事件: 1 magnify 2 rotate 3 smartMagnify 4 swipe 5 quickLook 6 pressure
    *      7 tabletPoint 8 begin 9 end)  15 gestureValue(magnify: 缩放增量;rotate: 角度;pressure / tabletPoint:
@@ -305,110 +307,51 @@ declare module "momo:ui" {
     "basic" | "text" | "click" | "precise" | "resizeLeftRight" | "resizeUpDown" | "forbidden" | "none";
 
   /**
-   * 一个视图(原生窗口)。多视图: 一个 JS 运行时驱动多个窗口, 共享 JS 状态与帧时钟;每个窗口有自己的
-   * 尺寸、输入、焦点与画面。视图 0 是主窗口(= window)。
+   * 一个视图(宿主的一个原生窗口)。多视图: 一个 JS 运行时驱动多个视图, 共享 JS 状态与帧时钟;每个视图有自己的
+   * 尺寸、输入、焦点与画面。只有引擎职责(画面、尺寸、输入): 窗口的外观与行为(标题、光标、位置、标题栏、
+   * 创建与关闭、指针序列的原生接收窗口…)属于宿主, 经宿主注册的 momo/window 通道操作(框架的 WindowService)。
    */
   export interface View {
     readonly id: number;
     readonly devicePixelRatio: number;
     readonly physicalSize: { readonly width: number; readonly height: number };
     readonly focused: boolean;
-    /**
-     * 内容区(本视图)在屏幕上的框(逻辑点, 主屏左上原点, y 向下);宿主未报告时全为 0。
-     * 以内容区为准: PointerEvent.screenPosition − screenFrame 的原点 = 窗口内坐标, 与窗口样式无关。
-     */
-    readonly screenFrame: { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
-    /** 只写。 */
-    title: string;
     onMetricsChanged: (() => void) | null;
-    /** 窗口移动或改变尺寸(screenFrame 已更新)。 */
-    onFrameChanged: (() => void) | null;
-    /** 返回 false 取消关闭(如"未保存"提示);抛错视为放行。主窗口: 关闭 = 退出应用。 */
-    onCloseRequested: (() => boolean | void) | null;
-    /** count 个指针事件, 见 POINTER_DATA_STRIDE。坐标为本窗口的物理像素。 */
+    /** count 个指针事件, 见 POINTER_DATA_STRIDE。坐标为本视图的物理像素。 */
     onPointerPacket: ((data: Float64Array, count: number) => void) | null;
     /** 返回 true 表示已消费。 */
     onKeyData: ((data: KeyData) => boolean | void) | null;
     onFocusChanged: ((focused: boolean) => void) | null;
     /** 提交本视图本帧的画面(只能在 onDrawFrame 内调用;每视图每帧一次)。 */
     render(scene: Scene): void;
-    setCursor(cursor: SystemCursor): void;
-    /** 窗口最小尺寸(逻辑像素)。 */
-    setMinSize(width: number, height: number): void;
-    /** 关闭窗口(不询问 onCloseRequested)。主窗口不能关闭(抛错)。 */
-    close(): void;
-    /** 窗口浮在普通窗口之上(macOS: 浮动层级, 跟随桌面空间)。 */
-    setAlwaysOnTop(on: boolean): void;
-    /** 把窗口带到最前并获得焦点(最小化时先还原)。 */
-    activate(): void;
-    /**
-     * 把进行中的鼠标按下序列转交给本窗口(类似 Win32 SetCapture / Chromium Widget::SetCapture)。
-     * 原窗口此后不再收到这次按下的事件;本窗口在当前指针位置收到一次按下, 之后的拖动与抬起都投递给它
-     * (即使按下所在的窗口随后关闭), 抬起后自动释放。返回是否有序列被转交(没有按住的按键时为 false)。
-     * 框架层通常用 GestureBinding.transferPointerCapture, 它同时把被转交的序列交给调用方。
-     */
-    setCapture(): boolean;
-    /**
-     * 框架对一个原生指针事件的处置(docs/05 §9 "输入"), 宿主异步执行:
-     *   action 0(event): 把 nativeEventId 对应的原生事件投递给平台视图 platformViewId(按下时在原生视图内
-     *     捕获);platformViewId 为 0 表示该按下由 momo 内容消费(宿主把键盘焦点交还 momo)。
-     *   action 1(enter)/ 2(exit): 指针归属移到 / 离开平台视图 platformViewId;nativeEventId 为触发它的原生
-     *     事件(宿主取其位置与时间, 0 = 取当前指针位置)。与 action 0 按调用顺序执行: 原生视图看到的进入、
-     *     事件、离开与框架处理它们的顺序一致。
-     * 框架层通过 GestureBinding 使用, 一般不直接调用。
-     */
-    dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void;
-    /**
-     * "hidden": 无边框外观——隐藏系统标题栏, 内容铺满整个窗口, 保留红绿灯(窗口控制按钮);
-     * trafficLightsCenterY: 红绿灯中心距窗口顶部的逻辑像素(缺省系统位置)。"default": 恢复系统标题栏。
-     * 隐藏标题栏后窗口靠 setDragRegions 声明的区域拖动。
-     */
-    setTitleBarStyle(style: "default" | "hidden", trafficLightsCenterY?: number): void;
-    /** 可拖动窗口的区域: [x, y, width, height, ...](逻辑像素, 左上原点);在其中拖动移动窗口, 双击缩放。 */
-    setDragRegions(rects: readonly number[]): void;
-    /**
-     * 窗口的缩放行为。未给出的字段取默认值(即常规桌面窗口的行为):
-     *   resizable(true): 用户能否拖动边框缩放窗口。
-     *   border(5): 窗口内侧的系统缩放边框(逻辑点;数字为四边相同, 或分别给出 left/top/right/bottom)。在这里光标
-     *     显示为缩放形状、左键按下交给系统缩放, 优先于拖动区域与应用内容;0 = 该边没有内侧边框(应用内容收到这里的
-     *     全部输入, 系统在窗口外侧的缩放区仍可用)。
-     *   liveResizeFrameWait(100): 拖拽缩放时等待一帧新尺寸内容的上限(毫秒);0 = 不等待(松手前内容按旧帧拉伸)。
-     */
-    setResizeOptions(options: {
-      resizable?: boolean;
-      border?: number | { left?: number; top?: number; right?: number; bottom?: number };
-      liveResizeFrameWait?: number;
-    }): void;
-    /** 移动窗口, 使内容区左上角位于屏幕位置 (x, y)(逻辑点, 主屏左上原点)。 */
-    setPosition(x: number, y: number): void;
   }
 
-  /** 主窗口(视图 0), 同时承载全局帧回调。 */
-  export interface Window extends View {
+  /** 全局的帧调度与帧回调(不是视图;视图都在 views 里)。 */
+  export interface Window {
     /** frameTimeMs: 本帧 vsync 时间(毫秒, 单调时钟)。 */
     onBeginFrame: ((frameTimeMs: number) => void) | null;
     /** 在此对各视图调用 render(scene) 提交本帧;帧外调用 render 会被丢弃。 */
     onDrawFrame: (() => void) | null;
-    /** views 增减(createView 完成、窗口被关闭)。 */
+    /** views 增减(宿主打开或关闭了窗口)。 */
     onViewsChanged: (() => void) | null;
     scheduleFrame(): void;
   }
 
   export const window: Window;
-  /** 当前全部视图(含视图 0), 键为视图 id。 */
-  export const views: ReadonlyMap<number, View>;
-  /** 打开一个新窗口(逻辑像素)。宿主不支持或创建失败时 reject。 */
   /**
-   * x/y: 内容区左上角的屏幕位置(逻辑点, 主屏左上原点), 两者同时给出时生效, 缺省居中。
-   * panel: 面板(同 Electron 的 type: 'panel';macOS 为 NSPanel + NonactivatingPanel)——可成为 key window
-   * 接收键盘, 但不成为 main window, 聚焦它也不激活应用(应用在后台时不被带到前台, 其他窗口保持原状)。缺省 false。
+   * 当前全部视图, 键为视图 id。视图 0 是宿主启动时创建的窗口(隐式视图: bundle 执行前即存在, runApp 渲染到
+   * 这里);它与其他视图一样可以被关闭, 关闭后不在这里。
    */
-  export function createView(options: { title?: string; width: number; height: number; minWidth?: number; minHeight?: number; x?: number; y?: number; panel?: boolean; resizable?: boolean }): Promise<View>;
+  export const views: ReadonlyMap<number, View>;
 }
 
 // 消息通道(docs/04 §5): 异步、字节流、双向。平台服务与扩展共用。
 // 内置通道(载荷编码见 framework services/standard_codec.ts 与 engine/runtime/standard_codec.h):
+// 引擎注册的: momo/lifecycle、momo/platform_views、momo/extensions;宿主(embedder)注册的: momo/window、
+// momo/app、momo/clipboard、momo/url、momo/textinput(窗口与平台服务不经引擎, 见 embedder/common/window_channel.h)。
 //   momo/lifecycle   native→JS  string: "resumed" | "suspended" | "terminating"
+//   momo/window      双向       窗口管理(框架 services/window.ts 的 WindowService;协议见 window_channel.h)
+//   momo/app         native→JS  requestExit() → bool(false 取消退出)
 //   momo/clipboard   JS→native  方法调用: getText() → string, setText(text)
 //   momo/url         JS→native  方法调用: open(url)
 //   momo/textinput   双向       JS→native: show(), hide(), setCaretRect([x,y,w,h]), setEditingState({...})

@@ -35,7 +35,7 @@ embedder       → engine(含 engine/platform 契约)+ 操作系统 SDK;实现�
 base           → 仅标准库(所有 C++ 层的最底层)
 ```
 
-关键点:**engine 只认识 `engine/platform/` 里的纯虚接口**(`RenderSurface`、`VsyncSource`、`TextInputConnection`、`PlatformServices`、输入事件类型…),embedder 负责实例化平台实现并注入(依赖倒置:接口归使用方 engine 所有,与 Flutter 的 `Surface`/`VsyncWaiter`/`PlatformView` 位于 engine 内一致);窗口抽象 `PlatformWindow`、工厂 `PlatformIntegration` 只有 embedder 用,放在 `embedder/common/`。这保证 engine 可以脱离真实平台做 headless 测试,也让移植新平台 = 实现一组接口 + 写一个新 embedder。
+关键点:**engine 只认识 `engine/platform/` 里的纯虚接口**(`RenderSurface`、`VsyncSource`、输入事件类型、视图尺寸…),embedder 负责实例化平台实现并注入(依赖倒置:接口归使用方 engine 所有,与 Flutter 的 `Surface`/`VsyncWaiter`/`PlatformView` 位于 engine 内一致);窗口抽象 `PlatformWindow`、工厂 `PlatformIntegration` 只有 embedder 用,放在 `embedder/common/`。这保证 engine 可以脱离真实平台做 headless 测试,也让移植新平台 = 实现一组接口 + 写一个新 embedder。engine 只认识**视图**(画面、尺寸、输入);窗口的外观与行为、剪贴板、输入法等由 embedder 在消息通道上注册处理器提供(`momo/window`、`momo/clipboard`…), 不进入 engine 的接口——新增这类能力不需要改 engine(同 Flutter 的 engine/embedder 分工)。
 
 ## 3. 核心运行时对象
 
@@ -65,7 +65,7 @@ embedder::Application (每进程一个)
 ```
 VSync(platform) ─► Animator.beginFrame(ui 线程)
   ─► JS: onBeginFrame → 框架 build/layout/paint → 生成 DisplayList
-  ─► JS: SceneBuilder 组装 LayerTree → window.render(scene)
+  ─► JS: SceneBuilder 组装 LayerTree → view.render(scene)(每个视图一棵)
   ─► Shell 将 LayerTree 投递到 raster 线程
   ─► Rasterizer: preroll → Skia 绘制到 RenderSurface → present
 ```

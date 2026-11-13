@@ -2,7 +2,7 @@ import { SceneBuilder, views, window, type KeyData, type View as UiView } from "
 import { reportError } from "../foundation/assert";
 import type { Key } from "../foundation/key";
 import { GestureBinding } from "../gestures/binding";
-import { Size } from "../painting/geometry";
+import { Rect, Size } from "../painting/geometry";
 import { MouseTracker } from "../rendering/mouse_tracker";
 import { PipelineOwner } from "../rendering/object";
 import { RenderView, type ViewConfiguration } from "../rendering/view";
@@ -10,6 +10,7 @@ import { SchedulerBinding } from "../scheduler/binding";
 import { HardwareKeyboard } from "../services/hardware_keyboard";
 import { AppLifecycle, type AppLifecycleState } from "../services/lifecycle";
 import { TextInput } from "../services/text_input";
+import { WindowService } from "../services/window";
 import { Actions, Shortcuts, defaultActions, defaultShortcuts } from "./actions";
 import { FocusManager, FocusScopeNode } from "./focus_manager";
 import { FocusScope } from "./focus_scope";
@@ -19,20 +20,24 @@ import {
 import { MediaQuery, MediaQueryData } from "./media_query";
 import { Overlay, OverlayEntry } from "./overlay";
 import { ViewScope } from "./view_scope";
-import { flushDragRegions } from "./window_chrome";
 import type { RenderObject } from "../rendering/object";
 import type { RenderBox } from "../rendering/box";
 
-/** 应用级事件观察者。 */
+/** 应用级事件观察者。didChangeMetrics / didChangeWindowFocus / didRequestClose 针对隐式视图(runApp 渲染的窗口)。 */
 export interface WidgetsBindingObserver {
   didChangeMetrics?(): void;
   didChangeAppLifecycleState?(state: AppLifecycleState): void;
   didChangeWindowFocus?(focused: boolean): void;
-  /** 返回 false 阻止关闭窗口。 */
+  /** 用户点了隐式视图窗口的关闭按钮: 返回 false 阻止关闭。 */
   didRequestClose?(): boolean | void;
+  /** 用户/系统请求退出应用(Cmd+Q 等): 返回 false 取消退出。 */
+  didRequestAppExit?(): boolean | void;
 }
 
-/** 主窗口之外的一个视图在渲染侧的状态(由 View widget 注册)。 */
+/** 隐式视图 id(宿主启动时创建的窗口)。 */
+export const kImplicitViewId = 0;
+
+/** 一个视图在渲染侧的状态(由 View widget 注册;隐式视图由 runApp 的根渲染, 不在这里)。 */
 export interface ViewRenderHost {
   readonly view: UiView;
   readonly renderView: RenderView;
@@ -78,8 +83,13 @@ class RootElement extends RenderObjectElement {
 }
 
 /**
- * 框架总绑定(对标 Flutter WidgetsFlutterBinding):连接 window 回调、调度器、手势、渲染管线、构建、焦点、服务。
- * 每帧 drawFrame:build → layout → compositingBits → paint → 合成 Scene → window.render → 卸载 inactive Element。
+ * 框架总绑定(对标 Flutter WidgetsFlutterBinding):连接帧回调与视图事件、调度器、手势、渲染管线、构建、焦点、服务。
+ * 每帧 drawFrame:build → layout → compositingBits → paint → 合成 Scene → 各视图 render → 卸载 inactive Element。
+ *
+ * 视图: element 树只有一棵, 渲染树每个视图一棵。runApp 把根 widget 渲染进隐式视图 0(宿主启动时创建的窗口);
+ * runWidget 不绑定任何视图, 窗口全部由 Window / View 声明(含经 Window({ view }) 接管的视图 0)。所有视图都可以
+ * 被关闭——隐式视图关闭后根 widget 照常构建(其他窗口挂在它下面), 只是不再渲染到任何地方。
+ * 窗口的外观与行为(标题、光标、关闭询问…)经 WindowService(宿主的 momo/window 通道), 不经引擎。
  */
 export class WidgetsBinding {
   static #instance: WidgetsBinding | null = null;
@@ -108,7 +118,10 @@ export class WidgetsBinding {
   #inDrawFrame = false;
   readonly #viewHosts = new Map<number, ViewRenderHost>();
   readonly #viewsListeners = new Set<() => void>();
-  readonly #dragRegionsSent = new Map<UiView, string>();
+  /** 根 widget 渲染进隐式视图(runApp);runWidget 时为 false。 */
+  #implicit = true;
+  /** 已安装隐式视图事件处理器的视图对象。 */
+  #implicitView: UiView | null = null;
 
   private constructor() {
     const scheduler = this.scheduler;
@@ -120,16 +133,13 @@ export class WidgetsBinding {
     scheduler.addPersistentFrameCallback(() => this.drawFrame());
 
     const gestures = this.gestures;
-    gestures.hitTestInView = (result, position, viewId) => {
-      const view = viewId === 0 ? this.renderView : this.#viewHosts.get(viewId)?.renderView;
-      view?.hitTest(result, position);
-    };
-    this.mouseTracker = new MouseTracker((p) => gestures.hitTest(p), (cursor) => {
-      const target = views.get(gestures.currentViewId) ?? window;
-      target.setCursor(cursor);
-    });
+    const windows = WindowService.instance;
+    windows.ensureInitialized();
+    gestures.hitTestInView = (result, position, viewId) => this.#renderViewOf(viewId)?.hitTest(result, position);
+    this.mouseTracker = new MouseTracker((p, viewId) => gestures.hitTest(p, viewId),
+                                         (cursor, viewId) => windows.setCursor(viewId, cursor));
     window.onViewsChanged = () => {
-      // 视图移除发生在帧之后, 之后不一定还有帧: 在这里就丢掉已关闭窗口的记录, 不等下一帧。
+      // 视图移除发生在帧之后, 之后不一定还有帧: 在这里就丢掉已关闭窗口的状态, 不等下一帧。
       this.#pruneClosedViews();
       for (const l of [...this.#viewsListeners]) {
         try {
@@ -140,41 +150,9 @@ export class WidgetsBinding {
       }
     };
     gestures.mouseTracker = this.mouseTracker;
-    gestures.platformViewPointerSink = (viewId, platformViewId, nativeEventId, action) => {
-      const target = views.get(viewId) ?? window;
-      target.dispatchPlatformViewPointer(platformViewId, nativeEventId, action);
-    };
-
-    window.onMetricsChanged = () => this.handleMetricsChanged();
-    window.onPointerPacket = (data: Float64Array, count: number) => {
-      try {
-        gestures.handlePointerPacket(data, count, this.renderView.configuration.devicePixelRatio);
-      } catch (e) {
-        reportError(e, "while handling a pointer packet");
-      }
-    };
-    window.onKeyData = (data: KeyData) => {
-      try {
-        return HardwareKeyboard.instance.handleKeyData(data);
-      } catch (e) {
-        reportError(e, "while handling key data");
-        return false;
-      }
-    };
-    window.onFocusChanged = (focused: boolean) => {
-      if (!focused) HardwareKeyboard.instance.clearState();
-      for (const o of this.#observers.slice()) o.didChangeWindowFocus?.(focused);
-    };
-    window.onCloseRequested = () => {
-      for (const o of this.#observers.slice()) {
-        try {
-          if (o.didRequestClose?.() === false) return false;
-        } catch (e) {
-          reportError(e, "in didRequestClose");
-        }
-      }
-      return true;
-    };
+    gestures.pointerCaptureSink = (viewId, sequenceId) => windows.capturePointer(viewId, sequenceId);
+    this.#installAppExitHandler();
+    this.#bindImplicitView();
     this.focusManager.registerGlobalHandlers();
     AppLifecycle.instance.ensureInitialized();
     AppLifecycle.instance.addListener(this.#onLifecycle);
@@ -186,11 +164,98 @@ export class WidgetsBinding {
     for (const o of this.#observers.slice()) o.didChangeAppLifecycleState?.(state);
   };
 
+  #installAppExitHandler(): void {
+    WindowService.instance.setAppExitHandler(() => {
+      for (const o of this.#observers.slice()) {
+        try {
+          if (o.didRequestAppExit?.() === false) return false;
+        } catch (e) {
+          reportError(e, "in didRequestAppExit");
+        }
+      }
+      return true;
+    });
+  }
+
+  /**
+   * 根 widget 是否渲染进隐式视图。runApp 为 true;runWidget 为 false——此时视图 0 像其他窗口一样由
+   * Window({ view }) / View 接管。
+   */
+  useImplicitView(on: boolean): void {
+    if (on === this.#implicit) return;
+    this.#implicit = on;
+    this.#bindImplicitView();
+    this.handleMetricsChanged();
+  }
+
+  /** 隐式视图(视图 0)的事件进入根渲染树(runApp)。视图 0 不存在或 runWidget 时不安装。 */
+  #bindImplicitView(): void {
+    const view = this.#implicit ? views.get(kImplicitViewId) ?? null : null;
+    if (view === this.#implicitView) return;
+    this.#unbindImplicitView();
+    if (view === null) return;
+    this.#implicitView = view;
+    const gestures = this.gestures;
+    view.onMetricsChanged = () => this.handleMetricsChanged();
+    view.onPointerPacket = (data: Float64Array, count: number) => {
+      try {
+        gestures.handlePointerPacket(data, count, this.renderView.configuration.devicePixelRatio, view.id);
+      } catch (e) {
+        reportError(e, "while handling a pointer packet");
+      }
+    };
+    view.onKeyData = (data: KeyData) => {
+      try {
+        return HardwareKeyboard.instance.handleKeyData(data);
+      } catch (e) {
+        reportError(e, "while handling key data");
+        return false;
+      }
+    };
+    view.onFocusChanged = (focused: boolean) => {
+      if (!focused) HardwareKeyboard.instance.clearState();
+      for (const o of this.#observers.slice()) o.didChangeWindowFocus?.(focused);
+    };
+    WindowService.instance.setCloseRequestHandler(view.id, () => {
+      for (const o of this.#observers.slice()) {
+        try {
+          if (o.didRequestClose?.() === false) return false;
+        } catch (e) {
+          reportError(e, "in didRequestClose");
+        }
+      }
+      return true;
+    });
+  }
+
+  #unbindImplicitView(): void {
+    const view = this.#implicitView;
+    if (view === null) return;
+    this.#implicitView = null;
+    for (const k of ["onMetricsChanged", "onPointerPacket", "onKeyData", "onFocusChanged"] as const) {
+      (view as unknown as Record<string, unknown>)[k] = null;
+    }
+    WindowService.instance.setCloseRequestHandler(view.id, null);
+  }
+
+  /** 视图 viewId 的渲染树根(隐式视图为根渲染树;已关闭或未注册时为 null)。 */
+  #renderViewOf(viewId: number): RenderView | null {
+    if (viewId === kImplicitViewId && this.#implicit) return views.has(viewId) ? this.renderView : null;
+    return this.#viewHosts.get(viewId)?.renderView ?? null;
+  }
+
   #createViewConfiguration(): ViewConfiguration {
     if (this.#viewOverride !== null) return this.#viewOverride;
-    const dpr = window.devicePixelRatio || 1;
-    const s = window.physicalSize;
+    const view = views.get(kImplicitViewId);
+    if (view === undefined) return { size: Size.zero, devicePixelRatio: 1 };
+    const dpr = view.devicePixelRatio || 1;
+    const s = view.physicalSize;
     return { size: new Size(s.width / dpr, s.height / dpr), devicePixelRatio: dpr };
+  }
+
+  /** 根 widget 是否渲染进隐式视图(runApp 为 true, runWidget 为 false)。 */
+  get rendersImplicitView(): boolean {
+    return this.#implicit;
   }
 
   /** 当前视图配置(逻辑尺寸 + dpr)。 */
@@ -230,14 +295,21 @@ export class WidgetsBinding {
   get viewHosts(): ReadonlyMap<number, ViewRenderHost> {
     return this.#viewHosts;
   }
-  // 已关闭窗口的拖动区域记录要移除: 否则 Map 一直强引用旧 View(对已移除视图 setDragRegions 是空操作, 不会抛错)。
+  // 已关闭的视图: 丢掉窗口服务里的状态与处理器;隐式视图关闭后不再引用它(之后的事件不会再来)。
   #pruneClosedViews(): void {
-    for (const v of this.#dragRegionsSent.keys()) if (v !== window && views.get(v.id) !== v) this.#dragRegionsSent.delete(v);
+    if (this.#implicitView !== null && views.get(this.#implicitView.id) !== this.#implicitView) {
+      WindowService.instance.forget(this.#implicitView.id);
+      this.#implicitView = null;
+    }
+    for (const id of [...this.#knownViews]) {
+      if (!views.has(id)) {
+        this.#knownViews.delete(id);
+        WindowService.instance.forget(id);
+      }
+    }
+    for (const id of views.keys()) this.#knownViews.add(id);
   }
-  /** @internal 仍记录着拖动区域的视图数(调试/测试)。 */
-  get debugDragRegionViewCount(): number {
-    return this.#dragRegionsSent.size;
-  }
+  readonly #knownViews = new Set<number>(views.keys());
   /** 视图集合变化(createView 完成、窗口被关闭)的监听。 */
   addViewsListener(listener: () => void): void {
     this.#viewsListeners.add(listener);
@@ -285,7 +357,8 @@ export class WidgetsBinding {
       this.pipelineOwner.flushCompositingBits();
       this.pipelineOwner.flushPaint();
       const scene = this.renderView.compositeFrame(this.#sceneBuilder);
-      window.render(scene);
+      const implicitView = this.#implicit ? views.get(kImplicitViewId) : undefined;
+      implicitView?.render(scene);  // 隐式视图已关闭(或 runWidget): 根渲染树不提交到任何视图
       // 其他窗口: 共用同一次 build, 各自 layout/paint/合成并提交到自己的视图。
       for (const host of [...this.#viewHosts.values()]) {
         if (!views.has(host.view.id)) continue;  // 宿主已关闭(View widget 稍后卸载)
@@ -298,11 +371,6 @@ export class WidgetsBinding {
       this.#framesRendered++;
       this.buildOwner.finalizeTree();
       this.#pruneClosedViews();
-      flushDragRegions((root) => {
-        if (root === this.renderView) return window;
-        for (const host of this.#viewHosts.values()) if (host.renderView === root && views.has(host.view.id)) return host.view;
-        return null;
-      }, this.#dragRegionsSent);
       if (hadLayout && this.mouseTracker.mouseIsConnected) {
         this.scheduler.addPostFrameCallback(() => this.mouseTracker.updateAllDevices());
       }
@@ -320,6 +388,11 @@ export class WidgetsBinding {
   debugResetForTest(): void {
     this.attachRootWidget(null);
     this.drawFrame();
+    this.#implicit = true;
+    this.#unbindImplicitView();
+    WindowService.instance.debugReset();
+    this.#installAppExitHandler();
+    this.#bindImplicitView();
     this.#viewHosts.clear();
     this.#viewsListeners.clear();
     this.gestures.debugReset();
@@ -344,12 +417,21 @@ class AppRoot extends StatefulWidget {
 class AppRootState extends State<AppRoot> implements WidgetsBindingObserver {
   #entry: OverlayEntry | null = null;
   #focused = true;
+  /**
+   * 隐式视图对象: 挂载时取一次并固定(视图之后被关闭也不换), 子树结构因此不随视图开关而变化——
+   * 否则挂在根下的其他窗口会被重建。
+   */
+  #view: UiView | null = views.get(kImplicitViewId) ?? null;
+  readonly #onWindowChange = (view: number): void => {
+    if (view === kImplicitViewId && this.mounted) this.setState();
+  };
   readonly #scope = new FocusScopeNode({ debugLabel: "App Scope" });
   readonly #shortcuts = defaultShortcuts();
   readonly #actions = defaultActions();
 
   override initState(): void {
     WidgetsBinding.instance.addObserver(this);
+    WindowService.instance.addListener(this.#onWindowChange);
     this.#entry = new OverlayEntry({ builder: () => this.widget.app, opaque: true });
   }
   override didUpdateWidget(): void {
@@ -357,6 +439,7 @@ class AppRootState extends State<AppRoot> implements WidgetsBindingObserver {
   }
   override dispose(): void {
     WidgetsBinding.instance.removeObserver(this);
+    WindowService.instance.removeListener(this.#onWindowChange);
     this.#scope.dispose();
   }
   didChangeMetrics(): void {
@@ -369,8 +452,13 @@ class AppRootState extends State<AppRoot> implements WidgetsBindingObserver {
   }
   build(_context: BuildContext): Widget {
     const cfg = WidgetsBinding.instance.viewConfiguration;
-    return new ViewScope({ view: window, child: new MediaQuery({
-      data: new MediaQueryData({ size: cfg.size, devicePixelRatio: cfg.devicePixelRatio, windowFocused: this.#focused }),
+    const view = this.#view;
+    const controls = view !== null ? WindowService.instance.controlsOf(view.id) : null;
+    const content = new MediaQuery({
+      data: new MediaQueryData({
+        size: cfg.size, devicePixelRatio: cfg.devicePixelRatio, windowFocused: this.#focused,
+        windowControls: controls !== null ? Rect.fromLTWH(controls.x, controls.y, controls.width, controls.height) : null,
+      }),
       child: new Shortcuts({
         debugLabel: "Default Shortcuts",
         shortcuts: this.#shortcuts,
@@ -383,14 +471,33 @@ class AppRootState extends State<AppRoot> implements WidgetsBindingObserver {
           }),
         }),
       }),
-    }) });
+    });
+    return view !== null ? new ViewScope({ view, child: content }) : content;
   }
 }
 
-/** 启动应用:以 app 为根构建 widget 树并请求首帧。 */
+/**
+ * 启动应用: 以 app 为根构建 widget 树, 渲染进隐式视图(宿主启动时创建的窗口), 并请求首帧。
+ * 其他窗口用 ViewAnchor + Window 声明。
+ */
 export function runApp(app: Widget): WidgetsBinding {
   const binding = WidgetsBinding.ensureInitialized();
+  binding.useImplicitView(true);
   binding.attachRootWidget(new AppRoot(app));
+  binding.scheduleWarmUpFrame();
+  return binding;
+}
+
+/**
+ * 启动应用(多窗口, 所有窗口对等): 根 widget 不绑定任何视图, 窗口全部由 Window / View 声明——启动时宿主创建的
+ * 窗口用 Window({ view: views.get(0) }) 接管(同 Flutter 的 runWidget + View)。任何窗口都可以关闭;最后一个
+ * 窗口关闭后宿主退出应用。根 widget 本身不应产生渲染对象(通常是 ViewAnchor({ views: [...] }), 可包在
+ * MaterialApp 等只提供主题的 widget 里)。
+ */
+export function runWidget(widget: Widget): WidgetsBinding {
+  const binding = WidgetsBinding.ensureInitialized();
+  binding.useImplicitView(false);
+  binding.attachRootWidget(widget);
   binding.scheduleWarmUpFrame();
   return binding;
 }

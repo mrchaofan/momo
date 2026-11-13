@@ -82,6 +82,8 @@ NSComparisonResult CompareByRank(__kindof NSView* a, __kindof NSView* b, void* c
 @property(nonatomic) int64_t viewId;
 @property(nonatomic, strong) NSView* native;
 - (void)setOccluders:(std::vector<NSRect>)occluders;
+// point 为宿主视图坐标: 是否落在可见区域内、且之上没有 momo 内容(occluders)。
+- (BOOL)receivesHostPoint:(NSPoint)point;
 // 原生视图当前是否挂在本容器里(否则已被其他窗口接管, 本容器只是空壳)。
 - (BOOL)hostsNative;
 // point 为宿主视图坐标: 原生视图子树中被命中的视图(不考虑遮挡: 接收者已由框架决定)。
@@ -127,21 +129,20 @@ MOMO_SWALLOW_MOUSE_EVENTS
 - (void)setOccluders:(std::vector<NSRect>)occluders {
   _occluders = std::move(occluders);
 }
-// 不经框架投递时的 AppKit 几何命中(光标归属、拖放目标等"指针下是哪个视图"的查询)。point 为宿主坐标。
-// momo 掌握指针位置时以框架的指针归属为准: 指针不归本平台视图(被 momo 内容盖住、已离开)就不可命中。
+// 不经派发器投递时的 AppKit 几何命中(光标归属、拖放目标等"指针下是哪个视图"的查询)。point 为宿主坐标。
+// 宿主掌握指针时以派发器的判定为准: 指针不归本平台视图(被 momo 内容盖住、已离开)就不可命中。
 // WKWebView 据此丢弃迟到的光标设置——WebKit 在 [NSCursor set] 之前用内容视图的 hitTest: 确认指针下是
-// 它自己的子树(PageClientImpl::setCursor), 光标因此也只有一个裁决者。拖放会话等期间框架收不到鼠标事件,
-// 退回按画面上的遮挡(occluders: 本视图之上绘制了 momo 内容的区域)近似。
+// 它自己的子树(PageClientImpl::setCursor), 光标因此也只有一个裁决者。拖放会话等期间宿主收不到鼠标事件,
+// 退回按画面上的遮挡(occluders: 本视图之上 momo 内容的可命中区域)近似。
 - (NSView*)hitTest:(NSPoint)point {
   if (self.hidden) {
     return nil;
   }
   MomoPlatformViewsHostView* host = (MomoPlatformViewsHostView*)self.superview;
-  MomoPlatformViewInputRouter* router = [host isKindOfClass:[MomoPlatformViewsHostView class]]
-                                            ? host.owner.inputRouter
-                                            : nil;
-  if (router != nil && router.pointerTracked) {
-    return [router pointerOwnedByPlatformView:self.viewId] ? [super hitTest:point] : nil;
+  MomoPlatformViews* owner = [host isKindOfClass:[MomoPlatformViewsHostView class]] ? host.owner : nil;
+  const int64_t pointerOwner = owner.pointerOwner != nil ? owner.pointerOwner() : -1;
+  if (pointerOwner >= 0) {
+    return pointerOwner == self.viewId ? [super hitTest:point] : nil;
   }
   for (const NSRect& r : _occluders) {
     if (NSPointInRect(point, r)) {
@@ -152,6 +153,18 @@ MOMO_SWALLOW_MOUSE_EVENTS
 }
 - (BOOL)hostsNative {
   return self.native != nil && self.native.superview == self;
+}
+// point 为宿主坐标: 在可见区域内且不在 occluders 里(之上没有 momo 内容)。
+- (BOOL)receivesHostPoint:(NSPoint)point {
+  if (self.hidden || ![self hostsNative] || !NSPointInRect(point, self.frame)) {
+    return NO;
+  }
+  for (const NSRect& r : _occluders) {
+    if (NSPointInRect(point, r)) {
+      return NO;
+    }
+  }
+  return YES;
 }
 - (NSView*)nativeHitTest:(NSPoint)point {
   NSView* hit = [super hitTest:point];
@@ -274,6 +287,8 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
   container.native = nil;
   [container removeFromSuperview];
+  std::erase(_zOrder, viewId);
+  [self notifyGeometryChanged];
 }
 
 // 被隐藏的平台视图不能继续持有键盘焦点(否则按键发给看不见的视图): 交还给内容视图。
@@ -409,6 +424,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
       _overlays[i].hidden = YES;
     }
   }
+  [self notifyGeometryChanged];
 }
 
 - (void)hideAll {
@@ -420,6 +436,24 @@ MOMO_SWALLOW_MOUSE_EVENTS
   for (MomoOverlayView* overlay : _overlays) {
     overlay.hidden = YES;
   }
+  [self notifyGeometryChanged];
+}
+
+- (void)notifyGeometryChanged {
+  if (self.geometryChanged != nil) {
+    self.geometryChanged();
+  }
+}
+
+- (int64_t)platformViewAtWindowPoint:(NSPoint)point {
+  const NSPoint p = [_host convertPoint:point fromView:nil];
+  for (auto it = _zOrder.rbegin(); it != _zOrder.rend(); ++it) {  // 自上而下
+    auto c = _containers.find(*it);
+    if (c != _containers.end() && [c->second receivesHostPoint:p]) {
+      return *it;
+    }
+  }
+  return 0;
 }
 
 - (NSView*)hostedNativeForPlatformView:(int64_t)viewId {

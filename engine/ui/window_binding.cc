@@ -1,12 +1,14 @@
 // momo:ui 的视图(窗口)对象、事件分发与 momo:ui 共享状态(docs/04 §6)。
 //
 // JS 可见(完整声明见 framework/packages/momo/src/ui/momo-ui.d.ts):
-//   View(每个窗口一个): id / devicePixelRatio / physicalSize / focused(只读快照, 变化时刷新)
-//     title(只写有效);render(scene) / setCursor(kind) / setMinSize(w, h) / close()
-//     onMetricsChanged / onCloseRequested / onPointerPacket(data, count) / onKeyData(data) / onFocusChanged(focused)
-//   window: 视图 0(主窗口)的 View, 另有全局的 scheduleFrame() / onBeginFrame / onDrawFrame / onViewsChanged
-//   views: Map<id, View>(含视图 0);createView(options) → Promise<View>
+//   View(每个视图一个): id / devicePixelRatio / physicalSize / focused(只读快照, 变化时刷新)
+//     render(scene)
+//     onMetricsChanged / onPointerPacket(data, count) / onKeyData(data) / onFocusChanged(focused)
+//   window: 全局的 scheduleFrame() / onBeginFrame / onDrawFrame / onViewsChanged(不是视图)
+//   views: Map<id, View>(隐式视图 0 存在时含它)
 //   POINTER_DATA_STRIDE
+// 只有引擎职责(画面、尺寸、输入)。窗口的外观与行为(标题、光标、位置、创建/关闭…)经宿主注册的
+// momo/window 通道往返, 不经过这里。
 
 #include <chrono>
 #include <string_view>
@@ -48,8 +50,8 @@ ViewBinding* ViewOf(const Args& a) {
       a.Data().As<v8::Object>()->GetAlignedPointerFromInternalField(0, kUiViewFieldTag));
 }
 
-constexpr const char* kViewHandlers[] = {"onMetricsChanged", "onFrameChanged", "onCloseRequested",
-                                         "onPointerPacket",  "onKeyData",      "onFocusChanged"};
+constexpr const char* kViewHandlers[] = {"onMetricsChanged", "onPointerPacket", "onKeyData",
+                                         "onFocusChanged"};
 
 void OnDetachedViewWeak(const v8::WeakCallbackInfo<ViewBinding>& info) {
   // 第一遍回调: 只 Reset 句柄并释放 C++ 对象。
@@ -72,213 +74,6 @@ void Render(const Args& a) {
   tree->set_view_id(view->id);
   tree->set_has_platform_views(scene->has_platform_views);
   view->impl->client->Render(std::move(tree));
-}
-
-void SetTitle(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  if (!view->removed) view->impl->client->SetTitle(view->id, ToUtf8(a.GetIsolate(), a[0]));
-}
-
-void GetUndefined(const Args& a) { a.GetReturnValue().SetUndefined(); }
-
-void SetCursor(const Args& a) {
-  using C = platform::SystemCursor;
-  static constexpr std::pair<std::string_view, C> kCursors[] = {
-      {"basic", C::kArrow},
-      {"text", C::kIBeam},
-      {"click", C::kPointingHand},
-      {"precise", C::kCrosshair},
-      {"resizeLeftRight", C::kResizeLeftRight},
-      {"resizeUpDown", C::kResizeUpDown},
-      {"forbidden", C::kNotAllowed},
-      {"none", C::kHidden},
-  };
-  ViewBinding* view = ViewOf(a);
-  const std::string name = ToUtf8(a.GetIsolate(), a[0]);
-  for (const auto& [n, c] : kCursors) {
-    if (name == n) {
-      if (!view->removed) view->impl->client->SetCursor(view->id, c);
-      return;
-    }
-  }
-  runtime::ThrowTypeError(a.GetIsolate(), "view.setCursor: unknown cursor '" + name + "'");
-}
-
-void SetMinSize(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  double w = 0, h = 0;
-  if (ArgNumber(a, 0, &w) && ArgNumber(a, 1, &h) && !view->removed) {
-    view->impl->client->SetMinSize(view->id, {w, h});
-  }
-}
-
-void SetAlwaysOnTop(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  if (!view->removed) view->impl->client->SetAlwaysOnTop(view->id, a.Length() > 0 && a[0]->BooleanValue(a.GetIsolate()));
-}
-
-// setTitleBarStyle("hidden" | "default", trafficLightsCenterY?)
-void SetTitleBarStyle(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  const std::string style = ToUtf8(a.GetIsolate(), a[0]);
-  if (style != "hidden" && style != "default") {
-    runtime::ThrowTypeError(a.GetIsolate(), "view.setTitleBarStyle: expected 'hidden' or 'default'");
-    return;
-  }
-  double center = 0;
-  if (a.Length() > 1 && a[1]->IsNumber()) center = a[1].As<v8::Number>()->Value();
-  if (!view->removed) view->impl->client->SetTitleBar(view->id, style == "hidden", center);
-}
-
-// setResizeOptions({ resizable?, border?: number | {left?, top?, right?, bottom?}, liveResizeFrameWait? })
-// 未给出的字段取默认值(platform::WindowResizeOptions)。
-void SetResizeOptions(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  v8::Isolate* isolate = a.GetIsolate();
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  platform::WindowResizeOptions options;
-  if (a.Length() > 0 && a[0]->IsObject()) {
-    v8::Local<v8::Object> o = a[0].As<v8::Object>();
-    auto get = [&](v8::Local<v8::Object> from, const char* key) {
-      v8::Local<v8::Value> v;
-      return from->Get(context, V8String(isolate, key)).ToLocal(&v) ? v : v8::Local<v8::Value>();
-    };
-    auto non_negative = [](double v) { return v > 0 ? v : 0.0; };
-    v8::Local<v8::Value> resizable = get(o, "resizable");
-    if (!resizable.IsEmpty() && resizable->IsBoolean()) options.resizable = resizable->IsTrue();
-    v8::Local<v8::Value> border = get(o, "border");
-    if (!border.IsEmpty() && border->IsNumber()) {
-      const double v = non_negative(border.As<v8::Number>()->Value());
-      options.border_left = options.border_top = options.border_right = options.border_bottom = v;
-    } else if (!border.IsEmpty() && border->IsObject()) {
-      v8::Local<v8::Object> edges = border.As<v8::Object>();
-      auto edge = [&](const char* key, double* out) {
-        v8::Local<v8::Value> v = get(edges, key);
-        if (!v.IsEmpty() && v->IsNumber()) *out = non_negative(v.As<v8::Number>()->Value());
-      };
-      edge("left", &options.border_left);
-      edge("top", &options.border_top);
-      edge("right", &options.border_right);
-      edge("bottom", &options.border_bottom);
-    }
-    v8::Local<v8::Value> wait = get(o, "liveResizeFrameWait");
-    if (!wait.IsEmpty() && wait->IsNumber()) {
-      options.live_resize_frame_wait_ms = non_negative(wait.As<v8::Number>()->Value());
-    }
-  }
-  if (!view->removed) view->impl->client->SetResizeOptions(view->id, options);
-}
-
-// setDragRegions([x, y, w, h, ...])(逻辑像素)
-void SetDragRegions(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  v8::Isolate* isolate = a.GetIsolate();
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  std::vector<Rect> rects;
-  if (a.Length() > 0 && a[0]->IsArray()) {
-    v8::Local<v8::Array> arr = a[0].As<v8::Array>();
-    const uint32_t n = arr->Length() / 4;
-    for (uint32_t i = 0; i < n; ++i) {
-      double v[4] = {};
-      for (uint32_t k = 0; k < 4; ++k) {
-        v8::Local<v8::Value> x;
-        if (arr->Get(context, i * 4 + k).ToLocal(&x) && x->IsNumber()) v[k] = x.As<v8::Number>()->Value();
-      }
-      if (v[2] > 0 && v[3] > 0) rects.push_back({v[0], v[1], v[2], v[3]});
-    }
-  }
-  if (!view->removed) view->impl->client->SetDragRegions(view->id, std::move(rects));
-}
-
-// setPosition(x, y): 窗口左上角的屏幕位置(逻辑点, 主屏左上原点)。
-void SetPosition(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  double x = 0, y = 0;
-  if (ArgNumber(a, 0, &x) && ArgNumber(a, 1, &y) && !view->removed) {
-    view->impl->client->SetWindowPosition(view->id, {x, y});
-  }
-}
-
-void Activate(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  if (!view->removed) view->impl->client->ActivateView(view->id);
-}
-
-// setCapture() → boolean: 把进行中的鼠标按下序列转交给本窗口;没有可转交的序列时返回 false。
-void SetCapture(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  const bool transferred = !view->removed && view->impl->client->SetPointerCapture(view->id);
-  a.GetReturnValue().Set(transferred);
-}
-
-// dispatchPlatformViewPointer(platformViewId, nativeEventId, action): 框架对原生指针事件的处置
-// (action: 0 event, 1 enter, 2 exit;见 platform::PlatformViewPointerAction)。
-void DispatchPlatformViewPointer(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  double platform_view = 0, event_id = 0, action = 0;
-  if (view->removed || !ArgNumber(a, 0, &platform_view) || !ArgNumber(a, 1, &event_id) ||
-      !ArgNumber(a, 2, &action) || action < 0 || action > 2 || event_id < 0) {
-    return;
-  }
-  view->impl->client->DispatchPlatformViewPointer(
-      view->id, static_cast<int64_t>(platform_view), static_cast<uint64_t>(event_id),
-      static_cast<platform::PlatformViewPointerAction>(static_cast<int>(action)));
-}
-
-void CloseView(const Args& a) {
-  ViewBinding* view = ViewOf(a);
-  if (view->id == platform::kImplicitViewId) {
-    runtime::ThrowError(a.GetIsolate(), "view.close: the main window (view 0) cannot be closed from JS");
-    return;
-  }
-  if (!view->removed) view->impl->client->CloseView(view->id);
-}
-
-// createView({title?, width, height, minWidth?, minHeight?, x?, y?, panel?, resizable?}) → Promise<View>
-void CreateView(const Args& a) {
-  UiBindings::Impl* impl = ImplOf(a);
-  v8::Isolate* isolate = a.GetIsolate();
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  platform::ViewOptions options;
-  if (a.Length() > 0 && a[0]->IsObject()) {
-    v8::Local<v8::Object> o = a[0].As<v8::Object>();
-    auto num = [&](const char* key, double fallback) {
-      v8::Local<v8::Value> v;
-      if (o->Get(context, V8String(isolate, key)).ToLocal(&v) && v->IsNumber()) {
-        return v.As<v8::Number>()->Value();
-      }
-      return fallback;
-    };
-    v8::Local<v8::Value> title;
-    if (o->Get(context, V8String(isolate, "title")).ToLocal(&title) && title->IsString()) {
-      options.title = ToUtf8(isolate, title);
-    }
-    options.size = {num("width", options.size.width), num("height", options.size.height)};
-    options.min_size = {num("minWidth", options.min_size.width),
-                        num("minHeight", options.min_size.height)};
-    v8::Local<v8::Value> x, y;
-    if (o->Get(context, V8String(isolate, "x")).ToLocal(&x) && x->IsNumber() &&
-        o->Get(context, V8String(isolate, "y")).ToLocal(&y) && y->IsNumber()) {
-      options.position = Point{x.As<v8::Number>()->Value(), y.As<v8::Number>()->Value()};
-    }
-    v8::Local<v8::Value> panel;
-    if (o->Get(context, V8String(isolate, "panel")).ToLocal(&panel) && panel->IsBoolean()) {
-      options.panel = panel->IsTrue();
-    }
-    v8::Local<v8::Value> resizable;
-    if (o->Get(context, V8String(isolate, "resizable")).ToLocal(&resizable) &&
-        resizable->IsBoolean()) {
-      options.resizable = resizable->IsTrue();
-    }
-  }
-  if (options.size.IsEmpty()) {
-    runtime::ThrowTypeError(isolate, "createView: width and height must be positive");
-    return;
-  }
-  v8::Local<v8::Promise> promise;
-  const uint64_t request = impl->NewPromise(&promise);
-  impl->client->CreateView(request, options);
-  a.GetReturnValue().Set(promise);
 }
 
 const char* KeyTypeName(platform::KeyEventType type) {
@@ -400,24 +195,9 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   v->Set(context, V8String(isolate, "id"), v8::Number::New(isolate, static_cast<double>(id)))
       .Check();
   fn("render", &Render);
-  fn("setCursor", &SetCursor);
-  fn("setMinSize", &SetMinSize);
-  fn("close", &CloseView);
-  fn("setAlwaysOnTop", &SetAlwaysOnTop);
-  fn("activate", &Activate);
-  fn("setCapture", &SetCapture);
-  fn("dispatchPlatformViewPointer", &DispatchPlatformViewPointer);
-  fn("setTitleBarStyle", &SetTitleBarStyle);
-  fn("setResizeOptions", &SetResizeOptions);
-  fn("setDragRegions", &SetDragRegions);
-  fn("setPosition", &SetPosition);
   for (const char* handler : kViewHandlers) {
     v->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
   }
-  // title: 只写访问器(读取返回 undefined)。
-  v->SetAccessorProperty(V8String(isolate, "title"),
-                         v8::Function::New(context, &GetUndefined, data).ToLocalChecked(),
-                         v8::Function::New(context, &SetTitle, data).ToLocalChecked());
   binding->object.Reset(isolate, v);
   views[id] = std::move(binding);
   if (!views_map.IsEmpty()) {
@@ -427,7 +207,6 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
   }
   SyncMetrics(isolate, context, id);
   SyncFocus(isolate, context, id);
-  SyncFrame(isolate, context, id);
   return v;
 }
 
@@ -457,8 +236,8 @@ void UiBindings::Impl::InstallExports(v8::Isolate* isolate, v8::Local<v8::Contex
                                       v8::Local<v8::Object> exports) {
   v8::Local<v8::External> data = v8::External::New(isolate, this, kUiImplTag);
   views_map.Reset(isolate, v8::Map::New(isolate));
-  // 视图 0 的对象兼作 window: 另挂全局的帧调度与帧回调。
-  v8::Local<v8::Object> w = AddViewObject(isolate, context, platform::kImplicitViewId);
+  // window: 全局的帧调度与帧回调(不是视图;视图都在 views 里, 包括隐式视图 0)。
+  v8::Local<v8::Object> w = v8::Object::New(isolate);
   w->Set(context, V8String(isolate, "scheduleFrame"),
          v8::Function::New(context, &ScheduleFrame, data).ToLocalChecked())
       .Check();
@@ -466,15 +245,12 @@ void UiBindings::Impl::InstallExports(v8::Isolate* isolate, v8::Local<v8::Contex
     w->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
   }
   window.Reset(isolate, w);
-  // 引擎里已存在的其他视图(热重启后)。
+  // 引擎里已存在的视图(隐式视图 0;热重启后还有其他视图)。
   for (ViewId id : client->views()) {
     AddViewObject(isolate, context, id);
   }
   exports->Set(context, V8String(isolate, "window"), w).Check();
   exports->Set(context, V8String(isolate, "views"), views_map.Get(isolate)).Check();
-  exports->Set(context, V8String(isolate, "createView"),
-               v8::Function::New(context, &CreateView, data).ToLocalChecked())
-      .Check();
 }
 
 void UiBindings::Impl::SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> context,
@@ -494,24 +270,6 @@ void UiBindings::Impl::SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> 
   w->Set(context, V8String(isolate, "devicePixelRatio"),
          v8::Number::New(isolate, m.device_pixel_ratio))
       .Check();
-}
-
-void UiBindings::Impl::SyncFrame(v8::Isolate* isolate, v8::Local<v8::Context> context,
-                                 ViewId id) {
-  ViewBinding* view = FindView(id);
-  if (view == nullptr || view->object.IsEmpty()) {
-    return;
-  }
-  const Rect f = client->screen_frame(id);
-  v8::Local<v8::Object> o = v8::Object::New(isolate);
-  auto set = [&](const char* k, double v) {
-    o->Set(context, V8String(isolate, k), v8::Number::New(isolate, v)).Check();
-  };
-  set("x", f.x);
-  set("y", f.y);
-  set("width", f.width);
-  set("height", f.height);
-  view->object.Get(isolate)->Set(context, V8String(isolate, "screenFrame"), o).Check();
 }
 
 void UiBindings::Impl::SyncFocus(v8::Isolate* isolate, v8::Local<v8::Context> context,
@@ -625,20 +383,6 @@ void UiBindings::MetricsChanged(ViewId view) {
   impl_->runtime->DrainMicrotasks();
 }
 
-bool UiBindings::CloseRequested(ViewId view) {
-  if (!is_imported()) {
-    return true;
-  }
-  v8::HandleScope scope(impl_->runtime->isolate());
-  v8::Context::Scope context_scope(impl_->runtime->context());
-  v8::Local<v8::Value> result;
-  const bool allow =
-      !impl_->CallViewHandler(view, "onCloseRequested", 0, nullptr).ToLocal(&result) ||
-      !result->IsFalse();
-  impl_->runtime->DrainMicrotasks();
-  return allow;
-}
-
 void UiBindings::PointerPacket(ViewId view, const platform::PointerDataPacket& packet) {
   if (!is_imported() || packet.empty()) {
     return;
@@ -670,7 +414,7 @@ void UiBindings::PointerPacket(ViewId view, const platform::PointerDataPacket& p
     out[9] = p.momentum ? 1 : 0;
     out[10] = p.screen_x;
     out[11] = p.screen_y;
-    out[12] = static_cast<double>(p.native_event_id);
+    out[12] = static_cast<double>(p.sequence_id);
     out[13] = static_cast<double>(p.signal_phase);
     out[14] = static_cast<double>(p.gesture_kind);
     out[15] = p.gesture_value;
@@ -722,19 +466,6 @@ void UiBindings::FocusChanged(ViewId view, bool focused) {
   impl_->runtime->DrainMicrotasks();
 }
 
-void UiBindings::WindowFrameChanged(ViewId view) {
-  if (!is_imported()) {
-    return;
-  }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
-  impl_->SyncFrame(isolate, context, view);
-  impl_->CallViewHandler(view, "onFrameChanged", 0, nullptr);
-  impl_->runtime->DrainMicrotasks();
-}
-
 void UiBindings::ViewAdded(ViewId view) {
   if (!is_imported()) {
     return;
@@ -763,25 +494,6 @@ void UiBindings::ViewRemoved(ViewId view) {
   impl_->DetachView(isolate, context, view);
   impl_->CallHandler(impl_->window.Get(isolate), "onViewsChanged", 0, nullptr);
   impl_->runtime->DrainMicrotasks();
-}
-
-void UiBindings::ViewCreateResult(uint64_t request, StatusOr<ViewId> result) {
-  if (!result.ok()) {
-    impl_->Reject(request, "createView: " + std::string(result.status().message()));
-    return;
-  }
-  const ViewId view = *result;
-  UiBindings::Impl* impl = impl_.get();
-  impl_->Settle(request, [impl, view](v8::Isolate* isolate, v8::Local<v8::Context> context,
-                                      v8::Local<v8::Promise::Resolver> resolver) {
-    ViewBinding* binding = impl->FindView(view);
-    if (binding == nullptr || binding->removed) {
-      resolver->Reject(context, v8::Exception::Error(V8String(isolate, "createView: the view was closed")))
-          .Check();
-      return;
-    }
-    resolver->Resolve(context, binding->object.Get(isolate)).Check();
-  });
 }
 
 }  // namespace momo::engine::ui

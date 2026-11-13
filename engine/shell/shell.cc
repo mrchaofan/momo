@@ -15,13 +15,13 @@ namespace momo::engine {
 
 StatusOr<std::unique_ptr<Shell>> Shell::Create(
     const TaskRunners& task_runners, const Settings& settings,
-    platform::PlatformServices* services,
+    const std::function<void(Shell&)>& on_created,
     std::vector<std::pair<std::string, MomoExtInitFn>> in_process_extensions) {
   if (!task_runners.IsValid()) {
     return InvalidArgumentError("Shell::Create requires all four task runners");
   }
   MOMO_DCHECK_RUNS_ON(task_runners.platform);
-  std::unique_ptr<Shell> shell(new Shell(task_runners, settings, services));
+  std::unique_ptr<Shell> shell(new Shell(task_runners, settings));
   Shell* raw = shell.get();
 
   // raster 与 ui 并行初始化, platform 线程汇合等待。
@@ -32,7 +32,7 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
   });
   WaitableEvent ui_ready;
   Status ui_status;
-  raw->RegisterPlatformChannels();
+  raw->RegisterPlatformViewChannel();
 
   // 扩展: manifest 声明的动态库 + 进程内扩展, on_attach 在本(platform)线程(docs/07 §5)。
   ExtensionHost::Environment env;
@@ -62,6 +62,11 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
   }
   for (auto& [id, init] : in_process_extensions) {
     raw->extensions_->AddExtension(id, init).IgnoreError();  // 失败记入 errors()
+  }
+
+  // 宿主的通道处理器先于 JS bundle 就位。
+  if (on_created) {
+    on_created(*raw);
   }
 
   ui::AppHost host;
@@ -94,15 +99,13 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
   return shell;
 }
 
-Shell::Shell(const TaskRunners& task_runners, const Settings& settings,
-             platform::PlatformServices* services)
+Shell::Shell(const TaskRunners& task_runners, const Settings& settings)
     : Object(task_runners.platform),
       task_runners_(task_runners),
       refresh_rate_(settings.refresh_rate),
       hub_(std::make_shared<MessageChannelHub>()),
       textures_(std::make_shared<graphics::TextureRegistry>()),
       platform_views_(std::make_shared<PlatformViewRegistry>()),
-      services_(services),
       weak_this_(this) {}
 
 Shell::~Shell() { Shutdown(); }
@@ -114,10 +117,7 @@ void Shell::Shutdown() {
   }
   shut_down_ = true;
   InvalidateWeakPtrs();
-  for (const char* channel :
-       {"momo/clipboard", "momo/url", "momo/textinput", "momo/platform_views"}) {
-    hub_->SetNativeHandler(channel, nullptr, nullptr);
-  }
+  hub_->SetNativeHandler("momo/platform_views", nullptr, nullptr);
   // 1) ui: 销毁 Engine(JS 运行时 → Animator)。此前投递到 ui 的任务按 FIFO 已执行完毕, 之后不再投递。
   //    JS 运行时必须在线程 join 前同步销毁(docs/01 §4), 所以这里同步汇合。
   PostTaskAndWait(*task_runners_.ui, [this] { engine_.reset(); });
@@ -132,7 +132,6 @@ void Shell::Shutdown() {
   delegates_.clear();
   active_vsync_ = nullptr;
   vsync_sources_.clear();
-  host_ = nullptr;
   // 2) raster: 释放 LayerTree 与 GPU 资源(含解绑 surface)。ui 已停, 不会再有新的 Draw 投递。
   PostTaskAndWait(*task_runners_.raster, [this] { rasterizer_.reset(); });
   MOMO_LOG(INFO) << "Shell shut down.";
@@ -147,11 +146,6 @@ std::unique_ptr<VsyncWaiter> Shell::MakeVsyncWaiter(WeakPtr<platform::VsyncSourc
 
 // ---------------------------------------------------------------------------
 // 视图绑定
-
-void Shell::SetHostDelegate(HostDelegate* host) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  host_ = host;
-}
 
 Shell::Delegate* Shell::DelegateOf(platform::ViewId view) const {
   auto it = delegates_.find(view);
@@ -241,21 +235,12 @@ void Shell::DetachView(platform::ViewId view_id) {
     // UpdateVsyncSource 在"无变化"时不投递: 显式切回定时器。
     PostToEngine([this](Engine& engine) { engine.SetVsyncWaiter(MakeVsyncWaiter({})); });
   }
-  if (focused_view_ == view_id) {
-    focused_view_ = platform::kImplicitViewId;
-  }
-  if (view_id != platform::kImplicitViewId) {
-    PostToEngine([view_id](Engine& engine) { engine.RemoveView(view_id); });
-  }
-  // 3) raster 停止使用 surface。surface 归窗口所有且被 raster 跨线程使用(唯一例外),
+  PostToEngine([view_id](Engine& engine) { engine.RemoveView(view_id); });
+  // 3) raster 停止使用 surface 并丢弃该视图的帧。surface 归窗口所有且被 raster 跨线程使用(唯一例外),
   //    窗口在本调用返回后就会销毁, 所以必须同步汇合。
   PostTaskAndWait(*task_runners_.raster, [this, view_id] {
     if (rasterizer_) {
-      if (view_id == platform::kImplicitViewId) {
-        rasterizer_->Teardown(view_id);  // 主窗口: 保留最近一帧, 重新绑定时补画
-      } else {
-        rasterizer_->RemoveView(view_id);
-      }
+      rasterizer_->RemoveView(view_id);
     }
   });
 }
@@ -303,39 +288,7 @@ void Shell::OnKeyData(platform::ViewId view, const platform::KeyData& data) {
 
 void Shell::OnFocusChanged(platform::ViewId view, bool focused) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (focused) {
-    focused_view_ = view;
-  }
   PostToEngine([view, focused](Engine& engine) { engine.OnFocusChanged(view, focused); });
-}
-
-void Shell::OnTextInput(const platform::TextInputEvent& event) {
-  using Type = platform::TextInputEvent::Type;
-  EncodableMap args;
-  std::string method;
-  switch (event.type) {
-    case Type::kCommit:
-      method = "commit";
-      args.emplace_back("text", event.text);
-      break;
-    case Type::kComposing:
-      method = "composing";
-      args.emplace_back("text", event.text);
-      args.emplace_back("cursor", event.cursor);
-      break;
-    case Type::kComposingEnd:
-      method = "composingEnd";
-      break;
-    case Type::kCommand:
-      method = "command";
-      args.emplace_back("command", event.command);
-      break;
-  }
-  if (event.replace_start >= 0 && event.replace_end >= event.replace_start) {
-    args.emplace_back("replaceStart", event.replace_start);
-    args.emplace_back("replaceEnd", event.replace_end);
-  }
-  hub_->SendToJs("momo/textinput", EncodeMethodCall({method, std::move(args)}));
 }
 
 void Shell::OnPlatformViewFocused(int64_t view_id) {
@@ -353,14 +306,7 @@ void Shell::DisposeAllPlatformViews() {
 }
 
 void Shell::RequestHotRestart() {
-  // 旧 JS 打开的其他窗口与创建的平台视图随运行时一起作废(新 bundle 从头创建, id 可能复用)。
-  if (host_ != nullptr) {
-    for (platform::ViewId view : attached_views()) {
-      if (view != platform::kImplicitViewId) {
-        host_->CloseView(view);
-      }
-    }
-  }
+  // 旧 JS 创建的平台视图随运行时一起作废(新 bundle 从头创建, id 可能复用)。
   DisposeAllPlatformViews();
   PostToEngine([](Engine& engine) {
     if (Status status = engine.HotRestart(); !status.ok()) {
@@ -373,130 +319,15 @@ void Shell::NotifyLifecycleEvent(LifecycleEvent event) {
   PostToEngine([event](Engine& engine) { engine.OnLifecycleEvent(event); });
 }
 
-void Shell::RequestClose(MoveOnlyFunction<void(bool allow)> reply) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (shut_down_) {
-    reply(true);
-    return;
-  }
-  // 捕获 this 安全: 同 PostToEngine。回复不依赖 Shell 存活: 若期间 Shell 已关闭,
-  // 关闭流程已由别处推进, embedder 侧的回复处理需幂等。
-  PostTaskAndReplyWithResult(
-      *task_runners_.ui, [this] { return engine_ ? engine_->OnCloseRequested() : true; },
-      task_runners_.platform, std::move(reply));
-}
-
-void Shell::RequestCloseView(platform::ViewId view, MoveOnlyFunction<void(bool allow)> reply) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (shut_down_) {
-    reply(true);
-    return;
-  }
-  PostTaskAndReplyWithResult(
-      *task_runners_.ui, [this, view] { return engine_ ? engine_->OnCloseRequested(view) : true; },
-      task_runners_.platform, std::move(reply));
-}
-
 // ---------------------------------------------------------------------------
-// 引擎 → 宿主
-
-void Shell::SetWindowTitle(platform::ViewId view, std::string title) {
-  PostToDelegate(view, [title = std::move(title)](Delegate& d) { d.OnEngineSetTitle(title); });
-}
-
-void Shell::SetWindowMinSize(platform::ViewId view, Size logical_size) {
-  PostToDelegate(view, [logical_size](Delegate& d) { d.OnEngineSetMinSize(logical_size); });
-}
-
-void Shell::SetCursor(platform::ViewId view, platform::SystemCursor cursor) {
-  PostToDelegate(view, [cursor](Delegate& d) { d.OnEngineSetCursor(cursor); });
-}
-
-void Shell::SetWindowAlwaysOnTop(platform::ViewId view, bool on) {
-  PostToDelegate(view, [on](Delegate& d) { d.OnEngineSetAlwaysOnTop(on); });
-}
-
-void Shell::SetWindowTitleBar(platform::ViewId view, bool hidden, double traffic_center_y) {
-  PostToDelegate(view, [hidden, traffic_center_y](Delegate& d) {
-    d.OnEngineSetTitleBar(hidden, traffic_center_y);
-  });
-}
-
-void Shell::SetWindowResizeOptions(platform::ViewId view,
-                                   const platform::WindowResizeOptions& options) {
-  PostToDelegate(view, [options](Delegate& d) { d.OnEngineSetResizeOptions(options); });
-}
-
-void Shell::SetWindowDragRegions(platform::ViewId view, std::vector<Rect> rects) {
-  PostToDelegate(view, [rects = std::move(rects)](Delegate& d) { d.OnEngineSetDragRegions(rects); });
-}
-
-void Shell::SetWindowPosition(platform::ViewId view, Point top_left) {
-  PostToDelegate(view, [top_left](Delegate& d) { d.OnEngineSetPosition(top_left); });
-}
-
-void Shell::OnWindowFrameChanged(platform::ViewId view, const Rect& frame) {
-  PostToEngine([view, frame](Engine& engine) { engine.OnWindowFrameChanged(view, frame); });
-}
-
-void Shell::ActivateWindow(platform::ViewId view) {
-  PostToDelegate(view, [](Delegate& d) { d.OnEngineActivate(); });
-}
-
-void Shell::CaptureWindowPointer(platform::ViewId view) {
-  PostToDelegate(view, [](Delegate& d) { d.OnEngineCapturePointer(); });
-}
-
-void Shell::DispatchPlatformViewPointer(platform::ViewId view, int64_t platform_view_id,
-                                        uint64_t native_event_id,
-                                        platform::PlatformViewPointerAction action) {
-  PostToDelegate(view, [platform_view_id, native_event_id, action](Delegate& d) {
-    d.OnEnginePlatformViewPointer(platform_view_id, native_event_id, action);
-  });
-}
-
-void Shell::CreateView(uint64_t request, const platform::ViewOptions& options) {
-  // ui 线程 → platform 线程: 分配 id, 由宿主创建窗口并 AttachView(其 AddView 先于结果投递到 ui,
-  // JS 在 Promise 结算时已能在 views 中看到新视图)。
-  PostToObject(weak_this_, [request, options](Shell& self) {
-    StatusOr<platform::ViewId> result = UnimplementedError("this host does not support createView");
-    if (self.host_ != nullptr && !self.shut_down_) {
-      const platform::ViewId id = self.next_view_id_++;
-      Status status = self.host_->CreateView(id, options);
-      result = status.ok() ? StatusOr<platform::ViewId>(id) : StatusOr<platform::ViewId>(status);
-      if (status.ok() && self.DelegateOf(id) == nullptr) {
-        result = InternalError("host created the window but did not attach view " + std::to_string(id));
-      }
-    }
-    self.PostToEngine([request, result = std::move(result)](Engine& engine) mutable {
-      engine.OnViewCreateResult(request, std::move(result));
-    });
-  });
-}
-
-void Shell::CloseView(platform::ViewId view) {
-  PostToObject(weak_this_, [view](Shell& self) {
-    if (self.host_ != nullptr && !self.shut_down_ && view != platform::kImplicitViewId) {
-      self.host_->CloseView(view);
-    }
-  });
-}
-
-void Shell::RunWithPlatformServices(MoveOnlyFunction<void(platform::PlatformServices&)> task) {
-  PostToObject(weak_this_, [task = std::move(task)](Shell& self) mutable {
-    if (self.services_ != nullptr) {
-      task(*self.services_);
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// 平台服务通道
+// 平台视图通道(momo/platform_views, JS→平台):
+//   create  {id: int, viewType: string, params: bytes|null}
+//   dispose {id: int}
+//   focus   {id: int}
+// 平台视图表归引擎(扩展经 C ABI 注册工厂, 合成帧按 LayerTree 中的位置切片), 所以这个通道由 Shell 处理;
+// 原生视图挂进哪个窗口由宿主决定(Shell::Delegate 的平台视图回调)。
 
 namespace {
-
-// 在 platform 线程上执行方法调用并回复。handler 返回 StatusOr<结果>。
-using MethodHandler = MoveOnlyFunction<StatusOr<EncodableValue>(const MethodCall&)>;
 
 void ReplyTo(MessageReply& reply, StatusOr<EncodableValue> result) {
   if (result.ok()) {
@@ -506,113 +337,7 @@ void ReplyTo(MessageReply& reply, StatusOr<EncodableValue> result) {
   }
 }
 
-Rect RectArg(const EncodableValue& args) {
-  Rect r;
-  if (const auto* list = args.GetIf<EncodableList>(); list != nullptr && list->size() >= 4) {
-    r = {(*list)[0].AsDouble().value_or(0), (*list)[1].AsDouble().value_or(0),
-         (*list)[2].AsDouble().value_or(0), (*list)[3].AsDouble().value_or(0)};
-  } else if (const auto* f = args.GetIf<std::vector<double>>(); f != nullptr && f->size() >= 4) {
-    r = {(*f)[0], (*f)[1], (*f)[2], (*f)[3]};
-  }
-  return r;
-}
-
-platform::TextEditingState EditingStateArg(const EncodableValue& args) {
-  platform::TextEditingState state;
-  auto num = [&args](const char* key, int32_t fallback) {
-    const EncodableValue* v = args.Find(key);
-    return v != nullptr ? static_cast<int32_t>(v->AsInt().value_or(fallback)) : fallback;
-  };
-  if (const EncodableValue* text = args.Find("text")) {
-    state.text = text->AsString().value_or("");
-  }
-  state.selection_base = num("selectionBase", 0);
-  state.selection_extent = num("selectionExtent", state.selection_base);
-  state.composing_start = num("composingStart", -1);
-  state.composing_end = num("composingEnd", -1);
-  return state;
-}
-
 }  // namespace
-
-void Shell::RegisterPlatformChannels() {
-  // handler 在 platform 线程运行, 经 weak_this_ 判活(Shell 关闭后 WeakPtr 失效, 回复错误)。
-  auto add = [this](const char* channel,
-                    std::function<StatusOr<EncodableValue>(Shell&, const MethodCall&)> fn) {
-    WeakPtr<Shell> weak = weak_this_;
-    hub_->SetNativeHandler(
-        channel, task_runners_.platform,
-        [weak, fn = std::move(fn)](MessageBytes message, MessageReply reply) {
-          StatusOr<MethodCall> call = DecodeMethodCall(message);
-          if (!call.ok()) {
-            ReplyTo(reply, call.status());
-            return;
-          }
-          Shell* self = weak.get();
-          if (self == nullptr || self->shut_down_) {
-            ReplyTo(reply, UnavailableError("engine is shutting down"));
-            return;
-          }
-          ReplyTo(reply, fn(*self, *call));
-        });
-  };
-
-  add("momo/clipboard", [](Shell& self, const MethodCall& call) -> StatusOr<EncodableValue> {
-    if (self.services_ == nullptr) {
-      return UnavailableError("no platform services");
-    }
-    if (call.method == "getText") {
-      MOMO_ASSIGN_OR_RETURN(std::string text, self.services_->GetClipboardText());
-      return EncodableValue(std::move(text));
-    }
-    if (call.method == "setText") {
-      MOMO_RETURN_IF_ERROR(self.services_->SetClipboardText(call.args.AsString().value_or("")));
-      return EncodableValue();
-    }
-    return UnimplementedError("momo/clipboard: unknown method " + call.method);
-  });
-
-  add("momo/url", [](Shell& self, const MethodCall& call) -> StatusOr<EncodableValue> {
-    if (self.services_ == nullptr) {
-      return UnavailableError("no platform services");
-    }
-    if (call.method == "open") {
-      MOMO_RETURN_IF_ERROR(self.services_->OpenUrl(call.args.AsString().value_or("")));
-      return EncodableValue();
-    }
-    return UnimplementedError("momo/url: unknown method " + call.method);
-  });
-
-  RegisterPlatformViewChannel();
-
-  add("momo/textinput", [](Shell& self, const MethodCall& call) -> StatusOr<EncodableValue> {
-    // 输入法连接属于当前获得焦点的窗口(没有则主窗口)。
-    Delegate* delegate = self.DelegateOf(self.focused_view_);
-    if (delegate == nullptr) delegate = self.DelegateOf(platform::kImplicitViewId);
-    platform::TextInputConnection* input = delegate != nullptr ? delegate->GetTextInput() : nullptr;
-    if (input == nullptr) {
-      return EncodableValue();  // 无窗口: 静默忽略(headless)
-    }
-    if (call.method == "show") {
-      input->Show();
-    } else if (call.method == "hide") {
-      input->Hide();
-    } else if (call.method == "setCaretRect") {
-      input->SetCaretRect(RectArg(call.args));
-    } else if (call.method == "setEditingState") {
-      input->SetEditingState(EditingStateArg(call.args));
-    } else {
-      return UnimplementedError("momo/textinput: unknown method " + call.method);
-    }
-    return EncodableValue();
-  });
-}
-
-// ---------------------------------------------------------------------------
-// 平台视图通道(momo/platform_views, JS→平台):
-//   create  {id: int, viewType: string, params: bytes|null}
-//   dispose {id: int}
-//   focus   {id: int}
 
 void Shell::RegisterPlatformViewChannel() {
   WeakPtr<Shell> weak = weak_this_;

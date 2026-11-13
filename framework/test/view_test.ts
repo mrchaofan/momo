@@ -1,10 +1,12 @@
 // 多视图(多窗口): Window 声明式开关窗口、各窗口独立 MediaQuery/Overlay/渲染、共享状态、GlobalKey 跨窗口迁移。
 import {
-  Builder, Center, ColoredBox, Colors, Focus, FocusManager, FocusNode, GlobalKey, MediaQuery, SizedBox, State,
-  StatefulWidget, Text, ViewAnchor, Window, WindowChrome, WindowDragArea, WidgetsBinding, EdgeInsets,
-  type BuildContext, type Widget,
+  Builder, Center, ColoredBox, Colors, Focus, FocusManager, FocusNode, GestureDetector, GlobalKey, MediaQuery, Offset,
+  SizedBox, State, StatefulWidget, Text, ViewAnchor, Window, WindowChrome,
+  WidgetsBinding, WindowService, EdgeInsets, GestureBinding, runWidget, type BuildContext, type Rect, type Widget,
 } from "../packages/momo/src/index";
+import { Phase } from "./tester";
 import { views } from "momo:ui";
+
 import { expect, group } from "./harness";
 import { testWidgets } from "./util";
 
@@ -65,62 +67,55 @@ group("multi-view", () => {
     expect.equal(WidgetsBinding.instance.viewHosts.size, 0);
   }, { mockOnly: true });
 
-  // 缩放行为由应用配置: 不给缩放选项时不改动窗口;给出任一项时, 未给出的取缺省值;相同配置不重复下发。
-  testWidgets("WindowChrome configures the window's resize behaviour", async (t, ctx) => {
+  // 标题栏: 应用只声明自己的标题栏高度;系统控制按钮占用的区域由宿主报告, 经 MediaQuery.windowControls 提供。
+  testWidgets("WindowChrome hides the title bar and exposes the window controls area", async (t, ctx) => {
     const mock = ctx.host.mock!;
-    mock.resizeOptions.clear();
+    let controls: Rect | null = null;
+    const app = (hidden: boolean): Widget => new WindowChrome({
+      hiddenTitleBar: hidden,
+      titleBarHeight: 40,
+      child: new Builder({ builder: (c) => {
+        controls = MediaQuery.of(c).windowControls;
+        return new SizedBox({});
+      } }),
+    });
+    await t.pumpWidget(app(true));
+    await t.pump();
+    await t.pump();
+    expect.deepEqual(mock.titleBars.get(0), { hidden: true, height: 40 });
+    expect.isTrue(controls !== null, "the host reported the window controls");
+    expect.equal(controls!.right, 78);
+    expect.equal(controls!.bottom, 40);
+    await t.pumpWidget(app(false));
+    await t.pump();
+    await t.pump();
+    expect.equal(controls, null);
+  }, { mockOnly: true });
+
+  // 缩放边框只改边框;可否缩放是窗口属性(Window.resizable)。两者在宿主里合并, 互不覆盖;相同配置不重复下发。
+  testWidgets("WindowChrome sets the resize border; Window sets resizable", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    mock.resizeBorders.clear();
     await t.pumpWidget(new WindowChrome({ child: new SizedBox({}) }));
     await t.pump();
-    expect.isFalse(mock.resizeOptions.has(0), "no resize options given: the window keeps its own behaviour");
-
-    await t.pumpWidget(new WindowChrome({
-      resizeBorder: EdgeInsets.only({ left: 4, right: 4, bottom: 4 }),
-      child: new SizedBox({}),
-    }));
+    expect.isFalse(mock.resizeBorders.has(0), "no border given: the window keeps its own behaviour");
+    await t.pumpWidget(new WindowChrome({ resizeBorder: EdgeInsets.only({ left: 4, right: 4, bottom: 4 }), child: new SizedBox({}) }));
     await t.pump();
-    expect.deepEqual(mock.resizeOptions.get(0), {
-      resizable: true, border: { left: 4, top: 0, right: 4, bottom: 4 }, liveResizeFrameWait: 100,
+    expect.deepEqual(mock.resizeBorders.get(0), { left: 4, top: 0, right: 4, bottom: 4 });
+
+    const app = (resizable: boolean): Widget => new ViewAnchor({
+      child: new SizedBox({}),
+      views: [new Window({ key: null, width: 200, height: 100, resizable, child: new SizedBox({}) })],
     });
-
-    await t.pumpWidget(new WindowChrome({ resizable: false, liveResizeFrameWait: 0, child: new SizedBox({}) }));
+    await t.pumpWidget(app(false));
     await t.pump();
-    expect.deepEqual(mock.resizeOptions.get(0), { resizable: false, border: 5, liveResizeFrameWait: 0 });
-  }, { mockOnly: true });
-
-  testWidgets("Window passes resizable to createView", async (t, ctx) => {
-    const mock = ctx.host.mock!;
-    await t.pumpWidget(new ViewAnchor({
-      child: new SizedBox({}),
-      views: [new Window({ width: 200, height: 100, resizable: false, child: new SizedBox({}) })],
-    }));
+    expect.equal(mock.lastCreateViewOptions?.resizable, false, "create-time value");
+    const id = mock.openViews()[0]!;
+    await t.pumpWidget(app(true));
     await t.pump();
-    expect.equal(mock.lastCreateViewOptions?.resizable, false);
+    expect.equal(mock.resizable.get(id), true, "updated with the widget");
     await t.pumpWidget(new SizedBox({}));
     await t.pump();
-  }, { mockOnly: true });
-
-  testWidgets("closed windows are not retained by drag-region bookkeeping", async (t, ctx) => {
-    const mock = ctx.host.mock!;
-    const app = (open: boolean): Widget => new ViewAnchor({
-      child: new SizedBox({}),
-      views: open ? [new Window({
-        width: 200, height: 100,
-        child: new WindowDragArea({ child: new SizedBox({ width: 50, height: 20 }) }),
-      })] : [],
-    });
-    for (let round = 0; round < 3; round++) {
-      await t.pumpWidget(app(true));
-      await t.pump();
-      await t.pump();
-      expect.equal(mock.openViews().length, 1);
-      expect.equal(WidgetsBinding.instance.debugDragRegionViewCount, 1);
-      // 宿主在帧外关闭窗口(如点关闭按钮), 之后不再推进帧: 视图移除的通知本身就要清掉记录。
-      expect.isTrue(mock.requestCloseView(mock.openViews()[0]!));
-      for (let i = 0; i < 3; i++) await Promise.resolve();
-      expect.deepEqual(mock.openViews(), []);
-      expect.equal(WidgetsBinding.instance.debugDragRegionViewCount, 0, `round ${round}`);
-      await t.pumpWidget(app(false));
-    }
   }, { mockOnly: true });
 
   testWidgets("closing via the window's close button asks onCloseRequested and reports onClosed", async (t, ctx) => {
@@ -140,10 +135,10 @@ group("multi-view", () => {
     await t.pumpWidget(app());
     await t.pump();
     const id = mock.openViews()[0]!;
-    expect.isFalse(mock.requestCloseView(id), "onCloseRequested returned false");
+    expect.isFalse(await mock.requestCloseView(id), "onCloseRequested returned false");
     expect.deepEqual(mock.openViews(), [id]);
     allow = true;
-    expect.isTrue(mock.requestCloseView(id));
+    expect.isTrue(await mock.requestCloseView(id));
     await t.pump();
     expect.equal(closed, 1);
     await t.pumpWidget(app());  // 应用按 onClosed 移除窗口
@@ -193,6 +188,130 @@ group("multi-view", () => {
     view.onFocusChanged?.(true);
     await t.pump();
     expect.equal(FocusManager.instance.primaryFocus, windowNode);
+  }, { mockOnly: true });
+
+  // 所有窗口对等: 隐式视图(runApp 渲染的窗口)关闭后, 根照常构建, 其他窗口照常渲染;根渲染树不再提交。
+  testWidgets("the implicit view can be closed while other windows keep rendering", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    let builds = 0;
+    const app = (): Widget => new ViewAnchor({
+      child: new Text("root"),
+      views: [new Window({ width: 200, height: 100, child: new Builder({ builder: () => { builds++; return new Text("other"); } }) })],
+    });
+    await t.pumpWidget(app());
+    await t.pump();
+    const other = mock.openViews()[0]!;
+    // 用户关闭了启动窗口(JS 未拦截)。
+    expect.isTrue(await mock.requestCloseView(0));
+    await t.flushMicrotasks();
+    expect.isFalse(mock.hasView(0));
+    const rendered = mock.renderedScenes;
+    const before = builds;
+    await t.pumpWidget(app());
+    await t.pump();
+    expect.equal(mock.renderedScenes, rendered, "nothing is submitted to the closed implicit view");
+    expect.isTrue(builds > before || (mock.sceneOpsByView.get(other) ?? []).length > 0, "the other window keeps rendering");
+    expect.deepEqual(mock.openViews(), [other]);
+  }, { mockOnly: true });
+
+  // runWidget: 根不绑定任何视图;启动窗口经 Window({ view }) 接管, 与新开的窗口一样声明属性、卸载即关闭。
+  testWidgets("runWidget adopts the startup view through Window({ view })", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    const startup = views.get(0)!;
+    let closed = 0;
+    const app = (open: boolean): Widget => new ViewAnchor({
+      views: open ? [new Window({ view: startup, title: "adopted", onClosed: () => closed++, child: new Text("in startup window") })] : [],
+    });
+    runWidget(app(true));
+    await t.pump();
+    await t.pump();
+    expect.equal(mock.titles.get(0), "adopted");
+    expect.isTrue((mock.sceneOpsByView.get(0) ?? []).some((o) => o.op === "addPicture"), "content renders into view 0");
+    expect.equal(WidgetsBinding.instance.viewHosts.get(0)?.view, startup);
+    // 指针命中走接管它的 View。
+    let taps = 0;
+    runWidget(new ViewAnchor({ views: [new Window({ view: startup, child: new GestureDetector({ onTap: () => taps++, child: new ColoredBox({ color: Colors.white }) }) })] }));
+    await t.pump();
+    await t.tap(new Offset(10, 10));
+    expect.equal(taps, 1);
+    // 卸载即关闭(启动窗口与其他窗口没有区别)。
+    runWidget(app(false));
+    await t.pump();
+    await t.flushMicrotasks();
+    expect.isFalse(mock.hasView(0), "unmounting the Window closes the startup view");
+    expect.equal(closed, 0, "closed by the app, not by the host");
+  }, { mockOnly: true });
+
+  // 退出应用(Cmd+Q)与关闭窗口是两件事: 前者询问 didRequestAppExit。
+  testWidgets("app exit requests ask didRequestAppExit", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    await t.pumpWidget(new SizedBox({}));
+    let allow = false;
+    const observer = { didRequestAppExit: () => allow };
+    WidgetsBinding.instance.addObserver(observer);
+    try {
+      expect.isFalse(await mock.requestAppExit());
+      allow = true;
+      expect.isTrue(await mock.requestAppExit());
+    } finally {
+      WidgetsBinding.instance.removeObserver(observer);
+    }
+  }, { mockOnly: true });
+
+  testWidgets("WindowService caches frames and follows host updates", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    await t.pumpWidget(new SizedBox({}));
+    await WindowService.instance.refresh(0);
+    expect.deepEqual(WindowService.instance.frameOf(0), mock.frames.get(0));
+    WindowService.instance.setPosition(0, 30, 40);
+    await t.flushMicrotasks();
+    expect.equal(WindowService.instance.frameOf(0)?.x, 30);
+    expect.isTrue(WindowService.instance.capabilitiesOf(0)?.has("moveLoop") ?? false);
+  }, { mockOnly: true });
+
+  // 拖动中并入另一个窗口(浏览器合并标签): 触发拖动的窗口被关闭, 捕获的序列照常交给捕获者;
+  // 只有原生接收窗口本身被关闭时, 序列才以取消结束。
+  testWidgets("a captured drag survives closing the window it started in", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    let open = true;
+    let source = -1;
+    const app = (): Widget => new ViewAnchor({
+      child: new ColoredBox({ color: Colors.white }),
+      views: open ? [new Window({ width: 200, height: 100, onOpened: (v) => { source = v.id; }, child: new ColoredBox({ color: Colors.white }) })] : [],
+    });
+    await t.pumpWidget(app());
+    await t.pump();
+    const routed: string[] = [];
+    t.sendPointer(Phase.down, new Offset(20, 20), { view: source });
+    const capture = GestureBinding.instance.capturePointer((e) => routed.push(`${e.constructor.name}@${e.viewId}`))!;
+    capture.moveToView(0);  // 并入视图 0 的窗口: 原生接收窗口改交
+    await t.flushMicrotasks();
+    expect.deepEqual(mock.captures.at(-1), 0);
+    open = false;  // 源窗口被并走、关闭
+    await t.pumpWidget(app());
+    await t.pump();
+    expect.isFalse(mock.hasView(source));
+    t.sendPointer(Phase.move, new Offset(300, 20), { view: source });  // 宿主改投视图 0(坐标按屏幕换算)
+    t.sendPointer(Phase.up, new Offset(300, 20), { view: source, buttons: 0 });
+    expect.deepEqual(routed, ["PointerMoveEvent@0", "PointerUpEvent@0"], "the drag continues to the release");
+  }, { mockOnly: true });
+
+  testWidgets("closing the receiving window cancels the captured sequence", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    let target = -1;
+    await t.pumpWidget(new ViewAnchor({
+      child: new ColoredBox({ color: Colors.white }),
+      views: [new Window({ width: 200, height: 100, onOpened: (v) => { target = v.id; }, child: new SizedBox({}) })],
+    }));
+    await t.pump();
+    const routed: string[] = [];
+    t.sendPointer(Phase.down, new Offset(20, 20));
+    const capture = GestureBinding.instance.capturePointer((e) => routed.push(e.constructor.name))!;
+    capture.moveToView(target);
+    await t.flushMicrotasks();
+    expect.isTrue(await mock.requestCloseView(target));
+    expect.deepEqual(routed, ["PointerCancelEvent"]);
+    expect.isFalse(capture.active);
   }, { mockOnly: true });
 
   testWidgets("createView failure reports onCreateError and renders nothing", async (t, ctx) => {

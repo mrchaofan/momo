@@ -26,31 +26,24 @@ class UiBindings {
   ~UiBindings();
 
   // ---- 事件入口: 调用 JS 回调(未设置则忽略), 之后排空 microtask ----
-  // 帧回调挂在 window(视图 0 的对象)上, 一帧驱动全部视图。
+  // 帧回调挂在全局的 window 对象上, 一帧驱动全部视图。
   // frame_time: vsync 时间, 以毫秒传给 window.onBeginFrame(frameTimeMs)。
   void BeginFrame(TimePoint frame_time);
   void DrawFrame();
   // 以下按视图: 调用 views.get(view) 上的回调。
   // 同步 view.devicePixelRatio / physicalSize 后调用 view.onMetricsChanged()。
   void MetricsChanged(ViewId view);
-  // view.onCloseRequested() 显式返回 false 时取消关闭。
-  bool CloseRequested(ViewId view);
   // view.onPointerPacket(data: Float64Array, count)。
   void PointerPacket(ViewId view, const platform::PointerDataPacket& packet);
   // view.onKeyData(data) 返回 true 表示已消费。
   bool KeyData(ViewId view, const platform::KeyData& data);
   void FocusChanged(ViewId view, bool focused);
-  // 同步 view.screenFrame 后调用 view.onFrameChanged()。
-  void WindowFrameChanged(ViewId view);
   // 视图集合变化: 更新 views 后调用 window.onViewsChanged()。
   void ViewAdded(ViewId view);
   void ViewRemoved(ViewId view);
-  // createView 的 Promise 结算(request 即 Promise id)。
-  void ViewCreateResult(uint64_t request, StatusOr<ViewId> result);
 
-  // 主窗口(视图 0)的兼容入口。
+  // 隐式视图(视图 0)的便捷入口。
   void MetricsChanged() { MetricsChanged(platform::kImplicitViewId); }
-  bool CloseRequested() { return CloseRequested(platform::kImplicitViewId); }
   void PointerPacket(const platform::PointerDataPacket& packet) {
     PointerPacket(platform::kImplicitViewId, packet);
   }

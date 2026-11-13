@@ -29,27 +29,41 @@ class Slicer final : public ViewSlicer {
       : canvases_(std::move(canvases)), slices_(slices), frame_(frame) {}
 
   void NoteLeafDraw(SkCanvas* leaf, const std::optional<Rect>& local_bounds) override {
+    if (std::optional<Rect> rect = ToDevice(leaf, local_bounds)) {
+      Append(slices_[current_].leaf_rects, *rect);
+    }
+  }
+
+  void NoteHitRegions(SkCanvas* leaf, const std::vector<Rect>& local_regions) override {
+    for (const Rect& r : local_regions) {
+      if (std::optional<Rect> rect = ToDevice(leaf, r)) {
+        Append(slices_[current_].hit_rects, *rect);
+      }
+    }
+  }
+
+  // 本地矩形(nullopt = 无界) → 设备坐标, 与当前裁剪、帧求交。
+  std::optional<Rect> ToDevice(SkCanvas* leaf, const std::optional<Rect>& local) const {
     const SkIRect clip = leaf->getDeviceClipBounds();
     if (clip.isEmpty()) {
-      return;
+      return std::nullopt;
     }
     SkRect device = SkRect::Make(clip);
-    if (local_bounds) {
-      SkRect mapped = leaf->getTotalMatrix().mapRect(ToSkRect(*local_bounds));
+    if (local) {
+      SkRect mapped = leaf->getTotalMatrix().mapRect(ToSkRect(*local));
       if (!mapped.intersect(device)) {
-        return;
+        return std::nullopt;
       }
       device = mapped;
     }
-    std::optional<Rect> rect = FromSkRect(device).Intersect(frame_);
-    if (!rect) {
-      return;
-    }
-    std::vector<Rect>& rects = slices_[current_].leaf_rects;
+    return FromSkRect(device).Intersect(frame_);
+  }
+
+  static void Append(std::vector<Rect>& rects, const Rect& rect) {
     if (rects.size() >= Composition::kMaxLeafRectsPerSlice) {
-      rects.back() = rects.back().Union(*rect);
+      rects.back() = rects.back().Union(rect);
     } else {
-      rects.push_back(*rect);
+      rects.push_back(rect);
     }
   }
 
@@ -155,7 +169,7 @@ std::vector<Rect> Composition::OccludersAbove(size_t view_index) const {
   }
   // views[i] 之上的分片是 i+1 .. N。
   for (size_t s = view_index + 1; s < impl_->slices.size(); ++s) {
-    for (const Rect& r : impl_->slices[s].leaf_rects) {
+    for (const Rect& r : impl_->slices[s].hit_rects) {
       if (std::optional<Rect> hit = r.Intersect(*visible)) {
         out.push_back(*hit);
       }

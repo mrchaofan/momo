@@ -19,7 +19,7 @@ export const PointerDataField = {
   momentum: 9,
   screenX: 10,
   screenY: 11,
-  nativeEventId: 12,
+  sequenceId: 12,
   signalPhase: 13,
   gestureKind: 14,
   gestureValue: 15,
@@ -27,8 +27,8 @@ export const PointerDataField = {
   stride: 17,
 } as const;
 
-/** 指针包 phase 取值。 */
-export const PointerPhase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6, gesture: 7 } as const;
+/** 指针包 phase 取值。remove 只表示离开;cancel 表示进行中的按下序列被取消(如接收窗口关闭)。 */
+export const PointerPhase = { add: 0, down: 1, move: 2, up: 3, remove: 4, hover: 5, scroll: 6, gesture: 7, cancel: 8 } as const;
 
 const KINDS: readonly PointerDeviceKind[] = ["mouse", "trackpad", "touch", "stylus"];
 const SCROLL_PHASES: readonly ScrollPhase[] = ["none", "start", "update", "end"];
@@ -41,6 +41,22 @@ interface DeviceState {
   down: boolean;
   pointer: number;
   last: Offset;
+  /** 最近一个事件来自的视图(坐标系随视图而不同)。 */
+  viewId: number;
+  lastScreen: Offset;
+  /** 进行中按下序列的宿主 id。 */
+  sequenceId: number;
+}
+
+/** 进行中的按下序列(GestureBinding.capturePointer 用)。 */
+export interface ActivePointer {
+  readonly pointer: number;
+  readonly device: number;
+  readonly viewId: number;
+  readonly position: Offset;
+  readonly screenPosition: Offset;
+  /** 宿主的按下序列 id(PointerCapture.moveToView 回送)。 */
+  readonly sequenceId: number;
 }
 
 /**
@@ -51,8 +67,12 @@ export class PointerEventConverter {
   #devices = new Map<number, DeviceState>();
   #nextPointer = 0;
 
-  /** 解码 count 个事件(data 仅在回调期间有效, 本函数立即读取)。 */
-  expand(data: Float64Array, count: number, devicePixelRatio: number, stride: number = PointerDataField.stride): PointerEvent[] {
+  /**
+   * 解码 count 个事件(data 仅在回调期间有效, 本函数立即读取)。viewId: 事件来自的视图, 记在每个事件上。
+   * 设备状态(按下、指针 id)在视图之间共享: 宿主把进行中的序列改交另一个窗口(PointerCapture.moveToView)后,
+   * 同一个指针继续, 只是坐标换成新视图的(位移按新视图重新起算)。
+   */
+  expand(data: Float64Array, count: number, devicePixelRatio: number, viewId = 0, stride: number = PointerDataField.stride): PointerEvent[] {
     const out: PointerEvent[] = [];
     for (let i = 0; i < count; i++) {
       const b = i * stride;
@@ -66,20 +86,26 @@ export class PointerEventConverter {
       const screenPosition = new Offset(data[b + PointerDataField.screenX]!, data[b + PointerDataField.screenY]!);
       let state = this.#devices.get(device);
       if (state === undefined) {
-        state = { added: false, down: false, pointer: 0, last: position };
+        state = { added: false, down: false, pointer: 0, last: position, viewId, lastScreen: screenPosition, sequenceId: 0 };
         this.#devices.set(device, state);
       }
+      if (state.viewId !== viewId) {
+        state.viewId = viewId;
+        state.last = position;  // 换了视图(坐标系): 位移重新起算
+      }
       const delta = position.minus(state.last);
-      const base = { timeStamp, kind, device, position, momentum, screenPosition };
-      // 原生事件 id 给直接对应该原生事件的指针事件(含 add/remove: 它们引起的进入/离开取其位置);
-      // 补发的 cancel 不带(它不对应原生事件)。
-      const native = { ...base, nativeEventId: stride > PointerDataField.nativeEventId ? data[b + PointerDataField.nativeEventId]! : 0 };
+      const base = { timeStamp, kind, device, position, momentum, screenPosition, viewId };
+      const sequenceId = stride > PointerDataField.sequenceId ? data[b + PointerDataField.sequenceId]! : 0;
+      if (sequenceId !== 0) state.sequenceId = sequenceId;
+      const native = { ...base, sequenceId };
       if (!state.added && phase !== PointerPhase.add && phase !== PointerPhase.remove) {
         state.added = true;
         out.push(new PointerAddedEvent({ ...native, pointer: state.pointer }));
       }
       switch (phase) {
         case PointerPhase.add:
+          // 已在别的视图接入(按下序列转交过来的新窗口首次上报): 同一设备不重复接入。
+          if (state.added && state.down) break;
           state.added = true;
           out.push(new PointerAddedEvent({ ...native, pointer: state.pointer }));
           break;
@@ -107,7 +133,14 @@ export class PointerEventConverter {
             out.push(new PointerUpEvent({ ...native, pointer: state.pointer, buttons: 0 }));
           }
           break;
+        case PointerPhase.cancel:
+          if (state.down) {
+            state.down = false;
+            out.push(new PointerCancelEvent({ ...base, pointer: state.pointer }));
+          }
+          break;
         case PointerPhase.remove:
+          // 宿主不在按下中报离开(序列的接收方固定到抬起);不一致时按取消处理, 不让按下状态卡住。
           if (state.down) {
             state.down = false;
             out.push(new PointerCancelEvent({ ...base, pointer: state.pointer }));
@@ -141,8 +174,19 @@ export class PointerEventConverter {
           break;
       }
       state.last = position;
+      state.lastScreen = screenPosition;
     }
     return out;
+  }
+
+  /** 设备 device(缺省任一设备)进行中的按下序列;没有按下时为 null。 */
+  activePointer(device?: number): ActivePointer | null {
+    for (const [d, s] of this.#devices) {
+      if (s.down && (device === undefined || d === device)) {
+        return { pointer: s.pointer, device: d, viewId: s.viewId, position: s.last, screenPosition: s.lastScreen, sequenceId: s.sequenceId };
+      }
+    }
+    return null;
   }
 
   /** 清空设备状态(测试用)。 */

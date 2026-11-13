@@ -144,9 +144,13 @@ export const expect = {
   },
 };
 
+/** 正在运行测试的宿主(WidgetTester 经它以宿主身份投递事件)。 */
+export let currentHost: TestHost | null = null;
+
 /** 运行全部已注册测试。 */
 export async function runRegisteredTests(host: TestHost): Promise<TestSummary> {
   const summary: TestSummary = { passed: 0, failed: 0, skipped: 0, failures: [] };
+  currentHost = host;
   for (const c of cases) {
     if (host.filter && !c.name.includes(host.filter)) continue;
     if ((c.mockOnly && host.mock === null) || (c.ahemOnly && !host.ahemText)) {

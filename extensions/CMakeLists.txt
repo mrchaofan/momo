@@ -46,6 +46,23 @@ if(MOMO_BUILD_EXAMPLES OR MOMO_BUILD_TESTS)
   add_subdirectory(examples/webview-extension/native)
 endif()
 
+# 示例扩展的端到端测试: 经 ExtensionHost 加载真实的扩展动态库(依赖方向 examples → engine,
+# 引擎自己的测试不依赖示例)。
+if(MOMO_BUILD_TESTS AND MOMO_HAVE_V8)
+  add_executable(momo_extension_examples_unittests examples/examples_unittests.cc)
+  add_dependencies(momo_extension_examples_unittests ext_hello ext_texture)
+  target_link_libraries(momo_extension_examples_unittests PRIVATE momo::engine GTest::gtest_main)
+  target_compile_definitions(momo_extension_examples_unittests PRIVATE
+    MOMO_EXT_HELLO_LIB="$<TARGET_FILE:ext_hello>"
+    MOMO_EXT_TEXTURE_LIB="$<TARGET_FILE:ext_texture>")
+  if(TARGET ext_webview)
+    add_dependencies(momo_extension_examples_unittests ext_webview)
+    target_compile_definitions(momo_extension_examples_unittests PRIVATE
+      MOMO_EXT_WEBVIEW_LIB="$<TARGET_FILE:ext_webview>")
+  endif()
+  gtest_discover_tests(momo_extension_examples_unittests)
+endif()
+
 # ABI 校验(momo ext verify): 只导出 momo_ext_init、无 C++ 符号、不链接引擎内部库。
 find_program(MOMO_NODE node)
 if(MOMO_BUILD_TESTS AND MOMO_NODE)

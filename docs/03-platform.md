@@ -18,16 +18,23 @@ engine/platform/                   # 平台契约(engine 可见的全部;零平�
 ├── render_surface.h               # 渲染表面接口(GPU/软件)、SurfaceFrame、GpuContextInfo
 ├── vsync_source.h                 # VSync 信号源(momo::Object, 归属 platform 线程)
 ├── input_types.h                  # PointerData/KeyData 等平台无关事件类型
-├── text_input_connection.h        # IME 接入接口与 TextEditingState/TextInputEvent
-├── platform_services.h            # 剪贴板/打开 URL(低频服务, 经消息通道暴露给 JS)
-├── system_cursor.h                # 系统光标形状
+├── view.h                         # ViewId(视图 0 = 隐式视图)
+├── platform_view.h                # 平台视图的合成布局(raster 产出, embedder 消费)
 └── viewport_metrics.h             # ViewportMetrics(物理尺寸 + DPR)
 
 embedder/common/                   # embedder 的平台抽象(engine 不可见)
 ├── platform_integration.h         # 工厂与根入口(创建窗口/VsyncSource、服务、显示器、原生循环)
-├── platform_window.h              # 窗口接口 + WindowDelegate 回调 + WindowSpec
+├── platform_window.h              # 窗口接口(含可选能力 WindowCapability)+ WindowDelegate 回调 + WindowSpec
+├── platform_services.h            # 剪贴板/打开 URL(低频服务)
+├── text_input.h                   # IME 接入接口与 TextEditingState/TextInputEvent
+├── window_types.h                 # SystemCursor、WindowOptions、TitleBarOptions、WindowResizeOptions…
+├── window_channel.h               # 宿主通道 momo/window、momo/app(窗口管理)
+├── platform_channels.h            # 宿主通道 momo/clipboard、momo/url、momo/textinput
 ├── display.h                      # 显示器信息(DPR、刷新率、工作区)
 └── (menu.h)                       # 应用菜单与右键菜单接口(规划)
+
+engine/platform/ 只放 engine 自己要用的东西(画面、输入、视图尺寸)。窗口外观与行为、剪贴板、输入法这类能力
+engine 不需要知道: 它们由 embedder 在引擎的消息通道上注册处理器(宿主通道), JS 与宿主直接往返。
 (原生消息循环接口 NativeLoop 定义在 base/native_loop.h, 见 docs/12)
 
 embedder/windows/                  # Win32 实现(与 main_win.cc 同目录)
@@ -64,7 +71,7 @@ class PlatformIntegration {
   virtual ~PlatformIntegration() = default;
   virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec&, WindowDelegate*) = 0;
   virtual StatusOr<ObjectPtr<VsyncSource>> CreateVsyncSource(const PlatformWindow&) = 0;  // momo::Object, 归属 platform 线程
-  virtual PlatformServices& services() = 0;
+  virtual PlatformServices& services() = 0;  // embedder 抽象(platform_services.h)
   virtual std::vector<DisplayInfo> displays() const = 0;
   virtual NativeLoop& native_loop() = 0;  // OS 主线程原生消息循环(embedder 在其上跑 EventLoop)
 };
@@ -121,7 +128,7 @@ class RenderSurface {
 
 `input_types.h` 定义平台无关事件,在各实现内完成翻译:
 
-- 指针:坐标统一为**物理像素**、按钮位图、`PointerPhase{add,down,move,up,remove,hover,scroll}`;鼠标滚轮/触控板精细滚动统一为 scroll delta(px);Mac 的惯性滚动阶段保留 momentum 标记。每个事件另带屏幕位置(逻辑点, 主屏左上原点, 与 screen_frame 同一坐标系;screen_frame 与 SetPosition 均以内容区为准, 屏幕坐标 − 框原点即窗口内坐标), 供跨窗口交互(如标签拖出成窗口、拖动中移动窗口本身)使用, 不受窗口自身移动影响。多窗口时引擎做跨视图隐式捕获(`engine/shell/pointer_capture.h`, 相当于 SetCapture): 某设备在一个窗口按下后直到抬起, 其他窗口上报的同一设备事件(拖动经过时的进入/悬停/离开)被丢弃;捕获窗口被移除时补发 remove 取消进行中的手势。显式捕获 `view.setCapture()`(类似 Win32 SetCapture / Chromium Widget::SetCapture): 把进行中的按下序列转交给另一个窗口——引擎先转交捕获(原窗口此后的事件作废), 再由宿主窗口接管系统层的鼠标事件(macOS: 本地事件监视器, 同 Chromium CocoaMouseCapture;Windows: `::SetCapture`), 并在当前指针位置补发一次按下(框架 `GestureBinding.transferPointerCapture` 把它及后续事件交给调用方);抬起后自动释放。`setCapture()` 返回是否有序列被转交。用于拖动中原窗口即将关闭的场景(如单标签窗口整体并入另一个窗口)。
+- 指针:坐标统一为**物理像素**、按钮位图、`PointerPhase{add,down,move,up,remove(离开),hover,scroll,gesture,cancel(序列被取消)}`、按下序列 id(`sequence_id`);鼠标滚轮/触控板精细滚动统一为 scroll delta(px);Mac 的惯性滚动阶段保留 momentum 标记。每个事件另带屏幕位置(逻辑点, 主屏左上原点, 与 screen_frame 同一坐标系;screen_frame 与 SetPosition 均以内容区为准, 屏幕坐标 − 框原点即窗口内坐标), 供跨窗口交互(如标签拖出成窗口、拖动中移动窗口本身)使用, 不受窗口自身移动影响。指针序列的接收方是固定的(拖动一旦开始, 不随指针经过的窗口变化): 宿主决定原生接收窗口——按下时隐式是按下所在的窗口, 进程内唯一, 序列期间别的窗口不上报这个指针;`momo/window capturePointer` 改交(拖出成窗、并入另一个窗口), 不合成事件;按下所在的窗口关闭后序列照常继续(macOS: 进程级本地事件监视器统一路由;Windows: `::SetCapture`);原生接收窗口被关闭时以取消结束(`PlatformWindow::ReleasePointerCapture`)。框架决定逻辑接收方(`GestureBinding.capturePointer`)。引擎不参与。详见 ARCHITECTURE §3.10"指针序列与捕获"。
 - 键盘:三元组(physical key = USB HID usage,logical key,字符);修饰键状态快照。文本输入不走 KeyData,而走 IME 通道。
 - IME:`TextInputConnection` 实现双向协议——JS 侧 EditingState(文本、选区、composing 区间)同步给平台;平台回传 commit/composing 更新;候选窗位置由 JS 框架上报光标矩形。
 
@@ -131,7 +138,9 @@ class RenderSurface {
 
 ## 5. 平台服务与消息通道
 
-剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露(通道名如 `momo/clipboard`、`momo/menu`),C++ 侧 handler 调用 `PlatformServices`。新增服务 = 新增通道 + JS 封装,不改 ui 绑定层,这与扩展机制使用同一套通路(docs/07)。
+窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`window_channel.cc`:`momo/window`、`momo/app`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 的 `on_created` 回调里, 早于 JS bundle 执行。新增服务或窗口能力 = embedder 里新增通道方法 + JS 封装, 不改 engine, 不改 ui 绑定层, 这与扩展机制使用同一套通路(docs/07)。
+
+窗口的可选能力(隐藏标题栏、系统拖动、移动循环、指针捕获、置顶、定位、平台视图…)由 `PlatformWindow::capabilities()` 显式声明, 不支持的方法返回 `Unimplemented`(JS 收到错误码 `unimplemented`, 框架当作空操作), JS 可经 `momo/window getState` 查询。
 
 ## 6. 实现要点备忘
 

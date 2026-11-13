@@ -97,7 +97,7 @@ class WinPlatformIntegration final : public PlatformIntegration {
     return WinVsyncDwm::Create();
   }
 
-  platform::PlatformServices& services() override { return services_; }
+  PlatformServices& services() override { return services_; }
 
   std::vector<DisplayInfo> displays() const override {
     std::vector<HMONITOR> monitors;

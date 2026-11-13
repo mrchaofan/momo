@@ -1,9 +1,9 @@
 // MomoWindow / MomoPanel 共用的实现(在两个类的 @implementation 内各 #include 一次)。
 // 两个类分别继承 NSWindow 与 NSPanel(面板需要 NSPanel 才能使用 NSWindowStyleMaskNonactivatingPanel),
-// 鼠标派发、拖动区域、窗口控件等行为完全一致。所需实例变量: BOOL _systemTracking;int64_t _routedPlatformView。
+// 鼠标派发、窗口控件等行为完全一致。所需实例变量: BOOL _systemTracking;int64_t _routedPlatformView。
 // 本文件不是独立的编译单元。
 
-@synthesize momoContentView, dragRegions, canBecomeMain, inputRouter;
+@synthesize momoContentView, canBecomeMain, inputRouter;
 
 // 面板(canBecomeMain = NO): 可接收键盘(key), 但不成为 main——应用主窗口保持 main 状态。
 - (BOOL)canBecomeKeyWindow {
@@ -11,17 +11,6 @@
 }
 - (BOOL)canBecomeMainWindow {
   return self.canBecomeMain && [super canBecomeMainWindow];
-}
-
-- (BOOL)inDragRegion:(NSEvent*)event {
-  NSView* content = self.momoContentView;
-  if (content == nil || dragRegions.empty()) return NO;
-  const NSPoint p = [content convertPoint:event.locationInWindow fromView:nil];
-  const NSPoint top_left = NSMakePoint(p.x, content.bounds.size.height - p.y);
-  for (const NSRect& r : dragRegions) {
-    if (NSPointInRect(top_left, r)) return YES;
-  }
-  return NO;
 }
 
 // 在 theme frame 上命中测试(隐藏标题栏后, 透明标题栏视图与红绿灯浮在内容之上)。
@@ -114,9 +103,10 @@
   _routedPlatformView = previous;
 }
 
-// 鼠标与其他位置型输入的唯一入口(docs/05 §9 "输入"): 全部交给 momo 内容视图(指针包 + 原生事件 id),
-// 不经 AppKit 投递——谁接收由框架命中测试决定, 落到平台视图上的由框架回送, 再由输入路由经
-// momoDeliverEvent:toPlatformView: 交给 AppKit 投递给那个原生视图。只有窗口装饰(红绿灯、拖动区域)的按下序列与它们自己的跟踪区事件直接交给 AppKit。
+// 鼠标与其他位置型输入的入口(docs/05 §9 "输入"): 交给内容视图翻译后由 PointerDispatcher 决定接收方(momo
+// 内容或平台视图), 不经 AppKit 投递。只有窗口装饰(红绿灯、边缘缩放区)的按下序列与它们自己的跟踪区事件
+// 直接交给 AppKit。窗口拖动由应用在按下时请求(momo/window startDrag), MacWindow::StartWindowDrag 以该序列的
+// 按下开始系统拖动。
 - (void)sendEvent:(NSEvent*)event {
   MomoContentView* content = (MomoContentView*)self.momoContentView;
   const MomoMouseEventKind kind = MomoClassifyMouseEvent(event);
@@ -133,22 +123,22 @@
     [super sendEvent:event];
     return;
   }
-  // 窗口控件(红绿灯)与拖动区域优先于 momo: 整个按下序列交给 AppKit。
+  // 窗口控件(红绿灯)优先于 momo: 整个按下序列交给 AppKit。
   if (_systemTracking) {
     [super sendEvent:event];
     if (kind == MomoMouseEventKindUp) _systemTracking = NO;
     return;
   }
-  if (kind == MomoMouseEventKindDown && !content.hasPressedButtons) {
+  if (kind == MomoMouseEventKindDown && !MomoPointerSequenceActive()) {
     if (event.type == NSEventTypeLeftMouseDown && [self hitsWindowControl:[self frameHit:event]]) {
       _systemTracking = YES;
       [super sendEvent:event];
       return;
     }
     if (event.type == NSEventTypeLeftMouseDown && [content eventInSystemResizeZone:event]) {
-      // 边缘缩放区(光标在这里由系统显示为缩放形状): 先交给 AppKit, 优先于拖动区域与 momo 内容。AppKit 在
+      // 边缘缩放区(光标在这里由系统显示为缩放形状): 先交给 AppKit, 优先于 momo 内容。AppKit 在
       // -[NSWindow sendEvent:] 内跑缩放的跟踪循环直到松开;是否真的是缩放由它决定——松开后按键已不再按下,
-      // 说明它接管了整个按下序列。否则(不在 AppKit 的缩放区)照常往下, 交给拖动区域或 momo。
+      // 说明它接管了整个按下序列。否则(不在 AppKit 的缩放区)照常往下, 交给 momo。
       // 试探期间命中测试不落到任何平台视图(kNoPlatformView), 第一响应者保持不变: AppKit 若不缩放, 会把按下
       // 投递给命中的视图——不能让原生视图或焦点绕过 momo 的路线。
       NSResponder* responder = self.firstResponder;
@@ -160,15 +150,6 @@
         return;
       }
       if (self.firstResponder != responder) [self makeFirstResponder:responder];
-    }
-    if (event.type == NSEventTypeLeftMouseDown && [self inDragRegion:event]) {
-      // 拖动/双击由 AppKit 处理, 不进入 momo。
-      if (event.clickCount == 2) {
-        [self titleBarDoubleClick];
-      } else {
-        [self performWindowDragWithEvent:event];  // 拖动循环内消化抬起事件
-      }
-      return;
     }
   }
   if (kind == MomoMouseEventKindEnter || kind == MomoMouseEventKindExit) {

@@ -15,6 +15,7 @@ struct Composition::Impl {
     sk_sp<SkPicture> picture;           // 设备坐标系下的录制结果(可能为空 = 无内容)
     std::vector<Rect> leaf_rects;       // 叶子的设备空间范围(已与帧求交)
     std::optional<Rect> bounds;         // leaf_rects 的并集(外扩为整数)
+    std::vector<Rect> hit_rects;        // 可命中区域的设备空间范围(已与帧求交)
   };
   std::vector<Slice> slices;
 };

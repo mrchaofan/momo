@@ -170,6 +170,13 @@ export abstract class RenderBox extends RenderObject {
   hitTestSelf(_position: Offset): boolean {
     return false;
   }
+  /** 自身可命中(以中心点代表整个盒)时, 整个盒记为可命中区域。 */
+  override paintHitRegion(context: PaintingContext, offset: Offset): void {
+    const { width, height } = this.size;
+    if (width > 0 && height > 0 && this.hitTestSelf(new Offset(width / 2, height / 2))) {
+      context.canvas.addHitRegion(offset.dx, offset.dy, width, height);
+    }
+  }
   hitTestChildren(_result: HitTestResult, _position: Offset): boolean {
     return false;
   }

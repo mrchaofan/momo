@@ -12,7 +12,7 @@ namespace momo::embedder::macos {
 
 namespace {
 
-class MacServices final : public platform::PlatformServices {
+class MacServices final : public momo::embedder::PlatformServices {
  public:
   StatusOr<std::string> GetClipboardText() override {
     NSString* text = [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
@@ -67,7 +67,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
     return MacVsyncDisplayLink::Create(view.window);
   }
 
-  platform::PlatformServices& services() override { return services_; }
+  momo::embedder::PlatformServices& services() override { return services_; }
 
   std::vector<DisplayInfo> displays() const override {
     std::vector<DisplayInfo> out;

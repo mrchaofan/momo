@@ -13,11 +13,11 @@
 
 #include "embedder/common/engine_platform.h"
 #include "embedder/windows/win_util.h"
-#include "engine/platform/platform_services.h"
+#include "embedder/common/platform_services.h"
 
 namespace momo::embedder::windows {
 
-class WinServices final : public platform::PlatformServices {
+class WinServices final : public PlatformServices {
  public:
   explicit WinServices(HWND clipboard_owner) : clipboard_owner_(clipboard_owner) {}
 

@@ -1,4 +1,5 @@
-// ExtensionHost + ext:* JS 胶水的端到端测试: 加载真实的示例扩展动态库(extensions/examples)。
+// ExtensionHost + ext:* JS 胶水的测试: 进程内测试扩展经 C ABI 驱动宿主(不依赖 extensions/examples;
+// 加载真实示例扩展动态库的端到端用例在 extensions/examples/examples_unittests.cc)。
 
 #include <cstddef>
 #include <filesystem>
@@ -7,10 +8,7 @@
 #include <thread>
 #include <vector>
 
-#include "base/testing/scoped_test_event_loop.h"
-#include "engine/extension/extension_host.h"
-#include "engine/runtime/js_runtime.h"
-#include "engine/ui/ui_bindings.h"
+#include "engine/extension/testing/extension_host_fixture.h"
 #include "gtest/gtest.h"
 
 namespace momo::engine {
@@ -28,184 +26,26 @@ TEST(ExtensionManifestTest, ParsesEntriesAndRejectsBadInput) {
   EXPECT_FALSE(ParseExtensionManifest(R"({"nope": []})").ok());
 }
 
-class FakeClient final : public ui::WindowClient {
- public:
-  void ScheduleFrame() override {}
-  void Render(std::unique_ptr<graphics::LayerTree>) override {}
-  void SetTitle(ui::ViewId, std::string) override {}
-  void SetCursor(ui::ViewId, platform::SystemCursor) override {}
-  void SetMinSize(ui::ViewId, Size) override {}
-  platform::ViewportMetrics metrics(ui::ViewId) const override { return {{100, 100}, 1}; }
-  bool focused(ui::ViewId) const override { return false; }
-};
+using testing::ExtensionHostTest;
 
-class ExtensionHostTest : public ::testing::Test {
- protected:
-  void SetUp() override {
-    dir_ = std::filesystem::temp_directory_path() /
-           ("momo_ext_test_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) +
-            "_" + ::testing::UnitTest::GetInstance()->current_test_info()->name());
-    std::filesystem::remove_all(dir_);
-    std::filesystem::create_directories(dir_);
-  }
-  void TearDown() override {
-    bindings_.reset();
-    runtime_.reset();
-    if (host_) host_->DetachAll();
-    loop_.RunUntilIdle();
-    host_.reset();
-    std::filesystem::remove_all(dir_);
-  }
-
-  void WriteManifest(const std::string& json) {
-    std::ofstream(dir_ / "extensions.manifest") << json;
-  }
-  void CopyLib(const char* from, const std::string& name) {
-    std::filesystem::copy_file(from, dir_ / name, std::filesystem::copy_options::overwrite_existing);
-  }
-
-  void CreateHost() {
-    ExtensionHost::Environment env;
-    env.runners = {"test", loop_.task_runner(), loop_.task_runner(), loop_.task_runner(),
-                   loop_.task_runner()};
-    env.hub = hub_;
-    env.textures = textures_;
-    env.extensions_dir = dir_;
-    env.request_frame = [this] { frame_requests_++; };
-    env.platform_views = views_;
-    host_ = std::make_unique<ExtensionHost>(std::move(env));
-  }
-
-  // 安装 JS 运行时(ext:* 模块在此注册)。
-  void StartJs() {
-    auto runtime = runtime::JsRuntime::Create({});
-    ASSERT_TRUE(runtime.ok());
-    runtime_ = std::move(runtime).value();
-    ui::AppHost app;
-    app.ui_runner = loop_.task_runner();
-    app.io_runner = loop_.task_runner();
-    app.hub = hub_;
-    app.extensions = host_.get();
-    app.textures = textures_;
-    bindings_ = ui::UiBindings::Install(*runtime_, client_, app);
-  }
-  std::string Eval(const std::string& js) {
-    auto r = runtime_->EvalToString(js);
-    EXPECT_TRUE(r.ok()) << r.status();
-    return r.ok() ? *r : "";
-  }
-
-  momo::testing::ScopedTestEventLoop loop_;
-  std::filesystem::path dir_;
-  std::shared_ptr<MessageChannelHub> hub_ = std::make_shared<MessageChannelHub>();
-  std::shared_ptr<graphics::TextureRegistry> textures_ =
-      std::make_shared<graphics::TextureRegistry>();
-  std::shared_ptr<PlatformViewRegistry> views_ = std::make_shared<PlatformViewRegistry>();
-  std::unique_ptr<ExtensionHost> host_;
-  int frame_requests_ = 0;
-  FakeClient client_;
-  std::unique_ptr<runtime::JsRuntime> runtime_;
-  std::unique_ptr<ui::UiBindings> bindings_;
-};
+// manifest 中的坏条目各自报错, 不影响其他条目(加载真实扩展的用例见 extensions/examples/examples_unittests.cc)。
+TEST_F(ExtensionHostTest, BadEntriesAreIsolated) {
+  WriteManifest(R"({"extensions": [
+      {"id": "x.missing", "library": "nope.dylib"},
+      {"id": "x.escape", "library": "../../etc/evil.dylib"}]})");
+  CreateHost();
+  ASSERT_TRUE(host_->LoadFromManifest().ok());
+  EXPECT_TRUE(host_->attached_ids().empty());
+  const std::vector<std::string> errors = host_->errors();
+  ASSERT_EQ(errors.size(), 2u);
+  EXPECT_NE(errors[1].find("escapes"), std::string::npos);
+}
 
 TEST_F(ExtensionHostTest, MissingManifestMeansNoExtensions) {
   CreateHost();
   EXPECT_TRUE(host_->LoadFromManifest().ok());
   EXPECT_TRUE(host_->attached_ids().empty());
   EXPECT_TRUE(host_->errors().empty());
-}
-
-TEST_F(ExtensionHostTest, BadEntriesAreIsolated) {
-  CopyLib(MOMO_EXT_HELLO_LIB, "libext_hello.dylib");
-  WriteManifest(R"({"extensions": [
-      {"id": "wrong.id", "library": "libext_hello.dylib"},
-      {"id": "x.missing", "library": "nope.dylib"},
-      {"id": "x.escape", "library": "../../etc/evil.dylib"},
-      {"id": "momo.example.hello", "library": "libext_hello.dylib"}]})");
-  CreateHost();
-  ASSERT_TRUE(host_->LoadFromManifest().ok());
-  EXPECT_EQ(host_->attached_ids(), std::vector<std::string>{"momo.example.hello"});
-  const std::vector<std::string> errors = host_->errors();
-  ASSERT_EQ(errors.size(), 3u);
-  EXPECT_NE(errors[0].find("id mismatch"), std::string::npos);
-  EXPECT_NE(errors[2].find("escapes"), std::string::npos);
-}
-
-// 纯 C 扩展经 C ABI 暴露: 同步函数、字符串/字节、worker 线程上的 Promise、消息通道。
-TEST_F(ExtensionHostTest, HelloExtensionEndToEnd) {
-  CopyLib(MOMO_EXT_HELLO_LIB, "libext_hello.dylib");
-  WriteManifest(R"({"extensions": [{"id": "momo.example.hello", "library": "libext_hello.dylib",
-                                     "specifier": "ext:hello"}]})");
-  CreateHost();
-  ASSERT_TRUE(host_->LoadFromManifest().ok());
-  ASSERT_EQ(host_->modules().size(), 1u);
-  StartJs();
-  ASSERT_TRUE(runtime_->RunModuleSource(R"JS(
-    import { native, add } from 'ext:hello';
-    import { send } from 'momo:services';
-    globalThis.sync = [add(2, 40), native.greet('世界'),
-                       Array.from(new Uint8Array(native.reverseBytes(new Uint8Array([1, 2, 3]))))
-                      ].join('|');
-    try { add('x'); } catch (e) { globalThis.err = String(e.message); }
-    const enc = (s) => new Uint8Array([...s].map((c) => c.charCodeAt(0)));
-    native.hashAsync(enc('momo')).then((buf) => {
-      const b = new Uint8Array(buf);
-      let hex = '';
-      for (let i = 7; i >= 0; i--) hex += b[i].toString(16).padStart(2, '0');
-      globalThis.hash = hex;
-    });
-    send('hello/upper', enc('abc!').buffer).then((buf) => {
-      globalThis.upper = String.fromCharCode(...new Uint8Array(buf));
-    });
-  )JS", "app.js").ok());
-  EXPECT_EQ(Eval("sync"), "42|Hello, 世界!|3,2,1");
-  EXPECT_EQ(Eval("err"), "add(a, b) expects two numbers");
-  // worker pool 上的任务完成后投递回 ui(测试 loop)。
-  for (int i = 0; i < 200 && (Eval("typeof hash") != "string" || Eval("typeof upper") != "string");
-       ++i) {
-    loop_.RunUntilIdle();
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-  // FNV-1a 64("momo")
-  uint64_t h = 1469598103934665603ULL;
-  for (char c : std::string("momo")) {
-    h ^= static_cast<uint8_t>(c);
-    h *= 1099511628211ULL;
-  }
-  char expected[17];
-  std::snprintf(expected, sizeof(expected), "%016llx", static_cast<unsigned long long>(h));
-  EXPECT_EQ(Eval("hash"), expected);
-  EXPECT_EQ(Eval("upper"), "ABC!");
-}
-
-TEST_F(ExtensionHostTest, TextureExtensionPushesFramesViaFrameCallbacks) {
-  CopyLib(MOMO_EXT_TEXTURE_LIB, "libext_texture.dylib");
-  WriteManifest(R"({"extensions": [{"id": "momo.example.texture",
-                                     "library": "libext_texture.dylib"}]})");
-  CreateHost();
-  ASSERT_TRUE(host_->LoadFromManifest().ok());
-  StartJs();
-  ASSERT_TRUE(runtime_->RunModuleSource(R"JS(
-    import { start } from 'ext:texture';
-    globalThis.textureId = start(32, 16);
-  )JS", "app.js").ok());
-  const int64_t id = std::stoll(Eval("textureId"));
-  ASSERT_NE(textures_->Get(id), nullptr);
-  loop_.RunUntilIdle();  // request_frame 被投递到 platform runner 上执行
-  EXPECT_GE(frame_requests_, 1) << "registering a frame callback requests frames";
-  EXPECT_TRUE(host_->has_frame_callbacks());
-  for (int i = 0; i < 200 && textures_->Get(id)->latest() == nullptr; ++i) {
-    host_->RunFrameCallbacks();  // 引擎每帧调用(ui 线程)
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-  std::shared_ptr<const graphics::Image> frame = textures_->Get(id)->latest();
-  ASSERT_NE(frame, nullptr);
-  EXPECT_EQ(frame->width(), 32);
-  EXPECT_EQ(frame->height(), 16);
-  Eval("0");
-  ASSERT_TRUE(runtime_->RunModuleSource("import { stop } from 'ext:texture'; stop();", "s.js").ok());
-  EXPECT_FALSE(host_->has_frame_callbacks());
-  EXPECT_EQ(textures_->Get(id), nullptr);
 }
 
 // 进程内扩展: on_detach 之后对宿主 API 的调用被拒绝(而不是访问已释放状态)。
@@ -354,19 +194,6 @@ TEST_F(ExtensionHostTest, PlatformViewFactoryViaCAbi) {
   EXPECT_FALSE(views_->HasFactory("test.view"));
   EXPECT_EQ(views_->size(), 0u);
 }
-
-#if defined(MOMO_EXT_WEBVIEW_LIB)
-// 真实的 WebView 示例扩展: 加载后注册 "momo.webview" 视图类型(不创建视图: 测试进程没有 AppKit 主循环)。
-TEST_F(ExtensionHostTest, WebViewExtensionRegistersItsViewType) {
-  CopyLib(MOMO_EXT_WEBVIEW_LIB, "libext_webview.dylib");
-  WriteManifest(R"({"extensions": [{"id": "momo.example.webview", "library": "libext_webview.dylib"}]})");
-  CreateHost();
-  ASSERT_TRUE(host_->LoadFromManifest().ok());
-  EXPECT_EQ(host_->attached_ids(), std::vector<std::string>{"momo.example.webview"});
-  EXPECT_TRUE(host_->errors().empty());
-  EXPECT_TRUE(views_->HasFactory("momo.webview"));
-}
-#endif
 
 }  // namespace
 }  // namespace momo::engine

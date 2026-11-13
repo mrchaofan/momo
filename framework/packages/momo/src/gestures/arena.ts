@@ -84,6 +84,11 @@ export class GestureArenaManager {
     if (state.hasPendingSweep) this.sweep(pointer);
   }
 
+  /** 指针竞技场当前的成员数(按下分发过程中: 已加入的都是命中路径上更深的目标)。 */
+  memberCount(pointer: number): number {
+    return this.#arenas.get(pointer)?.members.length ?? 0;
+  }
+
   /** 是否存在该指针的竞技场。 */
   hasArena(pointer: number): boolean {
     return this.#arenas.has(pointer);

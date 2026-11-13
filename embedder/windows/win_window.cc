@@ -128,16 +128,16 @@ uint64_t LogicalKeyFor(UINT virtual_key, uint16_t scan_code, bool extended, uint
   return code_point;
 }
 
-LPCWSTR CursorResource(platform::SystemCursor cursor) {
+LPCWSTR CursorResource(SystemCursor cursor) {
   switch (cursor) {
-    case platform::SystemCursor::kArrow: return IDC_ARROW;
-    case platform::SystemCursor::kIBeam: return IDC_IBEAM;
-    case platform::SystemCursor::kPointingHand: return IDC_HAND;
-    case platform::SystemCursor::kCrosshair: return IDC_CROSS;
-    case platform::SystemCursor::kResizeLeftRight: return IDC_SIZEWE;
-    case platform::SystemCursor::kResizeUpDown: return IDC_SIZENS;
-    case platform::SystemCursor::kNotAllowed: return IDC_NO;
-    case platform::SystemCursor::kHidden: return nullptr;
+    case SystemCursor::kArrow: return IDC_ARROW;
+    case SystemCursor::kIBeam: return IDC_IBEAM;
+    case SystemCursor::kPointingHand: return IDC_HAND;
+    case SystemCursor::kCrosshair: return IDC_CROSS;
+    case SystemCursor::kResizeLeftRight: return IDC_SIZEWE;
+    case SystemCursor::kResizeUpDown: return IDC_SIZENS;
+    case SystemCursor::kNotAllowed: return IDC_NO;
+    case SystemCursor::kHidden: return nullptr;
   }
   return IDC_ARROW;
 }
@@ -218,7 +218,7 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
   info.cbSize = sizeof(info);
   if (spec.position) {
     ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    SetPosition(*spec.position);
+    SetPosition(*spec.position).IgnoreError();
   } else if (::GetMonitorInfoW(monitor, &info)) {
     const RECT& work = info.rcWork;
     const LONG x = work.left + std::max<LONG>(0, (work.right - work.left - size.cx) / 2);
@@ -281,10 +281,10 @@ double WinWindow::device_pixel_ratio() const {
 
 platform::RenderSurface& WinWindow::surface() { return *surface_; }
 
-platform::TextInputConnection& WinWindow::text_input() { return *text_input_; }
+TextInputConnection& WinWindow::text_input() { return *text_input_; }
 
-void WinWindow::SetCursor(platform::SystemCursor cursor) {
-  cursor_hidden_ = cursor == platform::SystemCursor::kHidden;
+void WinWindow::SetCursor(SystemCursor cursor) {
+  cursor_hidden_ = cursor == SystemCursor::kHidden;
   if (!cursor_hidden_) {
     cursor_ = ::LoadCursorW(nullptr, CursorResource(cursor));  // 系统共享光标, 无需释放
   }
@@ -347,6 +347,7 @@ platform::PointerData WinWindow::MakePointer(platform::PointerPhase phase, doubl
   data.screen_x = static_cast<short>(LOWORD(pos)) / device_pixel_ratio();
   data.screen_y = static_cast<short>(HIWORD(pos)) / device_pixel_ratio();
   data.buttons = buttons_;
+  data.sequence_id = sequence_id_;
   return data;
 }
 
@@ -427,6 +428,8 @@ void WinWindow::OnMouseButton(UINT message, WPARAM wparam, LPARAM lparam) {
     const bool first = buttons_ == 0;
     buttons_ |= bit;
     if (first) {
+      static int64_t next_sequence_id = 1;  // 进程内递增(仅 platform 线程)
+      sequence_id_ = next_sequence_id++;
       ::SetCapture(hwnd_);  // 拖出窗口后仍收到移动/松开
     }
     DispatchPointer(MakePointer(first ? platform::PointerPhase::kDown : platform::PointerPhase::kMove, x, y));
@@ -439,6 +442,7 @@ void WinWindow::OnMouseButton(UINT message, WPARAM wparam, LPARAM lparam) {
   const bool last = buttons_ == 0;
   DispatchPointer(MakePointer(last ? platform::PointerPhase::kUp : platform::PointerPhase::kMove, x, y));
   if (last) {
+    sequence_id_ = 0;
     ::ReleaseCapture();  // 同步触发 WM_CAPTURECHANGED;此时 buttons_ 已为 0, OnCaptureLost 忽略
     if (!CursorInClient()) {
       // 拖出客户区后松开: 补发离开。
@@ -447,28 +451,51 @@ void WinWindow::OnMouseButton(UINT message, WPARAM wparam, LPARAM lparam) {
   }
 }
 
-// view.setCapture(): 接管别的窗口里进行中的按下序列。系统捕获转到本窗口(原窗口收到 WM_CAPTURECHANGED,
-// 它上报的抬起在引擎里因捕获已转交而被丢弃), 在当前指针位置补发一次按下, 之后的移动/松开都发给本窗口。
-void WinWindow::CapturePointer() {
-  uint32_t pressed = 0;
-  if (::GetAsyncKeyState(VK_LBUTTON) & 0x8000) pressed |= 1u << 0;
-  if (::GetAsyncKeyState(VK_RBUTTON) & 0x8000) pressed |= 1u << 1;
-  if (::GetAsyncKeyState(VK_MBUTTON) & 0x8000) pressed |= 1u << 2;
-  if (pressed == 0) {
-    return;
+// ---- 指针序列(原生捕获)----
+// 与 macOS 宿主同一约定(embedder/common/platform_window.h): 一个按下序列只有一个接收窗口——按下时隐式
+// SetCapture 到按下所在的窗口;CapturePointer 改交本窗口;序列期间系统只把鼠标消息发给捕获窗口(Win32 保证
+// 接收方固定)。改交不合成事件: 原持有者静默让出(先清零按键, 它的 WM_CAPTURECHANGED 因此什么也不报)。
+
+// hwnd 是本进程的 momo 窗口时返回它的 WinWindow。
+WinWindow* WinWindow::FromHwnd(HWND hwnd) {
+  wchar_t name[32] = {};
+  if (hwnd == nullptr || ::GetClassNameW(hwnd, name, 32) == 0 || std::wcscmp(name, kWindowClass) != 0) {
+    return nullptr;
   }
-  POINT screen{};
-  ::GetCursorPos(&screen);
-  POINT client = screen;
+  return reinterpret_cast<WinWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+StatusOr<bool> WinWindow::CapturePointer(int64_t sequence_id) {
+  HWND current = ::GetCapture();
+  if (current == hwnd_) {
+    return buttons_ != 0 && sequence_id_ == sequence_id;
+  }
+  WinWindow* previous = FromHwnd(current);
+  if (previous == nullptr || previous->buttons_ == 0 || previous->sequence_id_ != sequence_id) {
+    return false;  // 没有进行中的序列(抬起已由原窗口上报)或不是这个序列
+  }
+  const uint32_t buttons = previous->buttons_;
+  previous->buttons_ = 0;  // 静默让出
+  previous->sequence_id_ = 0;
+  sequence_id_ = sequence_id;
+  POINT client{};
+  ::GetCursorPos(&client);
   ::ScreenToClient(hwnd_, &client);
-  buttons_ = pressed;
+  buttons_ = buttons;
   last_x_ = client.x;
   last_y_ = client.y;
   ::SetCapture(hwnd_);
-  platform::PointerData down = MakePointer(platform::PointerPhase::kDown, client.x, client.y);
-  down.screen_x = screen.x / device_pixel_ratio();
-  down.screen_y = screen.y / device_pixel_ratio();
-  DispatchPointer(down);
+  return true;
+}
+
+void WinWindow::ReleasePointerCapture() {
+  if (::GetCapture() != hwnd_ || buttons_ == 0) {
+    return;  // 不是接收窗口(序列已改交别的窗口, 或没有序列)
+  }
+  buttons_ = 0;
+  ::ReleaseCapture();  // WM_CAPTURECHANGED: 按键已清零, OnCaptureLost 不再上报
+  DispatchPointer(MakePointer(platform::PointerPhase::kCancel, last_x_, last_y_));
+  sequence_id_ = 0;
 }
 
 // 屏幕框与定位以客户区(momo 视图)为准, 与 macOS 一致;物理像素按本窗口 DPI 换算为逻辑点。
@@ -482,7 +509,7 @@ Rect WinWindow::screen_frame() const {
           (client.bottom - client.top) / dpr};
 }
 
-void WinWindow::SetPosition(Point top_left) {
+Status WinWindow::SetPosition(Point top_left) {
   // 客户区左上角 → 窗口外框左上角(差值为标题栏与边框)。
   RECT window{};
   ::GetWindowRect(hwnd_, &window);
@@ -492,6 +519,7 @@ void WinWindow::SetPosition(Point top_left) {
   const LONG x = static_cast<LONG>(std::lround(top_left.x * dpr)) - (origin.x - window.left);
   const LONG y = static_cast<LONG>(std::lround(top_left.y * dpr)) - (origin.y - window.top);
   ::SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  return Status::Ok();
 }
 
 void WinWindow::NotifyFrameChanged() {
@@ -510,12 +538,11 @@ void WinWindow::OnCaptureLost() {
   if (buttons_ == 0) {
     return;
   }
-  // 按住期间被系统夺走捕获(Alt+Tab、弹窗等): 以松开结束本次拖拽, 避免按钮状态卡住。
+  // 按住期间被系统夺走捕获(Alt+Tab、弹窗等): 以取消结束本次序列, 避免按钮状态卡住。
+  // (改交给本进程另一个 momo 窗口时, 原持有者已先清零按键, 不会走到这里。)
   buttons_ = 0;
-  DispatchPointer(MakePointer(platform::PointerPhase::kUp, last_x_, last_y_));
-  if (!CursorInClient()) {
-    DispatchPointer(MakePointer(platform::PointerPhase::kRemove, last_x_, last_y_));
-  }
+  DispatchPointer(MakePointer(platform::PointerPhase::kCancel, last_x_, last_y_));
+  sequence_id_ = 0;
 }
 
 void WinWindow::OnMouseWheel(UINT message, WPARAM wparam, LPARAM lparam) {

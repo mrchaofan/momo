@@ -1,5 +1,5 @@
-// 平台视图的输入路由(mac_platform_view_input.h): 框架回送的事件经 AppKit 投递给选中的原生视图(移动投递给
-// 跟踪区 owner);原生视图跟踪区的进入/离开/光标更新只由这条有序输入流(事件 + 框架的指针归属)推导,
+// 平台视图的输入路由(mac_platform_view_input.h): 派发器选中的原生视图经 AppKit 收到事件(移动投递给
+// 跟踪区 owner);原生视图跟踪区的进入/离开/光标更新只由这条有序输入流(事件 + 派发器的悬停目标)推导,
 // AppKit 自己的跟踪事件不投递。平台视图本身(MomoPlatformViews)只负责几何。
 
 #import <Cocoa/Cocoa.h>
@@ -49,7 +49,7 @@
 }
 @end
 
-// 测试窗口: 与 MomoWindow 相同, 把框架回送的事件经 AppKit 的正常投递(父类 sendEvent:)交给平台视图。
+// 测试窗口: 与 MomoWindow 相同, 把路由器投递的事件经 AppKit 的正常投递(父类 sendEvent:)交给平台视图。
 @interface RoutingTestWindow : NSWindow <MomoMouseRouting>
 @end
 @implementation RoutingTestWindow {
@@ -152,6 +152,19 @@ NSEvent* MouseAt(NSEventType type, NSPoint window_point, NSInteger window_number
                             pressure:0];
 }
 
+// 按事件类型给出派发器会给的序列语义(单个按键的按下序列)。
+void Deliver(MomoPlatformViewInputRouter* router, NSEvent* event, int64_t view, BOOL wasKey) {
+  using momo::engine::platform::PointerPhase;
+  PointerPhase phase = PointerPhase::kHover;
+  switch (event.type) {
+    case NSEventTypeLeftMouseDown: phase = PointerPhase::kDown; break;
+    case NSEventTypeLeftMouseDragged: phase = PointerPhase::kMove; break;
+    case NSEventTypeLeftMouseUp: phase = PointerPhase::kUp; break;
+    default: break;
+  }
+  [router deliverEvent:event toPlatformView:view phase:phase windowWasKey:wasKey];
+}
+
 RoutingTestWindow* MakeWindow(NSView* content) {
   // 放在屏幕范围之外: 窗口须在屏幕上(已排入)AppKit 才投递鼠标事件, 但不必可见。
   RoutingTestWindow* window = [[RoutingTestWindow alloc] initWithContentRect:NSMakeRect(-20000, -20000, 200, 200)
@@ -173,7 +186,7 @@ NSEvent* MoveAt(CGFloat x) {
 
 // AppKit 为原生视图跟踪区生成的进入/离开/光标更新: 认领(不再交给 AppKit), 但不投递。
 TEST_F(PlatformViewTrackingTest, AppKitTrackingEventsAreNotDelivered) {
-  [router_ setPointerOwned:YES platformView:7 event:MoveAt(150)];  // 归属在, 但指针在原生视图之外
+  [router_ setHoveredPlatformView:7 event:MoveAt(150)];  // 归属在, 但指针在原生视图之外
   EXPECT_TRUE([router_ routeTrackingEvent:Crossing(NSEventTypeMouseEntered, native_.area)]);
   EXPECT_TRUE([router_ routeTrackingEvent:Crossing(NSEventTypeCursorUpdate, native_.area)]);
   EXPECT_TRUE([router_ routeTrackingEvent:Crossing(NSEventTypeMouseExited, native_.area)]);
@@ -182,21 +195,21 @@ TEST_F(PlatformViewTrackingTest, AppKitTrackingEventsAreNotDelivered) {
 
 // 归属驱动进入/离开: 进入时带光标更新;离开在触发事件的位置(如窗口外)投递。
 TEST_F(PlatformViewTrackingTest, OwnershipDrivesEnterAndExit) {
-  [router_ setPointerOwned:YES platformView:7 event:MoveAt(50)];
+  [router_ setHoveredPlatformView:7 event:MoveAt(50)];
   EXPECT_EQ(log_, (Log{"entered", "cursorUpdate"}));
-  [router_ deliverEvent:MoveAt(60) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MoveAt(60), 7, YES);
   EXPECT_EQ(log_, (Log{"entered", "cursorUpdate", "moved"})) << "still inside: no extra crossing";
-  [router_ setPointerOwned:NO platformView:7 event:MoveAt(250)];
+  [router_ setHoveredPlatformView:0 event:MoveAt(250)];
   EXPECT_EQ(log_, (Log{"entered", "cursorUpdate", "moved", "exited"}));
 }
 
 // 回归: 指针从原生视图直接移出窗口。AppKit 的离开同步到达, 之前的移动经 ui 线程往返后才到——
 // 若投递 AppKit 的离开, 原生视图会在离开之后又被移动带回悬停。现在离开只来自框架, 排在全部移动之后。
 TEST_F(PlatformViewTrackingTest, LateMovesAfterAppKitExitDoNotLeaveTheViewHovered) {
-  [router_ setPointerOwned:YES platformView:7 event:MoveAt(50)];
+  [router_ setHoveredPlatformView:7 event:MoveAt(50)];
   [router_ routeTrackingEvent:Crossing(NSEventTypeMouseExited, native_.area)];  // AppKit: 已离开窗口
-  [router_ deliverEvent:MoveAt(90) toPlatformView:7 windowWasKey:YES];                // 迟到的移动
-  [router_ setPointerOwned:NO platformView:7 event:MoveAt(250)];                      // 框架: 离开(窗口外)
+  Deliver(router_, MoveAt(90), 7, YES);                // 迟到的移动
+  [router_ setHoveredPlatformView:0 event:MoveAt(250)];                      // 框架: 离开(窗口外)
   EXPECT_EQ(log_, (Log{"entered", "cursorUpdate", "moved", "exited"}));
 }
 
@@ -213,14 +226,14 @@ TEST_F(PlatformViewTrackingTest, TrackingAreasInsideTheViewFollowTheStream) {
     std::sort(log.begin(), log.end());
     return log;
   };
-  [router_ setPointerOwned:YES platformView:7 event:MoveAt(25)];
+  [router_ setHoveredPlatformView:7 event:MoveAt(25)];
   EXPECT_EQ(sorted(log_), sorted(Log{"entered", "cursorUpdate", "entered(other area)"}));
   log_.clear();
-  [router_ deliverEvent:MoveAt(75) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MoveAt(75), 7, YES);
   EXPECT_EQ(log_, (Log{"exited(other area)", "moved"})) << "crossings precede the move, as in AppKit";
   log_.clear();
-  [router_ deliverEvent:MoveAt(25) toPlatformView:7 windowWasKey:YES];
-  [router_ setPointerOwned:NO platformView:7 event:MoveAt(250)];
+  Deliver(router_, MoveAt(25), 7, YES);
+  [router_ setHoveredPlatformView:0 event:MoveAt(250)];
   ASSERT_EQ(log_.size(), 4u);
   EXPECT_EQ((Log{log_[0], log_[1]}), (Log{"entered(other area)", "moved"}));
   EXPECT_EQ(sorted({log_[2], log_[3]}), sorted(Log{"exited", "exited(other area)"}));
@@ -230,12 +243,12 @@ TEST_F(PlatformViewTrackingTest, TrackingAreasInsideTheViewFollowTheStream) {
 // 按下拖动期间: 不带 NSTrackingEnabledDuringMouseDrag 的跟踪区保持原状, 抬起后再更新(与 AppKit 相同)。
 TEST_F(PlatformViewTrackingTest, DragDefersCrossingsUntilMouseUp) {
   NSWindow* window = MakeWindow(content_);
-  [router_ setPointerOwned:YES platformView:7 event:MoveAt(50)];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
+  [router_ setHoveredPlatformView:7 event:MoveAt(50)];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)), 7, YES);
   log_.clear();
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDragged, NSMakePoint(150, 150)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDragged, NSMakePoint(150, 150)), 7, YES);
   EXPECT_EQ(log_, (Log{"dragged"})) << "no exit while dragging out";
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(150, 150)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(150, 150)), 7, YES);
   EXPECT_EQ(log_, (Log{"dragged", "up", "exited"})) << "deferred exit after the button is released";
   [content_ removeFromSuperview];
   [window close];
@@ -257,9 +270,9 @@ TEST_F(PlatformViewTrackingTest, ForeignTrackingAreasAreNotRouted) {
 // (AppKit 的移动只发给 first responder)。
 TEST_F(PlatformViewTrackingTest, MovesAreForwardedWithoutFocus) {
   // content_ 未翻转、高 200: 宿主(翻转)坐标 (50,50) 对应窗口坐标 (50,150)。
-  [router_ deliverEvent:MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 150)), 7, YES);
   EXPECT_EQ(log_, (Log{"moved"}));
-  [router_ deliverEvent:MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 150)) toPlatformView:8 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 150)), 8, YES);
   EXPECT_EQ(log_, (Log{"moved"})) << "unknown platform view: ignored";
 }
 
@@ -274,28 +287,23 @@ TEST_F(PlatformViewTrackingTest, MovesGoToMouseMovedTrackingAreaOwners) {
                                                      userInfo:nil];
   [native_ addTrackingArea:area];
   // 原生视图(未翻转)坐标 y ∈ [0,50) 对应宿主(翻转)y ∈ (50,100], 即窗口 y ∈ [100,150)。
-  [router_ deliverEvent:MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 120)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 120)), 7, YES);
   EXPECT_EQ(log_, (Log{"observer moved"})) << "delivered to the tracking area owner only";
   log_.clear();
-  [router_ deliverEvent:MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 180)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeMouseMoved, NSMakePoint(50, 180)), 7, YES);
   EXPECT_EQ(log_, (Log{"moved"})) << "outside every mouse-moved area: falls back to the hit view";
   [native_ removeTrackingArea:area];
 }
 
-// 框架回送的按钮事件经 AppKit 的正常投递: AppKit 在原生视图内命中、让它成为第一响应者;
+// 按钮事件经 AppKit 的正常投递: AppKit 在原生视图内命中、让它成为第一响应者;
 // 拖出原生视图后, 拖拽/抬起仍发给收到按下的视图(AppKit 自己的按下捕获)。
 TEST_F(PlatformViewTrackingTest, ButtonEventsAreDeliveredThroughAppKit) {
   NSWindow* window = MakeWindow(content_);
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)), 7, YES);
   EXPECT_EQ(window.firstResponder, native_);
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDragged, NSMakePoint(180, 10)) toPlatformView:7 windowWasKey:YES];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(180, 10)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDragged, NSMakePoint(180, 10)), 7, YES);
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(180, 10)), 7, YES);
   EXPECT_EQ(log_, (Log{"down", "dragged", "up"}));
-  // 没有在本视图开始的按下序列的拖拽/抬起: 不投递。
-  log_.clear();
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDragged, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
-  EXPECT_EQ(log_, Log{});
   [content_ removeFromSuperview];
   [window close];
 }
@@ -308,8 +316,8 @@ TEST_F(PlatformViewTrackingTest, GestureRecognizersOnTheNativeViewSeeRoutedEvent
   NSClickGestureRecognizer* click = [[NSClickGestureRecognizer alloc] initWithTarget:target
                                                                               action:@selector(clicked:)];
   [native_ addGestureRecognizer:click];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)), 7, YES);
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)), 7, YES);
   EXPECT_NE(std::find(log_.begin(), log_.end(), "click recognized"), log_.end()) << ::testing::PrintToString(log_);
   [native_ removeGestureRecognizer:click];
   [content_ removeFromSuperview];
@@ -320,39 +328,29 @@ TEST_F(PlatformViewTrackingTest, GestureRecognizersOnTheNativeViewSeeRoutedEvent
 TEST_F(PlatformViewTrackingTest, ClickThatOnlyActivatesTheWindowIsNotDelivered) {
   NSWindow* window = MakeWindow(content_);
   native_.refusesFirstMouse = YES;
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:NO];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:NO];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)), 7, NO);
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)), 7, NO);
   EXPECT_EQ(log_, Log{});
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
-  [router_ deliverEvent:MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)) toPlatformView:7 windowWasKey:YES];
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseDown, NSMakePoint(50, 150)), 7, YES);
+  Deliver(router_, MouseAt(NSEventTypeLeftMouseUp, NSMakePoint(50, 150)), 7, YES);
   EXPECT_EQ(log_, (Log{"down", "up"})) << "the next click in the (now key) window is delivered";
   [content_ removeFromSuperview];
   [window close];
 }
 
-// AppKit 的几何命中("指针下是哪个视图")以框架的指针归属为准: WKWebView 在设置光标前用内容视图的
-// hitTest: 确认指针下是它自己, 指针不归它时迟到的光标设置因此被它自己丢弃。框架不掌握指针位置时
+// AppKit 的几何命中("指针下是哪个视图")以派发器的指针归属为准: WKWebView 在设置光标前用内容视图的
+// hitTest: 确认指针下是它自己, 指针不归它时迟到的光标设置因此被它自己丢弃。宿主不掌握指针时
 // (拖放会话等)退回按画面上的遮挡近似。
 TEST_F(PlatformViewTrackingTest, AppKitHitTestingFollowsPointerOwnership) {
-  views_.inputRouter = router_;
+  __block int64_t owner = 0;
+  views_.pointerOwner = ^int64_t { return owner; };
   const NSPoint p = NSMakePoint(50, 150);  // content_ 坐标(无父视图: 即自身坐标)
-  router_.pointerTracked = YES;
   EXPECT_NE([content_ hitTest:p], (NSView*)native_) << "pointer belongs to momo content";
-  [router_ setPointerOwned:YES platformView:7 event:MoveAt(50)];
+  owner = 7;
   EXPECT_EQ([content_ hitTest:p], (NSView*)native_);
-  [router_ setPointerOwned:NO platformView:7 event:MoveAt(250)];
-  EXPECT_NE([content_ hitTest:p], (NSView*)native_);
-  router_.pointerTracked = NO;  // 例如外部拖放会话: 按几何
+  owner = -1;  // 例如外部拖放会话: 按几何
   EXPECT_EQ([content_ hitTest:p], (NSView*)native_);
-}
-
-// 指针归属由框架设置: pointerOwned 反映是否有平台视图持有指针(光标交给原生视图)。
-TEST_F(PlatformViewTrackingTest, PointerOwnedFollowsFramework) {
-  EXPECT_FALSE(router_.pointerOwned);
-  [router_ setPointerOwned:YES platformView:7 event:nil];
-  EXPECT_TRUE(router_.pointerOwned);
-  [router_ setPointerOwned:NO platformView:7 event:nil];
-  EXPECT_FALSE(router_.pointerOwned);
+  views_.pointerOwner = nil;
 }
 
 }  // namespace

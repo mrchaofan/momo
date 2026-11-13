@@ -13,6 +13,7 @@
 
 #include "base/event_loop.h"
 #include "base/waitable_event.h"
+#include "engine/common/standard_codec.h"
 #include "engine/shell/testing/shell_test_utils.h"
 #include "engine/shell/thread_host.h"
 #include "gtest/gtest.h"
@@ -26,23 +27,22 @@ using testing::WaitFor;
 
 class RecordingShellDelegate final : public Shell::Delegate {
  public:
-  void OnEngineSetTitle(const std::string& t) override { title = t; }
-  void OnEngineSetMinSize(Size s) override { min_size = s; }
-  void OnEngineSetCursor(platform::SystemCursor c) override { cursor = c; }
-  platform::TextInputConnection* GetTextInput() override { return nullptr; }
   void* GetNativeWindowHandle() override { return nullptr; }
-
-  std::string title;
-  Size min_size;
-  platform::SystemCursor cursor = platform::SystemCursor::kArrow;
 };
 
-class FakeServices final : public platform::PlatformServices {
- public:
-  StatusOr<std::string> GetClipboardText() override { return std::string("clip"); }
-  Status SetClipboardText(std::string_view) override { return Status::Ok(); }
-  Status OpenUrl(std::string_view) override { return Status::Ok(); }
-};
+// 宿主通道(on_created 注册): 记录 JS 发来的方法调用(channel:method)。
+std::function<void(Shell&)> RecordCalls(const std::string& channel,
+                                        std::vector<std::string>* calls,
+                                        std::shared_ptr<TaskRunner> runner) {
+  return [channel, calls, runner](Shell& shell) {
+    shell.hub()->SetNativeHandler(channel, runner, [calls](MessageBytes message, MessageReply reply) {
+      StatusOr<MethodCall> call = DecodeMethodCall(message);
+      calls->push_back(call.ok() ? call->method + ":" + call->args.Find("title")->AsString().value_or("")
+                                 : "<bad>");
+      reply.Send(EncodeSuccessEnvelope(EncodableValue()));
+    });
+  };
+}
 
 // platform 线程 = 测试主线程, 绑定一个 EventLoop;需要时由 Pump()/WaitFor 驱动。
 class ShellTest : public ::testing::Test {
@@ -92,15 +92,6 @@ TEST_F(ShellTest, CreateRejectsIncompleteRunners) {
   TaskRunners partial = runners_;
   partial.io = nullptr;
   EXPECT_EQ(Shell::Create(partial, {}).status().code(), StatusCode::kInvalidArgument);
-}
-
-TEST_F(ShellTest, RequestCloseAfterShutdownRepliesImmediately) {
-  auto shell = Shell::Create(runners_, Settings{});
-  ASSERT_TRUE(shell.ok());
-  (*shell)->Shutdown();
-  bool replied = false;
-  (*shell)->RequestClose([&replied](bool allow) { replied = allow; });
-  EXPECT_TRUE(replied);
 }
 
 TEST_F(ShellTest, MetricsChangeProducesFrameWithTimerVsync) {
@@ -200,51 +191,6 @@ TEST_F(ShellTest, SuspendedLifecycleStopsFramesUntilResumed) {
   (*shell)->Shutdown();
 }
 
-TEST_F(ShellTest, HostRequestsReachDelegateAndServicesOnPlatformThread) {
-  FakeServices services;
-  auto shell = Shell::Create(runners_, Settings{}, &services);
-  ASSERT_TRUE(shell.ok());
-  FakeSurface surface;
-  RecordingShellDelegate delegate;
-  (*shell)->AttachView(&delegate, &surface);
-
-  std::string clipboard;
-  bool on_platform = false;
-  // 从 ui 线程发起, 验证"任意线程调用"。
-  WaitableEvent posted;
-  runners_.ui->PostTask([&, s = shell->get()] {
-    s->SetWindowTitle("hello");
-    s->SetWindowMinSize({300, 200});
-    s->SetCursor(platform::SystemCursor::kIBeam);
-    s->RunWithPlatformServices([&](platform::PlatformServices& svc) {
-      on_platform = runners_.platform->RunsTasksOnCurrentThread();
-      clipboard = svc.GetClipboardText().value();
-    });
-    posted.Signal();
-  });
-  posted.Wait();
-  Pump();
-
-  EXPECT_EQ(delegate.title, "hello");
-  EXPECT_EQ(delegate.min_size, (Size{300, 200}));
-  EXPECT_EQ(delegate.cursor, platform::SystemCursor::kIBeam);
-  EXPECT_EQ(clipboard, "clip");
-  EXPECT_TRUE(on_platform);
-  (*shell)->Shutdown();
-}
-
-TEST_F(ShellTest, HostRequestsAfterShutdownAreDropped) {
-  auto shell = Shell::Create(runners_, Settings{});
-  ASSERT_TRUE(shell.ok());
-  RecordingShellDelegate delegate;
-  FakeSurface surface;
-  (*shell)->AttachView(&delegate, &surface);
-  (*shell)->SetWindowTitle("late");
-  (*shell)->Shutdown();
-  Pump();
-  EXPECT_TRUE(delegate.title.empty());
-}
-
 #if MOMO_HAS_JS_RUNTIME
 
 int Channel(uint32_t argb, int shift) { return static_cast<int>((argb >> shift) & 0xFF); }
@@ -262,7 +208,6 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
   (*shell)->OnMetricsChanged(Metrics(800, 600));  // dpr 2: 逻辑 400x300
 
   ASSERT_TRUE(PumpUntil([&] { return surface.presented.load() >= 3; })) << "example keeps animating";
-  EXPECT_EQ(delegate.title, "Momo · hello_frame");
 
   // 背景 0xF5F5F7(物理 (10,10) = 逻辑 (5,5))。
   const uint32_t bg = surface.PresentedPixel(10, 10);
@@ -277,7 +222,7 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
 
 TEST_F(ShellTest, BundleErrorsFailCreateWithJsMessage) {
   const auto bundle = std::filesystem::temp_directory_path() / "momo_bad_bundle.js";
-  std::ofstream(bundle) << "import { window } from 'momo:ui';\nwindow.render(42);\n";
+  std::ofstream(bundle) << "import { views } from 'momo:ui';\nviews.get(0).render(42);\n";
   Settings settings;
   settings.bundle_path = bundle;
   auto shell = Shell::Create(runners_, settings);
@@ -286,20 +231,16 @@ TEST_F(ShellTest, BundleErrorsFailCreateWithJsMessage) {
   std::filesystem::remove(bundle);
 }
 
-TEST_F(ShellTest, JsCloseHandlerCanCancelClose) {
-  const auto bundle = std::filesystem::temp_directory_path() / "momo_close_bundle.js";
-  std::ofstream(bundle) << "import { window } from 'momo:ui';\n"
-                           "window.onCloseRequested = () => false;\n";
+// 宿主在 on_created 里注册的通道处理器先于 JS bundle 就位: bundle 顶层发出的调用不会落空。
+TEST_F(ShellTest, HostChannelsRegisteredInOnCreatedSeeTopLevelCalls) {
   Settings settings;
-  settings.bundle_path = bundle;
-  auto shell = Shell::Create(runners_, settings);
+  settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
+  std::vector<std::string> calls;
+  auto shell = Shell::Create(runners_, settings, RecordCalls("momo/window", &calls, runners_.platform));
   ASSERT_TRUE(shell.ok()) << shell.status();
-  std::optional<bool> allowed;
-  (*shell)->RequestClose([&](bool allow) { allowed = allow; });
-  ASSERT_TRUE(PumpUntil([&] { return allowed.has_value(); }));
-  EXPECT_FALSE(*allowed);
+  EXPECT_TRUE(PumpUntil([&] { return !calls.empty(); }));
+  EXPECT_EQ(calls, (std::vector<std::string>{"setTitle:Momo · hello_frame"}));
   (*shell)->Shutdown();
-  std::filesystem::remove(bundle);
 }
 
 #endif  // MOMO_HAS_JS_RUNTIME
@@ -307,36 +248,27 @@ TEST_F(ShellTest, JsCloseHandlerCanCancelClose) {
 
 // ---- 多视图 ----
 
-// 宿主: 按 Shell 的请求"创建窗口"(一个 RecordingShellDelegate + FakeSurface)并以分配的 id 绑定。
-class FakeHost final : public Shell::HostDelegate {
+// 宿主: "创建窗口"(一个 RecordingShellDelegate + FakeSurface)并以宿主分配的 id 绑定(视图的创建与关闭
+// 都由宿主决定, 引擎只认识视图本身)。
+class FakeHost final {
  public:
   struct Window {
     RecordingShellDelegate delegate;
     FakeSurface surface;
   };
-  Status CreateView(platform::ViewId view_id, const platform::ViewOptions& options) override {
-    if (fail_next) {
-      fail_next = false;
-      return UnavailableError("no more windows");
-    }
+  void CreateView(platform::ViewId view_id, Size size) {
     auto window = std::make_unique<Window>();
     shell->AttachView(view_id, &window->delegate, &window->surface);
-    shell->OnMetricsChanged(view_id, {{options.size.width * 2, options.size.height * 2}, 2.0});
-    created.push_back(view_id);
+    shell->OnMetricsChanged(view_id, {{size.width * 2, size.height * 2}, 2.0});
     windows[view_id] = std::move(window);
-    return Status::Ok();
   }
-  void CloseView(platform::ViewId view_id) override {
+  void CloseView(platform::ViewId view_id) {
     shell->DetachView(view_id);
     windows.erase(view_id);
-    closed.push_back(view_id);
   }
 
   Shell* shell = nullptr;
-  bool fail_next = false;
   std::map<platform::ViewId, std::unique_ptr<Window>> windows;
-  std::vector<platform::ViewId> created;
-  std::vector<platform::ViewId> closed;
 };
 
 // 一个帧时钟驱动所有视图: 占位驱动每帧为每个视图提交一棵树, 各自画进自己的 surface。
@@ -347,26 +279,19 @@ TEST_F(ShellTest, SecondViewGetsItsOwnFramesAndIsRemovedOnDetach) {
   ASSERT_TRUE(shell.ok());
   FakeHost host;
   host.shell = shell->get();
-  (*shell)->SetHostDelegate(&host);
   FakeSurface main_surface;
   RecordingShellDelegate main_delegate;
   (*shell)->AttachView(&main_delegate, &main_surface);
   (*shell)->OnMetricsChanged(Metrics(800, 600));
   EXPECT_TRUE(WaitFor([&] { return main_surface.presented.load() >= 1; }));
 
-  // 宿主创建并以 id 1 绑定第二个视图(JS createView 经 Shell 分配 id 后走的就是这条路径)。
-  ASSERT_TRUE(host.CreateView(1, {"second", {320, 200}, {100, 100}, std::nullopt}).ok());
+  // 宿主创建并以 id 1 绑定第二个视图(JS 经宿主的 momo/window create 走的就是这条路径)。
+  host.CreateView(1, {320, 200});
   FakeSurface& second = host.windows[1]->surface;
   EXPECT_TRUE(WaitFor([&] { return second.presented.load() >= 1; }));
   EXPECT_EQ(second.last_width.load(), 640);
   EXPECT_EQ(main_surface.last_width.load(), 800);
   EXPECT_EQ((*shell)->attached_views(), (std::vector<platform::ViewId>{0, 1}));
-
-  // 按视图设置窗口属性: 只到达对应窗口的 delegate。
-  (*shell)->SetWindowTitle(1, "second window");
-  (*shell)->SetWindowTitle(0, "main window");
-  EXPECT_TRUE(PumpUntil([&] { return host.windows[1]->delegate.title == "second window"; }));
-  EXPECT_EQ(main_delegate.title, "main window");
 
   // 关闭第二个视图: 解绑后其 surface 不再被使用, 主窗口照常出帧。
   host.CloseView(1);

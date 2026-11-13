@@ -202,6 +202,10 @@ StatusOr<v8::Local<v8::Value>> JsRuntimeImpl::Call(v8::Local<v8::Function> fn,
                                                    v8::Local<v8::Value> argv[],
                                                    std::string_view what) {
   v8::EscapableHandleScope scope(isolate_);
+  // 与 node::MakeCallback 相同: 在 CallbackScope 里调用(异步上下文正确), 最外层的 scope 关闭时按 Node 语义
+  // 排空 process.nextTick 与 microtask——从 momo 进入 JS 的每次调用都是一次完整的"宏任务"。
+  // 调用本身已在 libuv 的顺序里: 入口都是 ui 线程上的任务, 与 uv 回调同属一个循环, 不另经 uv 排队。
+  node::CallbackScope callback_scope(env_, v8::Object::New(isolate_), {0, 0});
   v8::TryCatch try_catch(isolate_);
   v8::Local<v8::Value> result;
   if (!fn->Call(context(), receiver, argc, argv).ToLocal(&result)) {

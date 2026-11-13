@@ -73,32 +73,16 @@ class OffscreenSurface final : public platform::RenderSurface {
   uint64_t frames_ = 0;
 };
 
-class NullTextInput final : public platform::TextInputConnection {
- public:
-  void Show() override {}
-  void Hide() override {}
-  void SetCaretRect(Rect) override {}
-  void SetEditingState(const platform::TextEditingState&) override {}
-};
-
 // 永不触发的 vsync(--manual-frames)。
 class ManualVsyncSource final : public platform::VsyncSource {
  public:
   void RequestFrameCallback(Callback) override {}
 };
 
+// 无窗口: 不提供原生句柄;窗口管理、剪贴板、输入法等宿主通道一律不注册(JS 调用会得到"无实现")。
 class HeadlessDelegate final : public engine::Shell::Delegate {
  public:
-  void OnEngineSetTitle(const std::string& title) override {
-    MOMO_LOG(VERBOSE) << "title: " << title;
-  }
-  void OnEngineSetMinSize(Size) override {}
-  void OnEngineSetCursor(platform::SystemCursor) override {}
-  platform::TextInputConnection* GetTextInput() override { return &text_input_; }
   void* GetNativeWindowHandle() override { return nullptr; }
-
- private:
-  NullTextInput text_input_;
 };
 
 struct Options {

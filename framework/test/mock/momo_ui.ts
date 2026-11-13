@@ -4,6 +4,9 @@
 // - Paragraph 采用 Ahem 固定宽度字形模型:每个 UTF-16 码元宽 = 字号, 行高 = 字号 × height(默认 1),
 //   ascent = 0.8 × 字号, descent = 0.2 × 字号;按空格/换行贪心折行。
 import type { MockControl, RecordedOp } from "../host";
+import { MethodCall, PlatformException } from "../../packages/momo/src/services/message_codecs";
+import { StandardMethodCodec } from "../../packages/momo/src/services/standard_codec";
+import { __mockServices } from "./momo_services";
 
 export type Color = number;
 export type Matrix4 = ArrayLike<number>;
@@ -25,8 +28,12 @@ const control: MockControl = {
   assets: new Map<string, Uint8Array>(),
   decodedImages: 0,
   setPhysicalSize(width: number, height: number, dpr: number): void {
-    win.physicalSize = { width, height };
-    win.devicePixelRatio = dpr;
+    const v = viewMap.get(0);
+    if (v === undefined) return;
+    v.physicalSize = { width, height };
+    v.devicePixelRatio = dpr;
+    const f = control.frames.get(0);
+    if (f !== undefined) control.frames.set(0, { ...f, width: width / dpr, height: height / dpr });
   },
   pictureOps(picture: unknown): RecordedOp[] {
     return picture instanceof Picture ? picture.ops : [];
@@ -36,28 +43,51 @@ const control: MockControl = {
   openViews(): number[] {
     return [...viewMap.keys()].filter((id) => id !== 0);
   },
-  requestCloseView(id: number): boolean {
-    const v = viewMap.get(id);
-    if (v === undefined || id === 0) return false;
+  hasView(id: number): boolean {
+    return viewMap.has(id);
+  },
+  async requestCloseView(id: number): Promise<boolean> {
+    if (!viewMap.has(id)) return false;
+    const reply = await __mockServices.deliver("momo/window", codec.encodeMethodCall(new MethodCall("closeRequested", { view: id })));
     let allow = true;
-    try {
-      allow = v.onCloseRequested?.() !== false;
-    } catch {
-      allow = true;
+    if (reply !== null) {
+      try {
+        allow = codec.decodeEnvelope(reply) !== false;
+      } catch {
+        allow = true;
+      }
     }
     if (allow) removeView(id);
     return allow;
+  },
+  async requestAppExit(): Promise<boolean> {
+    const reply = await __mockServices.deliver("momo/app", codec.encodeMethodCall(new MethodCall("requestExit", null)));
+    return reply === null || codec.decodeEnvelope(reply) !== false;
   },
   failNextCreateView: false,
   alwaysOnTop: new Map<number, boolean>(),
   activated: [],
   captures: [],
-  platformViewPointer: [],
   panelViews: new Set<number>(),
-  titleBars: new Map<number, { style: string; center: number | null }>(),
-  resizeOptions: new Map<number, ResizeOptions>(),
+  titleBars: new Map<number, { hidden: boolean; height: number }>(),
+  resizable: new Map<number, boolean>(),
+  resizeBorders: new Map<number, { left?: number; top?: number; right?: number; bottom?: number }>(),
   lastCreateViewOptions: null,
-  dragRegions: new Map<number, number[]>(),
+  frames: new Map<number, { x: number; y: number; width: number; height: number }>(),
+  windowDrags: [],
+  moveLoops: new Map<number, { x: number; y: number }>(),
+  minSizes: new Map<number, { width: number; height: number }>(),
+  deliverPointer(view: number, data: Float64Array, count: number): void {
+    hostPointer(view, data, count);
+  },
+  debugRestoreImplicitView(): void {
+    captureView = null;
+    activeSequence = 0;
+    if (viewMap.has(0)) return;
+    viewMap.set(0, makeView(0, 800, 600, 1));
+    control.frames.set(0, { x: 0, y: 0, width: 800, height: 600 });
+    win.onViewsChanged?.();
+  },
 };
 export const __mock: MockControl = control;
 
@@ -418,6 +448,7 @@ export class Canvas {
   clipRect(x: number, y: number, w: number, h: number): void { this.#rec("clipRect", x, y, w, h); }
   clipRRect(x: number, y: number, w: number, h: number, r: number): void { this.#rec("clipRRect", x, y, w, h, r); }
   clipPath(path: Path): void { this.#rec("clipPath", path.commands.slice()); }
+  addHitRegion(x: number, y: number, w: number, h: number): void { this.#rec("addHitRegion", x, y, w, h); }
   drawColor(color: Color): void { this.#rec("drawColor", color); }
   drawPaint(paint: Paint): void { this.#rec("drawPaint", snapshotPaint(paint)); }
   drawRect(x: number, y: number, w: number, h: number, paint: Paint): void { this.#rec("drawRect", x, y, w, h, snapshotPaint(paint)); }
@@ -484,46 +515,26 @@ export class SceneBuilder {
 
 export const POINTER_DATA_STRIDE = 17;
 
-export interface ResizeOptions {
-  resizable?: boolean;
-  border?: number | { left?: number; top?: number; right?: number; bottom?: number };
-  liveResizeFrameWait?: number;
-}
-
 export interface KeyData {
   type: "down" | "up" | "repeat"; timeStampUs: number; physicalKey: number; logicalKey: number; character: string; modifiers: number;
 }
 
 export type SystemCursor = "basic" | "text" | "click" | "precise" | "resizeLeftRight" | "resizeUpDown" | "forbidden" | "none";
 
+/** momo:ui View 的 mock: 只有引擎职责(画面、尺寸、输入、捕获)。窗口管理由下方的宿主 mock(momo/window)提供。 */
 interface MockView {
   readonly id: number;
   devicePixelRatio: number;
   physicalSize: { width: number; height: number };
   focused: boolean;
-  title: string;
   onMetricsChanged: (() => void) | null;
-  onCloseRequested: (() => boolean | void) | null;
   onPointerPacket: ((data: Float64Array, count: number) => void) | null;
   onKeyData: ((data: KeyData) => boolean | void) | null;
   onFocusChanged: ((focused: boolean) => void) | null;
   render(scene: Scene): void;
-  setCursor(cursor: SystemCursor): void;
-  setMinSize(width: number, height: number): void;
-  close(): void;
-  setAlwaysOnTop(on: boolean): void;
-  activate(): void;
-  setCapture(): boolean;
-  dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void;
-  setTitleBarStyle(style: "default" | "hidden", center?: number): void;
-  setResizeOptions(options: ResizeOptions): void;
-  setDragRegions(rects: readonly number[]): void;
-  screenFrame: { x: number; y: number; width: number; height: number };
-  onFrameChanged: (() => void) | null;
-  setPosition(x: number, y: number): void;
 }
 
-interface MockWindow extends MockView {
+interface MockWindow {
   onBeginFrame: ((frameTimeMs: number) => void) | null;
   onDrawFrame: (() => void) | null;
   onViewsChanged: (() => void) | null;
@@ -539,13 +550,7 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
     devicePixelRatio: dpr,
     physicalSize: { width, height },
     focused: id === 0,
-    get title(): string { return control.titles.get(id) ?? ""; },
-    set title(v: string) {
-      control.titles.set(id, v);
-      if (id === 0) control.title = v;
-    },
     onMetricsChanged: null,
-    onCloseRequested: null,
     onPointerPacket: null,
     onKeyData: null,
     onFocusChanged: null,
@@ -557,75 +562,205 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
         control.lastSceneOps = scene.ops;
       }
     },
-    setCursor(cursor: SystemCursor): void { control.cursor = cursor; },
-    setMinSize(): void {},
-    setAlwaysOnTop(on: boolean): void { control.alwaysOnTop.set(id, on); },
-    setTitleBarStyle(style: "default" | "hidden", center?: number): void { control.titleBars.set(id, { style, center: center ?? null }); },
-    setResizeOptions(options: ResizeOptions): void { control.resizeOptions.set(id, options); },
-    setDragRegions(rects: readonly number[]): void { control.dragRegions.set(id, [...rects]); },
-    screenFrame: { x: 0, y: 0, width: width / dpr, height: height / dpr },
-    onFrameChanged: null,
-    setPosition(x: number, y: number): void {
-      const v = viewMap.get(id);
-      if (v === undefined) return;
-      v.screenFrame = { ...v.screenFrame, x, y };
-      v.onFrameChanged?.();
-    },
-    activate(): void { control.activated.push(id); },
-    setCapture(): boolean { control.captures.push(id); return true; },
-    dispatchPlatformViewPointer(platformViewId: number, nativeEventId: number, action: number): void {
-      control.platformViewPointer.push({ view: id, platformViewId, nativeEventId, action });
-    },
-    close(): void {
-      if (id === 0) throw new Error("view.close: the main window (view 0) cannot be closed from JS");
-      removeView(id);
-    },
   };
 }
 
 function removeView(id: number): void {
-  if (!viewMap.delete(id)) return;
+  if (!viewMap.has(id)) return;
+  // 宿主: 关闭的窗口是进行中序列的接收窗口时, 以取消结束序列(按下中 remove)。
+  if (captureView === id) {
+    captureView = null;
+    const d = new Float64Array(POINTER_DATA_STRIDE);
+    d[2] = 4;  // remove
+    viewMap.get(id)?.onPointerPacket?.(d, 1);
+  }
+  viewMap.delete(id);
   control.sceneOpsByView.delete(id);
+  control.frames.delete(id);
+  control.moveLoops.delete(id);
   // 宿主异步通知(真实引擎经 ui 线程任务): 用 microtask 模拟。
   void Promise.resolve().then(() => win.onViewsChanged?.());
 }
 
-const win: MockWindow = Object.assign(makeView(0, 800, 600, 1), {
-  get title(): string { return control.title; },
-  set title(v: string) { control.title = v; control.titles.set(0, v); },
+const win: MockWindow = {
   onBeginFrame: null,
   onDrawFrame: null,
   onViewsChanged: null,
   scheduleFrame(): void { control.frameRequests++; },
-}) as MockWindow;
-// Object.assign 不复制访问器: 重新定义 title。
-Object.defineProperty(win, "title", {
-  get: () => control.title,
-  set: (v: string) => { control.title = v; control.titles.set(0, v); },
-});
-viewMap.set(0, win);
+};
+viewMap.set(0, makeView(0, 800, 600, 1));
+control.frames.set(0, { x: 0, y: 0, width: 800, height: 600 });
 
 export const window = win;
 export const views: ReadonlyMap<number, MockView> = viewMap;
 
-/** 宿主异步创建窗口: 先加入 views 并通知 onViewsChanged, 再解析 Promise(与真实引擎顺序一致)。 */
-export function createView(o: { title?: string; width: number; height: number; x?: number; y?: number; panel?: boolean; resizable?: boolean }): Promise<MockView> {
-  control.lastCreateViewOptions = { ...o };
-  return new Promise((resolve, reject) => {
-    void Promise.resolve().then(() => {
-      if (control.failNextCreateView) {
-        control.failNextCreateView = false;
-        reject(new Error("createView: the host refused to open a window"));
-        return;
-      }
-      const id = nextViewId++;
-      const v = makeView(id, o.width * win.devicePixelRatio, o.height * win.devicePixelRatio, win.devicePixelRatio);
-      if (o.title) v.title = o.title;
-      v.screenFrame = { x: o.x ?? 200, y: o.y ?? 120, width: o.width, height: o.height };
-      viewMap.set(id, v);
-      if (o.panel === true) control.panelViews.add(id);
-      win.onViewsChanged?.();
-      resolve(v);
-    });
-  });
+// ---------------------------------------------------------------------------
+// 宿主 mock: momo/window(真实实现见 embedder/common/window_channel.cc)。处理器同步执行(状态在调用时即更新),
+// 宿主 → JS 的通知(frameChanged / controlsChanged)经 momo:services mock 投递。
+
+const codec = StandardMethodCodec.instance;
+
+function notify(method: string, args: Record<string, unknown>): void {
+  void __mockServices.deliver("momo/window", codec.encodeMethodCall(new MethodCall(method, args)));
 }
+
+function setFrame(view: number, frame: { x: number; y: number; width: number; height: number }): void {
+  control.frames.set(view, frame);
+  notify("frameChanged", { view, frame: [frame.x, frame.y, frame.width, frame.height] });
+}
+
+function controlsOf(view: number): number[] | null {
+  const bar = control.titleBars.get(view);
+  return bar?.hidden ? [0, 0, 78, bar.height > 0 ? bar.height : 28] : null;
+}
+
+/** 进行中序列的原生接收窗口(momo/window capturePointer 改交;抬起后结束)。 */
+let captureView: number | null = null;
+/** 进行中的按下序列 id(同真实宿主: 首个按下分配, 最后一个抬起后清零)。 */
+let activeSequence = 0;
+let nextSequence = 1;
+
+/**
+ * 宿主收到的指针事件: 序列改交过接收窗口时改投它(坐标按屏幕位置换算到它的内容区, 同 macOS 宿主);
+ * 移动循环先移动窗口(与 macOS 宿主一致), 再交给视图。
+ */
+function hostPointer(view: number, data: Float64Array, count: number): void {
+  if (captureView !== null && captureView !== view) {
+    const target = captureView;
+    const f = control.frames.get(target);
+    const dpr = viewMap.get(target)?.devicePixelRatio ?? 1;
+    for (let i = 0; i < count; i++) {
+      const o = i * POINTER_DATA_STRIDE;
+      if (data[o + 2] === 0 /* add */ || data[o + 2] === 5 /* hover */) continue;
+      if (f !== undefined) {
+        data[o + 4] = (data[o + 10]! - f.x) * dpr;
+        data[o + 5] = (data[o + 11]! - f.y) * dpr;
+      }
+    }
+    view = target;
+  }
+  for (let i = 0; i < count; i++) {
+    const o = i * POINTER_DATA_STRIDE;
+    const phase = data[o + 2];
+    if (phase === 1 /* down */ && activeSequence === 0) activeSequence = nextSequence++;
+    if (activeSequence !== 0 && (phase === 1 || phase === 2 || phase === 3 || phase === 7 || phase === 8)) data[o + 12] = activeSequence;
+    if (phase === 3 /* up */ || phase === 8 /* cancel */) {
+      captureView = null;
+      activeSequence = 0;
+    }
+  }
+  for (let i = 0; i < count; i++) {
+    const o = i * POINTER_DATA_STRIDE;
+    const loop = control.moveLoops.get(view);
+    if (loop === undefined) continue;
+    const phase = data[o + 2];
+    if (phase === 2 /* move */) {
+      const f = control.frames.get(view)!;
+      setFrame(view, { ...f, x: data[o + 10]! - loop.x, y: data[o + 11]! - loop.y });
+    } else if (phase === 3 /* up */) {
+      control.moveLoops.delete(view);
+    }
+  }
+  viewMap.get(view)?.onPointerPacket?.(data, count);
+}
+
+function handleWindowCall(call: MethodCall): unknown {
+  const a = (call.args ?? {}) as Record<string, unknown>;
+  if (call.method === "create") {
+    control.lastCreateViewOptions = { ...(a as { width: number; height: number }) };
+    if (control.failNextCreateView) {
+      control.failNextCreateView = false;
+      throw new PlatformException("error", "the host refused to open a window");
+    }
+    const id = nextViewId++;
+    const dpr = viewMap.get(0)?.devicePixelRatio ?? 1;
+    const width = Number(a["width"]);
+    const height = Number(a["height"]);
+    viewMap.set(id, makeView(id, width * dpr, height * dpr, dpr));
+    control.frames.set(id, { x: typeof a["x"] === "number" ? a["x"] : 200, y: typeof a["y"] === "number" ? a["y"] : 120, width, height });
+    if (typeof a["title"] === "string" && a["title"] !== "") control.titles.set(id, a["title"]);
+    if (a["nonActivating"] === true) control.panelViews.add(id);
+    if (a["resizable"] === false) control.resizable.set(id, false);
+    win.onViewsChanged?.();  // 视图先加入(真实宿主: AddView 先于回复到达 ui 线程)
+    return id;
+  }
+  const view = Number(a["view"]);
+  if (call.method === "close") {
+    removeView(view);
+    return null;
+  }
+  if (!viewMap.has(view)) throw new PlatformException("notFound", `no window for view ${view}`);
+  switch (call.method) {
+    case "getState": {
+      const f = control.frames.get(view)!;
+      return {
+        frame: [f.x, f.y, f.width, f.height], controls: controlsOf(view),
+        capabilities: ["alwaysOnTop", "position", "resizeOptions", "hiddenTitleBar", "windowDrag", "moveLoop", "pointerCapture", "platformViews", "nonActivating"],
+      };
+    }
+    case "setTitle":
+      control.titles.set(view, String(a["title"]));
+      if (view === 0) control.title = String(a["title"]);
+      return null;
+    case "setMinSize":
+      control.minSizes.set(view, { width: Number(a["width"]), height: Number(a["height"]) });
+      return null;
+    case "setCursor":
+      control.cursor = String(a["cursor"]);
+      return null;
+    case "setAlwaysOnTop":
+      control.alwaysOnTop.set(view, a["on"] === true);
+      return null;
+    case "activate":
+      control.activated.push(view);
+      return null;
+    case "setPosition": {
+      const f = control.frames.get(view)!;
+      setFrame(view, { ...f, x: Number(a["x"]), y: Number(a["y"]) });
+      return null;
+    }
+    case "setResizable":
+      control.resizable.set(view, a["resizable"] === true);
+      return null;
+    case "setResizeBorder": {
+      const { view: _v, ...edges } = a;
+      control.resizeBorders.set(view, { ...control.resizeBorders.get(view), ...(edges as Record<string, number>) });
+      return null;
+    }
+    case "setTitleBar":
+      control.titleBars.set(view, { hidden: a["hidden"] === true, height: Number(a["height"] ?? 0) });
+      notify("controlsChanged", { view, controls: controlsOf(view) });
+      return null;
+    case "startDrag":
+      control.windowDrags.push({ view, sequenceId: Number(a["sequenceId"]) });
+      return null;
+    case "startMoveLoop":
+      control.moveLoops.set(view, { x: Number(a["x"]), y: Number(a["y"]) });
+      return null;
+    case "endMoveLoop":
+      control.moveLoops.delete(view);
+      return null;
+    case "capturePointer":
+      if (activeSequence === 0 || Number(a["sequenceId"]) !== activeSequence) return false;
+      control.captures.push(view);
+      captureView = view;
+      return true;
+    default:
+      throw new PlatformException("unimplemented", `momo/window: unknown method ${call.method}`);
+  }
+}
+
+__mockServices.setNativeHandler("momo/window", (data) => {
+  let call: MethodCall;
+  try {
+    call = codec.decodeMethodCall(data);
+  } catch (e) {
+    return codec.encodeErrorEnvelope("error", String(e));
+  }
+  try {
+    return codec.encodeSuccessEnvelope(handleWindowCall(call) ?? null);
+  } catch (e) {
+    if (e instanceof PlatformException) return codec.encodeErrorEnvelope(e.code, e.platformMessage);
+    return codec.encodeErrorEnvelope("error", String(e));
+  }
+});

@@ -9,18 +9,37 @@ import {
 import { HitTestResult } from "./hit_test";
 import { PointerRouter, PointerSignalResolver, type PointerRoute } from "./pointer_router";
 
-/** 可接管指针按下序列的窗口(momo:ui View 的子集)。 */
-export interface PointerCaptureTarget {
-  readonly id: number;
-  setCapture(): boolean;
+/**
+ * 一次显式指针捕获(GestureBinding.capturePointer): 进行中的按下序列从此只交给捕获者, 直到抬起或取消。
+ * 捕获者不属于任何 widget 或窗口——触发拖动的 widget 卸载、它所在的窗口关闭, 序列照常交给捕获者。
+ */
+export class PointerCapture {
+  #active = true;
+  constructor(readonly pointer: number, readonly sequenceId: number, readonly binding: GestureBinding) {}
+
+  /** 捕获仍有效(序列未结束、未释放)。 */
+  get active(): boolean {
+    return this.#active;
+  }
+
+  /**
+   * 原生事件改由窗口 viewId 接收(宿主的原生捕获;拖出标签成窗、并入另一个窗口)。逻辑接收方不变,
+   * 同一个指针继续——之后的事件来自 viewId(坐标是它的, screenPosition 不变)。序列已结束时什么也不做。
+   */
+  moveToView(viewId: number): void {
+    if (this.#active) this.binding.pointerCaptureSink?.(viewId, this.sequenceId);
+  }
+
+  /** 提前释放: 之后到抬起为止这个指针的事件被丢弃(原接收方已失去它, 不会恢复)。 */
+  release(): void {
+    this.binding._releaseCapture(this);
+  }
+
+  /** @internal */
+  _end(): void {
+    this.#active = false;
+  }
 }
-
-/** 框架对原生指针事件的处置(momo:ui View.dispatchPlatformViewPointer 的 action)。 */
-export const PlatformViewPointerAction = { event: 0, enter: 1, exit: 2 } as const;
-export type PlatformViewPointerAction = (typeof PlatformViewPointerAction)[keyof typeof PlatformViewPointerAction];
-
-/** 把处置交给宿主: viewId 为事件来源窗口(由 WidgetsBinding 设置为 view.dispatchPlatformViewPointer)。 */
-export type PlatformViewPointerSink = (viewId: number, platformViewId: number, nativeEventId: number, action: PlatformViewPointerAction) => void;
 
 /** 鼠标跟踪钩子(由渲染层的 MouseTracker 实现)。 */
 export interface MouseTrackerHook {
@@ -44,123 +63,111 @@ export class GestureBinding {
   readonly converter = new PointerEventConverter();
   #hitTests = new Map<number, HitTestResult>();
 
-  /** 在视图 viewId(0 = 主窗口)的根做命中测试(由 WidgetsBinding 设置)。 */
+  /** 在视图 viewId 的根做命中测试(由 WidgetsBinding 设置)。 */
   hitTestInView: ((result: HitTestResult, position: Offset, viewId: number) => void) | null = null;
-  #viewId = 0;
-  /** 进行中的捕获转交(transferPointerCapture): 目标视图、被认领的指针与接收者。 */
-  #transfer: { viewId: number; pointer: number | null; route: PointerRoute } | null = null;
+  /** 宿主的原生捕获: 进行中的序列 sequenceId 改由窗口 viewId 接收(由 WidgetsBinding 设置为 WindowService.capturePointer)。 */
+  pointerCaptureSink: ((viewId: number, sequenceId: number) => void) | null = null;
+  /** 显式捕获: 指针 → 捕获者。 */
+  readonly #captures = new Map<number, { capture: PointerCapture; route: PointerRoute }>();
+  /** 正在分发的指针事件层数;分发中发起的捕获, 原接收方的取消推迟到分发结束(路由按快照分发)。 */
+  #dispatching = 0;
+  #pendingCancels: [PointerCancelEvent, HitTestResult | null][] = [];
   /** 鼠标 hover 跟踪(由 WidgetsBinding 设置)。 */
   mouseTracker: MouseTrackerHook | null = null;
-  /** 平台视图的原生事件出口(由 WidgetsBinding 设置;null = 宿主不支持, 转发被忽略)。 */
-  platformViewPointerSink: PlatformViewPointerSink | null = null;
   /** 触控板手势锁定的命中结果(phase start → end): 滚动一份, 每种平台手势各一份(捏合与旋转可同时进行)。 */
   #signalLatches = new Map<string, HitTestResult>();
-  /** 当前事件中: 原生事件 id → 已接收它的平台视图(去重;判断按下是否由 momo 内容消费)。 */
-  #forwarded = new Map<number, Set<number>>();
 
   private constructor() {}
 
   /**
-   * 解码并处理 momo:ui 指针包。viewId: 事件来自的视图(窗口), 坐标为该窗口的物理像素。
-   * 多窗口共用一套指针路由与手势竞技场(同一时刻只有一个鼠标), 命中测试在来源窗口的渲染树上进行。
+   * 解码并处理 momo:ui 指针包。viewId: 事件来自的视图(窗口), 坐标为该窗口的物理像素;它记在每个事件上
+   * (PointerEvent.viewId)。多窗口共用一套指针路由与手势竞技场(同一时刻只有一个鼠标), 命中测试在事件
+   * 所属窗口的渲染树上进行。
    */
   handlePointerPacket(data: Float64Array, count: number, devicePixelRatio: number, viewId = 0): void {
-    this.#viewId = viewId;
-    const events = this.converter.expand(data, count, devicePixelRatio);
+    const events = this.converter.expand(data, count, devicePixelRatio, viewId);
     for (let i = 0; i < events.length; i++) this.handlePointerEvent(events[i]!);
   }
 
-  /** 最近一次指针事件来自的视图(光标、hover 重算发往它)。 */
-  get currentViewId(): number {
-    return this.#viewId;
-  }
-
-  /** 在当前视图的 position 做命中测试。 */
-  hitTest(position: Offset): HitTestResult {
+  /** 在视图 viewId 的 position 做命中测试。 */
+  hitTest(position: Offset, viewId = 0): HitTestResult {
     const result = new HitTestResult();
-    this.hitTestInView?.(result, position, this.#viewId);
+    this.hitTestInView?.(result, position, viewId);
     return result;
   }
 
   /**
-   * 把进行中的鼠标按下序列转交给窗口 view(view.setCapture()), 并由 route 继续接收它——用于拖动中
-   * 持有按下的窗口即将关闭(如把它的内容并入另一个窗口)时, 让同一次拖动不中断。
-   * 宿主在 view 里补发的按下以及该指针之后的移动、抬起/取消只交给 route(不做命中测试、不进竞技场,
-   * 因此目标窗口里的手势识别器不会把它当成新的拖动);抬起或取消后自动结束。
-   * 返回取消函数;没有可转交的按下序列(按键已松开)时返回 null, route 不会被调用。
+   * 显式捕获进行中的按下序列(同 Win32 SetCapture / Chromium Widget::SetCapture): 从此这个指针的全部事件
+   * (不论来自哪个窗口)只交给 route——不做命中测试、不进竞技场、不更新悬停;抬起或取消后自动结束。
+   * 原接收方(按下时的命中路径、已在竞技场里的手势)失去这个指针, 收到取消(分发中发起时推迟到当前事件分发完)。
+   * 典型用法: 拖动开始时捕获(拖动会话成为接收方), 换窗口时 capture.moveToView(viewId)。
+   * device: 缺省为任一按下中的设备。没有进行中的按下序列时返回 null。
    */
-  transferPointerCapture(view: PointerCaptureTarget, route: PointerRoute): (() => void) | null {
-    if (!view.setCapture()) return null;
-    const transfer = { viewId: view.id, pointer: null as number | null, route };
-    this.#transfer = transfer;
-    return () => {
-      if (this.#transfer === transfer) this.#transfer = null;
-    };
+  capturePointer(route: PointerRoute, o: { device?: number } = {}): PointerCapture | null {
+    const active = this.converter.activePointer(o.device);
+    if (active === null) return null;
+    const pointer = active.pointer;
+    this.#captures.get(pointer)?.capture._end();  // 重复捕获: 新的捕获者接替
+    const capture = new PointerCapture(pointer, active.sequenceId, this);
+    this.#captures.set(pointer, { capture, route });
+    const old = this.#hitTests.get(pointer) ?? null;
+    this.#hitTests.delete(pointer);
+    const cancel = new PointerCancelEvent({
+      pointer, device: active.device, viewId: active.viewId, kind: "mouse",
+      position: active.position, screenPosition: active.screenPosition,
+    });
+    if (this.#dispatching > 0) this.#pendingCancels.push([cancel, old]);
+    else this.#cancelPrevious(cancel, old);
+    return capture;
   }
 
-  /** 属于捕获转交的事件: 交给接收者并返回 true。 */
-  #routeTransfer(event: PointerEvent): boolean {
-    const t = this.#transfer;
-    if (t === null) return false;
-    if (t.pointer === null) {
-      if (!(event instanceof PointerDownEvent) || this.#viewId !== t.viewId) return false;
-      t.pointer = event.pointer;  // 认领: 目标窗口里宿主补发的按下
-    } else if (event.pointer !== t.pointer) {
+  /** @internal PointerCapture.release。 */
+  _releaseCapture(capture: PointerCapture): void {
+    const entry = this.#captures.get(capture.pointer);
+    if (entry?.capture !== capture) return;
+    capture._end();
+    this.#captures.set(capture.pointer, { capture, route: () => {} });  // 到抬起为止丢弃
+  }
+
+  /** 原接收方失去被捕获的指针: 命中路径与路由收到取消, 竞技场清场。 */
+  #cancelPrevious(cancel: PointerCancelEvent, old: HitTestResult | null): void {
+    this.dispatchEvent(cancel, old);
+  }
+
+  /** 属于显式捕获的事件: 交给捕获者并返回 true。 */
+  #routeCaptured(event: PointerEvent): boolean {
+    const entry = this.#captures.get(event.pointer);
+    if (entry === undefined || event instanceof PointerAddedEvent || event instanceof PointerHoverEvent ||
+        event instanceof PointerRemovedEvent) {
       return false;
     }
-    if (event instanceof PointerUpEvent || event instanceof PointerCancelEvent) this.#transfer = null;
-    try {
-      t.route(event);
-    } catch (e) {
-      reportError(e, "while routing a transferred pointer capture");
+    const end = event instanceof PointerUpEvent || event instanceof PointerCancelEvent;
+    if (end) {
+      this.#captures.delete(event.pointer);
+      entry.capture._end();
     }
+    try {
+      entry.route(event);
+    } catch (e) {
+      reportError(e, "while routing a captured pointer");
+    }
+    // 序列结束: 悬停按松开处重新计算(按下期间冻结, 见 MouseTracker)。
+    if (end) this.mouseTracker?.updateWithEvent(event, null);
     return true;
-  }
-
-  /**
-   * 把原生事件交给平台视图 platformViewId(docs/05 §9 "输入";由 RenderPlatformView 在命中路径上调用)。
-   * 宿主异步按 event.nativeEventId 取回原始事件投递给原生视图;合成事件(id 0)忽略。
-   * 同一原生事件对同一平台视图只投递一次。
-   */
-  forwardToPlatformView(platformViewId: number, event: PointerEvent): void {
-    const id = event.nativeEventId;
-    if (id === 0) return;
-    let receivers = this.#forwarded.get(id);
-    if (receivers === undefined) this.#forwarded.set(id, receivers = new Set());
-    if (receivers.has(platformViewId)) return;
-    receivers.add(platformViewId);
-    this.#sink(platformViewId, id, PlatformViewPointerAction.event);
-  }
-
-  /**
-   * 指针归属移到 / 离开平台视图(由 RenderPlatformView 的 MouseTracker 进入/离开调用)。
-   * nativeEventId: 触发它的原生事件(宿主取其位置与时间;0 = 无, 取当前指针位置)。
-   * 与 forwardToPlatformView 走同一条有序通道: 原生视图按框架处理的顺序看到进入、事件、离开。
-   */
-  setPlatformViewHover(platformViewId: number, hovered: boolean, nativeEventId = 0): void {
-    this.#sink(platformViewId, nativeEventId, hovered ? PlatformViewPointerAction.enter : PlatformViewPointerAction.exit);
-  }
-
-  #sink(platformViewId: number, nativeEventId: number, action: PlatformViewPointerAction): void {
-    const sink = this.platformViewPointerSink;
-    if (sink === null) return;
-    try {
-      sink(this.#viewId, platformViewId, nativeEventId, action);
-    } catch (e) {
-      reportError(e, "while dispatching a pointer event to a platform view");
-    }
   }
 
   /** 处理单个指针事件。 */
   handlePointerEvent(event: PointerEvent): void {
+    this.#dispatching++;
     try {
       this.#handlePointerEvent(event);
     } finally {
-      // 原生按下没有任何平台视图接收: 由 momo 内容消费, 宿主把键盘焦点交还 momo。
-      if (event instanceof PointerDownEvent && event.nativeEventId !== 0 && !this.#forwarded.has(event.nativeEventId)) {
-        this.#sink(0, event.nativeEventId, PlatformViewPointerAction.event);
+      this.#dispatching--;
+      if (this.#dispatching === 0) {
+        const pending = this.#pendingCancels;
+        this.#pendingCancels = [];
+        for (const [cancel, old] of pending) this.#cancelPrevious(cancel, old);
       }
-      this.#forwarded.clear();
     }
   }
 
@@ -168,25 +175,25 @@ export class GestureBinding {
    * 触控板手势内的信号沿用手势开始时的命中结果(手势中途指针下的内容变化也不换接收者);
    * 没有阶段的(普通滚轮、智能缩放…)与手势开始重新命中测试。
    */
-  #signalHitTest(key: string, phase: ScrollPhase, position: Offset): HitTestResult {
+  #signalHitTest(key: string, phase: ScrollPhase, event: PointerEvent): HitTestResult {
     let result = phase === "update" || phase === "end" ? this.#signalLatches.get(key) ?? null : null;
-    result ??= this.hitTest(position);
+    result ??= this.hitTest(event.position, event.viewId);
     if (phase === "start" || phase === "update") this.#signalLatches.set(key, result);
     else this.#signalLatches.delete(key);
     return result;
   }
 
   #handlePointerEvent(event: PointerEvent): void {
-    if (this.#routeTransfer(event)) return;
+    if (this.#routeCaptured(event)) return;
     let result: HitTestResult | null = null;
     if (event instanceof PointerScrollEvent) {
-      result = this.#signalHitTest("scroll", event.scrollPhase, event.position);
+      result = this.#signalHitTest("scroll", event.scrollPhase, event);
     } else if (event instanceof PointerGestureEvent) {
       // begin/end 是未细分手势的边界, 与捏合/旋转共用一份锁定。
       const key = event.gesture === "begin" || event.gesture === "end" ? "gesture" : event.gesture;
-      result = this.#signalHitTest(key, event.phase, event.position);
+      result = this.#signalHitTest(key, event.phase, event);
     } else if (event instanceof PointerDownEvent || event instanceof PointerSignalEvent || event instanceof PointerHoverEvent || event instanceof PointerAddedEvent) {
-      result = this.hitTest(event.position);
+      result = this.hitTest(event.position, event.viewId);
       if (event instanceof PointerDownEvent) this.#hitTests.set(event.pointer, result);
     } else if (event instanceof PointerUpEvent || event instanceof PointerCancelEvent) {
       result = this.#hitTests.get(event.pointer) ?? null;
@@ -225,10 +232,11 @@ export class GestureBinding {
 
   /** 测试用:清空状态。 */
   debugReset(): void {
-    this.#viewId = 0;
-    this.#transfer = null;
+    for (const { capture } of this.#captures.values()) capture._end();
+    this.#captures.clear();
+    this.#pendingCancels = [];
+    this.#dispatching = 0;
     this.#signalLatches.clear();
-    this.#forwarded.clear();
     this.#hitTests.clear();
     this.pointerRouter.reset();
     this.gestureArena.reset();

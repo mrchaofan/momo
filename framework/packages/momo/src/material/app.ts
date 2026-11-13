@@ -1,9 +1,10 @@
-import { window } from "momo:ui";
 import type { Key } from "../foundation/key";
+import { WindowService } from "../services/window";
+import { ViewScope } from "../widgets/view_scope";
 import { State, StatefulWidget, type BuildContext, type Widget } from "../widgets/framework";
 import { Theme, ThemeData } from "./theme";
 
-/** Material 应用根:设置窗口标题与主题。 */
+/** Material 应用根: 主题, 以及所在窗口的标题(runApp 时为隐式视图;不在任何窗口里时只提供主题)。 */
 export class MaterialApp extends StatefulWidget {
   readonly title: string | null;
   readonly theme: ThemeData;
@@ -20,14 +21,21 @@ export class MaterialApp extends StatefulWidget {
 }
 
 class MaterialAppState extends State<MaterialApp> {
+  #applied: string | null = null;
   #applyTitle(): void {
-    if (this.widget.title !== null) window.title = this.widget.title;
+    const view = ViewScope.maybeOf(this.context);
+    const title = this.widget.title;
+    if (view === null || title === null) return;
+    const key = `${view.id}:${title}`;
+    if (key === this.#applied) return;
+    this.#applied = key;
+    WindowService.instance.setTitle(view.id, title);
   }
-  override initState(): void {
+  override didChangeDependencies(): void {
     this.#applyTitle();
   }
-  override didUpdateWidget(old: MaterialApp): void {
-    if (old.title !== this.widget.title) this.#applyTitle();
+  override didUpdateWidget(): void {
+    this.#applyTitle();
   }
   build(_context: BuildContext): Widget {
     return new Theme({ data: this.widget.theme, child: this.widget.home });

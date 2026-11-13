@@ -151,9 +151,9 @@ class RecordingDelegate final : public WindowDelegate {
   bool OnCloseRequested() override { return false; }
   void OnFocusChanged(bool) override {}
   void OnVisibilityChanged(bool) override {}
-  void OnTextInput(const platform::TextInputEvent& event) override { events.push_back(event); }
+  void OnTextInput(const momo::embedder::TextInputEvent& event) override { events.push_back(event); }
 
-  std::vector<platform::TextInputEvent> events;
+  std::vector<momo::embedder::TextInputEvent> events;
 };
 
 class WinTextInputTest : public ::testing::Test {
@@ -179,7 +179,7 @@ TEST_F(WinTextInputTest, CharsCommitOnlyWhileShown) {
   input.OnChar(0xD83D);  // 😀 = D83D DE00
   input.OnChar(0xDE00);
   ASSERT_EQ(delegate_.events.size(), 2u);
-  EXPECT_EQ(delegate_.events[0].type, platform::TextInputEvent::Type::kCommit);
+  EXPECT_EQ(delegate_.events[0].type, momo::embedder::TextInputEvent::Type::kCommit);
   EXPECT_EQ(delegate_.events[0].text, "a");
   EXPECT_EQ(delegate_.events[1].text, "\xF0\x9F\x98\x80");
   input.Hide();

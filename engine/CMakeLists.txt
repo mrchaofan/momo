@@ -92,7 +92,6 @@ endif()
 add_library(momo_engine_shell STATIC
   shell/animator.cc
   shell/engine.cc
-  shell/pointer_capture.cc
   shell/rasterizer.cc
   shell/render_backend.cc
   shell/shell.cc
@@ -114,23 +113,14 @@ if(MOMO_BUILD_TESTS)
     graphics/graphics_unittests.cc
     graphics/testing/golden.cc
     shell/animator_unittests.cc
-    shell/pointer_capture_unittests.cc
     shell/rasterizer_unittests.cc
     shell/shell_unittests.cc
     shell/thread_host_unittests.cc)
   if(MOMO_HAVE_V8)
+    # 扩展宿主用进程内测试扩展驱动(不依赖 extensions/examples;加载示例扩展动态库的端到端测试在
+    # extensions/ 的 momo_extension_examples_unittests)。
     target_sources(momo_engine_unittests PRIVATE
       runtime/runtime_unittests.cc ui/ui_unittests.cc extension/extension_unittests.cc)
-    # 端到端加载真实的示例扩展动态库(extensions/examples, 只依赖 C ABI)。
-    add_dependencies(momo_engine_unittests ext_hello ext_texture)
-    target_compile_definitions(momo_engine_unittests PRIVATE
-      MOMO_EXT_HELLO_LIB="$<TARGET_FILE:ext_hello>"
-      MOMO_EXT_TEXTURE_LIB="$<TARGET_FILE:ext_texture>")
-    if(APPLE)  # ext_webview 只在 macOS 构建(目标在 extensions/ 中定义, 此处尚不可见)
-      add_dependencies(momo_engine_unittests ext_webview)
-      target_compile_definitions(momo_engine_unittests PRIVATE
-        MOMO_EXT_WEBVIEW_LIB="$<TARGET_FILE:ext_webview>")
-    endif()
   endif()
   if(APPLE)
     target_sources(momo_engine_unittests PRIVATE graphics/gpu/metal_rasterizer_unittests.mm)

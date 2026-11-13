@@ -53,7 +53,7 @@ void MacTextInput::SetCaretRect(Rect physical_rect) {
   }
 }
 
-void MacTextInput::SetEditingState(const platform::TextEditingState& state) {
+void MacTextInput::SetEditingState(const momo::embedder::TextEditingState& state) {
   NSString* text = [[NSString alloc] initWithBytes:state.text.data()
                                             length:state.text.size()
                                           encoding:NSUTF8StringEncoding];
@@ -97,7 +97,7 @@ NSRange MacTextInput::TargetRange(NSRange replacement_range) const {
   return ClampRange(selection_);
 }
 
-void MacTextInput::Emit(const platform::TextInputEvent& event) {
+void MacTextInput::Emit(const momo::embedder::TextInputEvent& event) {
   if (active_ && delegate_ != nullptr) {
     delegate_->OnTextInput(event);
   }
@@ -112,8 +112,8 @@ void MacTextInput::InsertText(id string, NSRange replacement_range) {
   [text_ replaceCharactersInRange:target withString:inserted];
   selection_ = NSMakeRange(target.location + inserted.length, 0);
   marked_ = NSMakeRange(NSNotFound, 0);
-  platform::TextInputEvent event;
-  event.type = platform::TextInputEvent::Type::kCommit;
+  momo::embedder::TextInputEvent event;
+  event.type = momo::embedder::TextInputEvent::Type::kCommit;
   event.text = ToUtf8(inserted);
   if (IsValidRange(replacement_range)) {  // 显式区间(重音字符/重新转换)原样告知 JS
     event.replace_start = static_cast<int32_t>(target.location);
@@ -129,12 +129,12 @@ void MacTextInput::SetMarkedText(id string, NSRange selected_range, NSRange repl
   NSString* marked = PlainString(string);
   const NSRange target = TargetRange(replacement_range);
   [text_ replaceCharactersInRange:target withString:marked];
-  platform::TextInputEvent event;
+  momo::embedder::TextInputEvent event;
   if (marked.length == 0) {
     // 输入法清空了预编辑(如退格删光拼音): 结束 composing。
     marked_ = NSMakeRange(NSNotFound, 0);
     selection_ = NSMakeRange(target.location, 0);
-    event.type = platform::TextInputEvent::Type::kComposingEnd;
+    event.type = momo::embedder::TextInputEvent::Type::kComposingEnd;
   } else {
     marked_ = NSMakeRange(target.location, marked.length);
     const NSUInteger cursor = std::min<NSUInteger>(
@@ -142,7 +142,7 @@ void MacTextInput::SetMarkedText(id string, NSRange selected_range, NSRange repl
     const NSUInteger sel_len =
         IsValidRange(selected_range) ? std::min(selected_range.length, marked.length - cursor) : 0;
     selection_ = NSMakeRange(target.location + cursor, sel_len);
-    event.type = platform::TextInputEvent::Type::kComposing;
+    event.type = momo::embedder::TextInputEvent::Type::kComposing;
     event.text = ToUtf8(marked);
     event.cursor = static_cast<int32_t>(cursor);
     if (IsValidRange(replacement_range)) {
@@ -162,8 +162,8 @@ void MacTextInput::UnmarkText() {
   NSString* text = [text_ substringWithRange:marked];
   marked_ = NSMakeRange(NSNotFound, 0);
   selection_ = NSMakeRange(NSMaxRange(marked), 0);
-  platform::TextInputEvent event;
-  event.type = platform::TextInputEvent::Type::kCommit;
+  momo::embedder::TextInputEvent event;
+  event.type = momo::embedder::TextInputEvent::Type::kCommit;
   event.text = ToUtf8(text);
   Emit(event);
 }
@@ -220,8 +220,8 @@ void MacTextInput::DoCommand(SEL selector) {
   if ([name isEqualToString:@"noop"]) {
     return;  // 未绑定任何命令的按键(如 Cmd+字母): 快捷键由 platform::KeyData 通道处理
   }
-  platform::TextInputEvent event;
-  event.type = platform::TextInputEvent::Type::kCommand;
+  momo::embedder::TextInputEvent event;
+  event.type = momo::embedder::TextInputEvent::Type::kCommand;
   event.command = ToUtf8(name);
   Emit(event);
 }

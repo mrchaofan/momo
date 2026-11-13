@@ -16,7 +16,7 @@ import {
 import { BoxConstraints } from "./box_constraints";
 import { ClipRRectLayer, ClipRectLayer, OpacityLayer, TextureLayer, TransformLayer } from "./layer";
 import { kMouseTrackerAnnotation, type MouseCursor, type MouseTrackerAnnotation } from "./mouse_tracker";
-import type { PaintingContext, PipelineOwner } from "./object";
+import type { PaintingContext, PipelineOwner, RenderObject } from "./object";
 
 /** 在约束上叠加额外约束。 */
 export class RenderConstrainedBox extends RenderProxyBox {
@@ -439,13 +439,29 @@ export class RenderMouseRegion extends RenderProxyBoxWithHitTestBehavior impleme
 
 /** 忽略命中(自身与子树对指针不可见)。 */
 export class RenderIgnorePointer extends RenderProxyBox {
-  ignoring: boolean;
+  #ignoring: boolean;
   constructor(ignoring = true, child: RenderBox | null = null) {
     super(child);
-    this.ignoring = ignoring;
+    this.#ignoring = ignoring;
+  }
+  get ignoring(): boolean {
+    return this.#ignoring;
+  }
+  set ignoring(v: boolean) {
+    if (v === this.#ignoring) return;
+    this.#ignoring = v;
+    // 子树的可命中区域随之出现/消失: 连同子树里各重绘边界的缓存层一起重录。
+    const repaint = (node: RenderObject): void => {
+      node.markNeedsPaint();
+      node.visitChildren(repaint);
+    };
+    repaint(this);
+  }
+  override get ignoresPointer(): boolean {
+    return this.#ignoring;
   }
   override hitTest(result: HitTestResult, position: Offset): boolean {
-    return !this.ignoring && super.hitTest(result, position);
+    return !this.#ignoring && super.hitTest(result, position);
   }
 }
 
@@ -458,6 +474,9 @@ export class RenderAbsorbPointer extends RenderProxyBox {
   }
   override hitTest(result: HitTestResult, position: Offset): boolean {
     return this.absorbing ? this.size.contains(position) : super.hitTest(result, position);
+  }
+  override hitTestSelf(_position: Offset): boolean {
+    return this.absorbing;
   }
 }
 

@@ -17,22 +17,22 @@
 
 #include "embedder/common/engine_platform.h"
 #include "embedder/common/platform_window.h"
-#include "engine/platform/text_input_connection.h"
+#include "embedder/common/text_input.h"
 
 @class NSView;
 
 namespace momo::embedder::macos {
 
-class MacTextInput final : public platform::TextInputConnection {
+class MacTextInput final : public TextInputConnection {
  public:
   MacTextInput(NSView* view, WindowDelegate* delegate);
   ~MacTextInput() override;
 
-  // platform::TextInputConnection
+  // TextInputConnection
   void Show() override;
   void Hide() override;
   void SetCaretRect(Rect physical_rect) override;
-  void SetEditingState(const platform::TextEditingState& state) override;
+  void SetEditingState(const TextEditingState& state) override;
 
   bool active() const { return active_; }
 
@@ -50,7 +50,7 @@ class MacTextInput final : public platform::TextInputConnection {
  private:
   NSRange ClampRange(NSRange range) const;
   NSRange TargetRange(NSRange replacement_range) const;
-  void Emit(const platform::TextInputEvent& event);
+  void Emit(const TextInputEvent& event);
 
   NSView* __weak view_;
   WindowDelegate* delegate_;

@@ -1,13 +1,13 @@
 #pragma once
 
-// IME 接入协议(docs/03 §3)。
+// IME 接入协议(docs/03 §3)。embedder 的平台抽象, engine 不可见。
 //
 // 编辑模型归 JS 框架所有(EditableText);平台只负责与系统输入法交互:
-//   JS → 平台(经 momo/textinput 通道, 由 Shell 在 platform 线程调用 TextInputConnection):
+//   JS → 平台(momo/textinput 通道, 由 embedder 的 PlatformChannels 交给当前获得焦点的窗口):
 //     Show / Hide                     开始/结束一次输入会话(获得/失去文本焦点)
 //     SetEditingState(state)          把当前文本/选区/composing 区间告诉平台(系统输入法上下文、候选窗定位)
 //     SetCaretRect(rect)              光标矩形(物理像素, 相对窗口内容区左上角)用于候选窗定位
-//   平台 → JS(WindowDelegate::OnTextInput, platform 线程 → Shell → momo/textinput 通道):
+//   平台 → JS(WindowDelegate::OnTextInput → PlatformChannels → momo/textinput 通道):
 //     TextInputEvent(commit / composing / 删除 / 编辑命令)
 // 索引一律为 UTF-16 码元下标(与 JS 字符串一致)。
 // 线程约定: TextInputConnection 的方法只在 platform 线程调用。
@@ -17,7 +17,7 @@
 
 #include "base/geometry.h"
 
-namespace momo::engine::platform {
+namespace momo::embedder {
 
 struct TextEditingState {
   std::string text;  // UTF-8
@@ -59,4 +59,4 @@ class TextInputConnection {
   virtual void SetEditingState(const TextEditingState& state) = 0;
 };
 
-}  // namespace momo::engine::platform
+}  // namespace momo::embedder

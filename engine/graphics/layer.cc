@@ -204,6 +204,7 @@ void PictureLayer::Paint(PaintContext& context) const {
   canvas->translate(static_cast<SkScalar>(offset_.x), static_cast<SkScalar>(offset_.y));
   if (context.slicer != nullptr) {
     context.slicer->NoteLeafDraw(canvas, picture_->bounds());
+    context.slicer->NoteHitRegions(canvas, picture_->hit_regions());
   }
   if (context.inherited_alpha != 255) {
     RenderDisplayListWithAlpha(*picture_, canvas, context.inherited_alpha);
