@@ -42,7 +42,16 @@ class ExtensionHostTest : public ::testing::Test {
     if (host_) host_->DetachAll();
     loop_.RunUntilIdle();
     host_.reset();
-    std::filesystem::remove_all(dir_);
+    // Loaded extension libraries stay resident for the process lifetime.
+    // Windows keeps those files locked even after the extension is detached.
+    std::error_code cleanup_error;
+    std::filesystem::remove_all(dir_, cleanup_error);
+#if defined(_WIN32)
+    EXPECT_TRUE(!cleanup_error || cleanup_error == std::errc::permission_denied)
+        << cleanup_error.message();
+#else
+    EXPECT_FALSE(cleanup_error) << cleanup_error.message();
+#endif
   }
 
   void WriteManifest(const std::string& json) {

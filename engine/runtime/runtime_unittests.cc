@@ -181,7 +181,7 @@ TEST_F(JsRuntimeTest, NodeFsPromisesComplete) {
   ASSERT_TRUE(runtime_
                   ->RunModuleSource("import { readFile } from 'node:fs/promises';\n"
                                     "globalThis.text = null;\n"
-                                    "readFile(" + std::string("'") + (dir / "data.txt").string() +
+                                    "readFile(" + std::string("'") + (dir / "data.txt").generic_string() +
                                         "', 'utf8').then(t => { text = t; });",
                                     "fs.mjs")
                   .ok());

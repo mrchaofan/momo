@@ -118,6 +118,16 @@ def main():
     env = dict(os.environ)
     env["PATH"] = os.path.dirname(python) + os.pathsep + env.get("PATH", "")
     if windows:
+        # Rust's Windows synchronization primitives require Synchronization.lib.
+        # Node 26.13.0 omits it from the static Rust library's transitive links.
+        crates_gyp = os.path.join(src, "deps", "crates", "crates.gyp")
+        with open(crates_gyp, encoding="utf-8") as f:
+            crates_config = f.read()
+        if "'-lsynchronization'" not in crates_config:
+            if crates_config.count("'-luserenv'") != 1:
+                sys.exit("build_libnode: unexpected Rust library link settings")
+            with open(crates_gyp, "w", encoding="utf-8") as f:
+                f.write(crates_config.replace("'-luserenv'", "'-luserenv',\n              '-lsynchronization'"))
         log(f"vcbuild.bat {' '.join(configure_flags)}, this takes a while")
         subprocess.run(["cmd", "/c", "vcbuild.bat", *configure_flags], cwd=src, env=env, check=True)
     else:

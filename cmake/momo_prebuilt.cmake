@@ -112,6 +112,12 @@ endif()
 # 给使用 V8 的可执行目标设置运行期查找路径(构建树内直接运行)。
 # macOS: rpath;Windows 没有 rpath, 把 libnode.dll 拷到可执行文件旁边。
 function(momo_target_use_v8_runtime target)
+  if(WIN32 AND MOMO_HAVE_SKIA)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_skia_out}/icudtl.dat"
+              "$<TARGET_FILE_DIR:${target}>"
+      COMMENT "Copying Skia ICU data next to ${target}")
+  endif()
   if(NOT MOMO_HAVE_V8)
     return()
   endif()

@@ -10,6 +10,7 @@ CMakeUserPresets.json
 
 # ---- 第三方依赖(由 tools/fetch_deps.py 拉取) ----
 third_party/.downloads/
+third_party/.build/
 third_party/prebuilt/
 
 # ---- Node ----
