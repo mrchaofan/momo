@@ -122,8 +122,8 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
 - **Rasterizer**:层树含平台视图(`LayerTree::has_platform_views`,由 SceneBuilder 标记)且 surface 支持时走合成路径;
   视图消失后再走一帧"空布局"让宿主隐藏视图,随后回到普通路径。surface 不支持时视图不显示、其余照常(只告警一次)。
 - **macOS**(`embedder/macos/mac_platform_views.mm`、`mac_surface_metal.mm`):内容视图上挂一个铺满的宿主视图,
-  每个平台视图一个容器(可见区域 + 圆角裁剪 + alpha),每个 overlay 一个承载 CAMetalLayer 的视图;z 序用 layer
-  `zPosition` 表达(不移除/重排子视图, 以免原生视图丢失第一响应者)。合成模式下所有 CAMetalLayer
+  每个平台视图一个容器(可见区域 + 圆角裁剪 + alpha),每个 overlay 一个承载 CAMetalLayer 的视图;z 序只用子视图顺序表达, 变化时
+  `sortSubviews` 原地重排(不移除/重新加入子视图, 以免原生视图丢失第一响应者)。合成模式下所有 CAMetalLayer
   `presentsWithTransaction = YES`,raster 等命令被 GPU 调度后,把"几何 + present"投递到主线程同一事务,
   使原生视图与 momo 画面同帧生效;退出合成时,若主线程仍有待呈现帧,普通帧也经主线程呈现以保证顺序。
 - **输入与焦点**:**原生事件的接收方由宿主在 platform(主)线程按每一帧的几何同步决定**,不经 ui 线程往返
@@ -132,7 +132,7 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
   raster 每帧: Composition → CompositionLayout{视图可见矩形、裁剪、z 序、盖在其上的 momo 可命中区域 occluders}
        │ 与 drawable 一起投递到主线程, 同一个 CATransaction 里 applyLayout + present(几何 = 用户看到的画面)
        ▼
-  NSEvent ─► MomoWindow -sendEvent: ─► 翻译为 PointerInput ─► PointerDispatcher(embedder/common, 进程内一个)
+  NSEvent ─► MomoWindow -sendEvent: ─► MacWindow::SendEvent ─► MacMouseInput 翻译为 PointerInput ─► PointerDispatcher(embedder/common, 进程内一个, MacMouseInput 持有)
        HitTest: 本应用最上层的窗口 → 内容区 → platformViewAtWindowPoint:(在可见区域内且不在 occluders 里)
          ├─ 平台视图 N ─► MacWindow::SendToPlatformView ─► MomoPlatformViewInputRouter ─► 经 AppKit 投递(momo 不收到)
          └─ 0(momo 内容)─► MacWindow::SendToMomo ─► 指针包 ─► ui 线程(框架照常命中测试、手势、悬停)

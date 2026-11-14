@@ -21,9 +21,9 @@
   <text x="34" y="66" class="n">视图层级</text>
   <rect x="34" y="74" width="150" height="30" rx="5" class="pf"/><text x="109" y="94" text-anchor="middle" class="i">NSWindow</text>
   <line x1="184" y1="89" x2="204" y2="89" class="arr" marker-end="url(#a)"/>
-  <rect x="206" y="74" width="370" height="30" rx="5" class="pf"/><text x="391" y="94" text-anchor="middle" class="i">MomoContentView（layer-backed，layer.contents = IOSurface）</text>
-  <line x1="576" y1="89" x2="598" y2="89" class="arr" marker-end="url(#a)"/>
-  <rect x="600" y="74" width="215" height="30" rx="5" class="pf"/><text x="707" y="94" text-anchor="middle" class="i">子层 CAMetalLayer（Metal 路径）</text>
+  <rect x="206" y="74" width="300" height="30" rx="5" class="pf"/><text x="356" y="94" text-anchor="middle" class="i">MomoContentView（layer.contents = IOSurface）</text>
+  <line x1="506" y1="89" x2="528" y2="89" class="arr" marker-end="url(#a)"/>
+  <rect x="530" y="74" width="285" height="30" rx="5" class="pf"/><text x="672" y="94" text-anchor="middle" class="i">子视图 MomoSurfaceBaseView · CAMetalLayer</text>
   <text x="826" y="86" class="d">BGRA8Unorm · sRGB</text><text x="826" y="102" class="d">maximumDrawableCount=3</text>
 
   <!-- Metal column -->

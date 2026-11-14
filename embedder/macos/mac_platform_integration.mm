@@ -4,6 +4,7 @@
 #import <CoreVideo/CoreVideo.h>
 
 #include "embedder/common/engine_platform.h"
+#include "embedder/macos/mac_mouse_events.h"
 #include "embedder/macos/mac_native_loop.h"
 #include "embedder/macos/mac_vsync_displaylink.h"
 #include "embedder/macos/mac_window.h"
@@ -66,8 +67,6 @@ class MacApp final : public momo::embedder::PlatformApp {
   }
 };
 
-Rect ToRect(NSRect r) { return {r.origin.x, r.origin.y, r.size.width, r.size.height}; }
-
 class MacPlatformIntegration final : public PlatformIntegration {
  public:
   MacPlatformIntegration() {
@@ -80,7 +79,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
     if (delegate == nullptr) {
       return InvalidArgumentError("CreateWindow requires a delegate");
     }
-    return std::unique_ptr<PlatformWindow>(std::make_unique<MacWindow>(spec, delegate));
+    return std::unique_ptr<PlatformWindow>(std::make_unique<MacWindow>(spec, delegate, mouse_input_));
   }
 
   StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource(const PlatformWindow& window) override {
@@ -98,8 +97,8 @@ class MacPlatformIntegration final : public PlatformIntegration {
       DisplayInfo info;
       NSNumber* number = screen.deviceDescription[@"NSScreenNumber"];
       info.id = number.unsignedLongLongValue;
-      info.bounds = ToRect(screen.frame);
-      info.work_area = ToRect(screen.visibleFrame);
+      info.bounds = ScreenRectFromCocoa(screen.frame);
+      info.work_area = ScreenRectFromCocoa(screen.visibleFrame);
       info.device_pixel_ratio = screen.backingScaleFactor;
       if (@available(macOS 12.0, *)) {
         if (screen.maximumFramesPerSecond > 0) {
@@ -117,6 +116,8 @@ class MacPlatformIntegration final : public PlatformIntegration {
   MacNativeLoop native_loop_;
   MacServices services_;
   MacApp app_;
+  // 进程内唯一的指针输入(PointerDispatcher), 注入每个窗口;窗口先于本对象销毁。
+  MacMouseInput mouse_input_;
 };
 
 }  // namespace

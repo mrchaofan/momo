@@ -7,7 +7,7 @@
 | 目录 | 内容 |
 |---|---|
 | `common/` | 平台无关装配逻辑(可单测):`application.*`、`window_controller.*`、`app_config.*`、`asset_resolver.*`;宿主通道(engine 不可见, 在 hub 上注册处理器):`window_channel.*`(`momo/window`、`momo/app`)、`platform_channels.*`(`momo/clipboard`、`momo/url`、`momo/textinput`);embedder 自己的平台抽象(engine 不可见):`platform_integration.h`(工厂 + 原生循环)、`platform_window.h`(PlatformWindow/WindowDelegate/WindowSpec、可选窗口能力 `WindowCapability`)、`platform_services.h`、`text_input.h`、`window_types.h`、`display.h`;`engine_platform.h`(`platform::` = `momo::engine::platform` 的命名空间别名) |
-| `macos/` | Cocoa 平台实现(`mac_window`、`mac_surface_{metal,software}`、`mac_vsync_displaylink`、`mac_text_input`、`mac_native_loop`、`mac_key_mapping`、`mac_platform_integration`)+ 入口(`main_mac.mm`、`mac_app_delegate`) |
+| `macos/` | Cocoa 平台实现(`mac_platform_integration`、`mac_window`、`mac_mouse_events`(MacMouseInput)、`mac_key_mapping`、`mac_platform_views`、`mac_platform_view_input`、`mac_surface_{metal,software}`、`mac_vsync_displaylink`、`mac_text_input`、`mac_native_loop`)+ 入口(`main_mac.mm`、`mac_app_delegate`) |
 | `windows/` | Win32 平台实现(`win_window`、`win_surface_software`、`win_vsync_dwm`、`win_text_input`、`win_services`、`win_native_loop`、`win_key_mapping`、`win_util`、`win_platform_integration`)+ 入口(`main_win.cc`、`win_app_delegate`、清单) |
 | `headless/` | 无窗口宿主 `momo_headless`(离屏软件 surface;框架 TS 测试的引擎侧运行器) |
 

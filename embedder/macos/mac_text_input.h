@@ -1,6 +1,6 @@
 #pragma once
 
-// MacTextInput: TextInputConnection 的 macOS 实现(docs/03 §3, text_input_connection.h)。仅被 .mm 包含。
+// MacTextInput: TextInputConnection 的 macOS 实现(docs/03 §3, embedder/common/text_input.h)。仅被 .mm 包含。
 //
 // 分工: MomoContentView 实现 NSTextInputClient 协议并把每个调用转给本对象;本对象维护 IME 需要同步
 // 查询的文本状态(文本 / 选区 / marked 区间, 均为 UTF-16 下标, 与 NSString 一致), 并把输入法动作翻译为
@@ -45,7 +45,6 @@ class MacTextInput final : public TextInputConnection {
   NSRange SelectedRange() const;
   NSAttributedString* AttributedSubstring(NSRange range, NSRangePointer actual_range) const;
   NSRect FirstRectForCharacterRange(NSRange range, NSRangePointer actual_range) const;
-  void DoCommand(SEL selector);
 
  private:
   NSRange ClampRange(NSRange range) const;

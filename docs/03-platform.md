@@ -33,7 +33,8 @@ embedder/common/                   # embedder 的平台抽象(engine 不可见)
 ├── app_channel.h                  # 宿主通道 momo/app(应用生命周期与退出)
 ├── window_channel.h               # 宿主通道 momo/window(窗口)
 ├── platform_channels.h            # 宿主通道 momo/clipboard、momo/url、momo/textinput
-├── display.h                      # 显示器信息(DPR、刷新率、工作区)
+├── pointer_dispatcher.h           # 指针接收方的唯一决策者(PointerDispatcher)+ 平台窗口执行端 PointerWindow
+├── display.h                      # 显示器信息(DPR、刷新率、工作区;主屏左上原点的逻辑点)
 └── (menu.h)                       # 应用菜单与右键菜单接口(规划)
 
 engine/platform/ 只放 engine 自己要用的东西(画面、输入、视图尺寸)。窗口外观与行为、剪贴板、输入法这类能力
@@ -50,15 +51,21 @@ embedder/windows/                  # Win32 实现(与 main_win.cc 同目录)
 ├── win_services.h/.cc             # 剪贴板、OpenUrl
 └── win_key_mapping / win_util
 
-embedder/macos/                    # Cocoa 实现(Objective-C++, 与 main_mac.mm 同目录)
-├── mac_platform_integration.h/.mm
+embedder/macos/                    # Cocoa 实现(Objective-C++)
+├── main_mac.mm                    # 进程入口(只做翻译)
+├── mac_app_delegate.h/.mm         # NSApplicationDelegate: 退出拦截、隐藏/激活 → Application;最小主菜单
+├── mac_platform_integration.h/.mm # PlatformIntegration 工厂 + PlatformApp + PlatformServices;持有 MacMouseInput
 ├── mac_native_loop.h/.mm          # NativeLoop: GCD 主队列 + NSApp run/stop
-├── mac_window.h/.mm               # NSWindow + 自定义 NSView(firstResponder)
-├── mac_surface_metal.h/.mm        # CAMetalLayer surface
+├── mac_window.h/.mm               # MacWindow: NSWindow/NSPanel + 内容视图 MomoContentView(键盘、IME、光标)
+├── mac_mouse_events.h/.mm         # MacMouseInput(进程内一个: NSEvent → PointerInput → PointerDispatcher)、
+│                                  # 事件分类、跟踪区工具、屏幕坐标换算
+├── mac_key_mapping.h/.mm          # 键盘事件 → KeyData(keycode → HID 全表、逻辑键、修饰键)
+├── mac_platform_views.h/.mm       # 平台视图宿主(几何: 裁剪、圆角、透明度、z 序)
+├── mac_platform_view_input.h/.mm  # 平台视图的输入投递(派发器决定接收方后经 AppKit 投递)
+├── mac_surface_metal.h/.mm        # CAMetalLayer surface(含平台视图合成、拖拽缩放同步)
 ├── mac_surface_software.h/.mm     # IOSurface 软件 surface(Metal 失败时回退)
 ├── mac_vsync_displaylink.h/.mm    # CVDisplayLink
-├── mac_text_input.h/.mm           # NSTextInputClient
-└── mac_key_mapping.h/.mm
+└── mac_text_input.h/.mm           # IME 状态(NSTextInputClient 的同步查询)
 ```
 
 规则:`engine/platform/` 头文件零平台 include、零三方依赖(可含 `base/` 的几何、Status、`momo::Object` 等);
@@ -75,6 +82,7 @@ class PlatformIntegration {
   virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec&, WindowDelegate*) = 0;
   virtual StatusOr<ObjectPtr<VsyncSource>> CreateVsyncSource(const PlatformWindow&) = 0;  // momo::Object, 归属 platform 线程
   virtual PlatformServices& services() = 0;  // embedder 抽象(platform_services.h)
+  virtual PlatformApp& app() = 0;            // 应用级能力(platform_app.h)
   virtual std::vector<DisplayInfo> displays() const = 0;
   virtual NativeLoop& native_loop() = 0;  // OS 主线程原生消息循环(embedder 在其上跑 EventLoop)
 };
@@ -148,4 +156,4 @@ class RenderSurface {
 ## 6. 实现要点备忘
 
 - **Windows**:WndProc 中避免任何阻塞;WM_SIZE 期间的同步重绘用 raster 线程阻塞交换以消除拉伸闪烁;深色标题栏 DWMWA_USE_IMMERSIVE_DARK_MODE;高 DPI 混合显示器 WM_DPICHANGED。
-- **macOS**:NSView 开 layer-backed + CAMetalLayer;`drawableSize` 与窗口 resize 同步(contentsScale);全键盘访问与 performKeyEquivalent 处理快捷键;Space/全屏切换时 metrics 更新。
+- **macOS**:NSView 开 layer-backed + CAMetalLayer(挂在专用底层子视图里);`drawableSize` 以 raster 请求的尺寸为准,主线程只同步 frame 与 contentsScale;拖拽缩放时等一帧新尺寸的内容与窗口尺寸同一事务提交;快捷键由框架按 KeyData 处理(Cmd 按住时 AppKit 吞掉的 keyUp 用本地监视器补发);Space/全屏切换时 metrics 更新。

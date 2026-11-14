@@ -209,21 +209,4 @@ NSRect MacTextInput::FirstRectForCharacterRange(NSRange range, NSRangePointer ac
   return [window convertRectToScreen:in_window];
 }
 
-void MacTextInput::DoCommand(SEL selector) {
-  if (!active_) {
-    return;
-  }
-  NSString* name = NSStringFromSelector(selector);
-  if ([name hasSuffix:@":"]) {
-    name = [name substringToIndex:name.length - 1];
-  }
-  if ([name isEqualToString:@"noop"]) {
-    return;  // 未绑定任何命令的按键(如 Cmd+字母): 快捷键由 platform::KeyData 通道处理
-  }
-  momo::embedder::TextInputEvent event;
-  event.type = momo::embedder::TextInputEvent::Type::kCommand;
-  event.command = ToUtf8(name);
-  Emit(event);
-}
-
 }  // namespace momo::embedder::macos

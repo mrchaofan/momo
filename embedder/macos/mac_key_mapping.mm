@@ -1,6 +1,11 @@
 #include "embedder/macos/mac_key_mapping.h"
 
+#import <Cocoa/Cocoa.h>
+
 #include <cstddef>
+
+using momo::engine::platform::KeyData;
+using momo::engine::platform::KeyEventType;
 
 namespace momo::embedder::macos {
 
@@ -135,6 +140,70 @@ constexpr KeyMapping kKeyMappings[] = {
     {0x7E, 0x52},  // kVK_UpArrow           → ArrowUp
 };
 
+int64_t TimestampUs(NSEvent* event) { return static_cast<int64_t>(event.timestamp * 1e6); }
+
+uint32_t ToModifiers(NSEventModifierFlags flags) {
+  namespace p = momo::engine::platform;
+  uint32_t modifiers = p::kModifierNone;
+  if (flags & NSEventModifierFlagShift) modifiers |= p::kModifierShift;
+  if (flags & NSEventModifierFlagControl) modifiers |= p::kModifierControl;
+  if (flags & NSEventModifierFlagOption) modifiers |= p::kModifierAlt;
+  if (flags & NSEventModifierFlagCommand) modifiers |= p::kModifierMeta;
+  if (flags & NSEventModifierFlagCapsLock) modifiers |= p::kModifierCapsLock;
+  return modifiers;
+}
+
+// 字符串的第一个 Unicode 码点(处理代理对);空串返回 0。
+uint32_t FirstCodePoint(NSString* string) {
+  if (string.length == 0) {
+    return 0;
+  }
+  const unichar high = [string characterAtIndex:0];
+  if (CFStringIsSurrogateHighCharacter(high) && string.length > 1) {
+    const unichar low = [string characterAtIndex:1];
+    if (CFStringIsSurrogateLowCharacter(low)) {
+      return CFStringGetLongCharacterForSurrogatePair(high, low);
+    }
+  }
+  return high;
+}
+
+// 控制字符与 AppKit 功能键私有区(NSUpArrowFunctionKey 等 0xF700–0xF8FF)不是"可打印字符"。
+bool IsPrintable(uint32_t code_point) {
+  return code_point >= 0x20 && code_point != 0x7F && !(code_point >= 0xF700 && code_point <= 0xF8FF);
+}
+
+bool AllPrintable(NSString* string) {
+  for (NSUInteger i = 0; i < string.length; ++i) {
+    if (!IsPrintable([string characterAtIndex:i])) {
+      return false;
+    }
+  }
+  return string.length > 0;
+}
+
+uint64_t SpecialLogicalKey(uint16_t key_code, uint32_t usage) {
+  // 无 HID usage 的键: 仍给出唯一值(放在 usage 空间之外)。
+  return kSpecialKeyBase + (usage != 0 ? usage : (0x10000u + key_code));
+}
+
+uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
+  const uint16_t key_code = event.keyCode;
+  if (IsSpecialKeyCode(key_code)) {
+    return SpecialLogicalKey(key_code, usage);
+  }
+  // 当前键盘布局下不带修饰键时的字符(Shift+1 → "1", Option+e → "e"), 小写。
+  NSString* base = [event charactersByApplyingModifiers:0];
+  if (base.length == 0) {
+    base = event.charactersIgnoringModifiers;  // 死键等
+  }
+  const uint32_t code_point = FirstCodePoint(base.lowercaseString);
+  if (!IsPrintable(code_point)) {
+    return SpecialLogicalKey(key_code, usage);
+  }
+  return code_point;
+}
+
 }  // namespace
 
 uint32_t MacKeyCodeToHidUsage(uint16_t key_code) {
@@ -189,6 +258,57 @@ uint64_t DeviceModifierMaskForKeyCode(uint16_t key_code) {
     case 0x3E: return 0x00002000;  // NX_DEVICERCTLKEYMASK
     default: return 0;
   }
+}
+
+KeyData KeyDataFromKeyEvent(NSEvent* event, KeyEventType type) {
+  const uint32_t usage = MacKeyCodeToHidUsage(event.keyCode);
+  KeyData data;
+  data.timestamp_us = TimestampUs(event);
+  data.type = type;
+  data.physical_key = PhysicalKeyFromHidUsage(usage);
+  data.logical_key = LogicalKeyFor(event, usage);
+  data.modifiers = ToModifiers(event.modifierFlags);
+  if (type != KeyEventType::kUp) {
+    NSString* characters = event.characters;
+    if (AllPrintable(characters)) {
+      data.character = characters.UTF8String ?: "";
+    }
+  }
+  return data;
+}
+
+std::vector<KeyData> KeyDataFromFlagsChanged(NSEvent* event) {
+  const uint16_t key_code = event.keyCode;
+  const uint32_t usage = MacKeyCodeToHidUsage(key_code);
+  if (usage == 0) {
+    return {};  // Fn 等无 HID usage 的修饰键
+  }
+  KeyData data;
+  data.timestamp_us = TimestampUs(event);
+  data.physical_key = PhysicalKeyFromHidUsage(usage);
+  data.logical_key = SpecialLogicalKey(key_code, usage);
+  data.modifiers = ToModifiers(event.modifierFlags);
+  // 注意: flagsChanged 事件不能访问 characters(会抛 ObjC 异常)。
+  if (key_code == 0x39) {
+    // CapsLock: 每次按下切换锁定状态, 只有一个事件;合成一次完整按键。
+    KeyData up = data;
+    data.type = KeyEventType::kDown;
+    up.type = KeyEventType::kUp;
+    return {data, up};
+  }
+  NSEventModifierFlags class_flag = 0;
+  switch (usage) {
+    case 0xE0: case 0xE4: class_flag = NSEventModifierFlagControl; break;
+    case 0xE1: case 0xE5: class_flag = NSEventModifierFlagShift; break;
+    case 0xE2: case 0xE6: class_flag = NSEventModifierFlagOption; break;
+    case 0xE3: case 0xE7: class_flag = NSEventModifierFlagCommand; break;
+    default: return {};
+  }
+  const uint64_t device_mask = DeviceModifierMaskForKeyCode(key_code);
+  const bool down = (event.modifierFlags & class_flag) != 0 &&
+                    (device_mask == 0 || (event.modifierFlags & device_mask) != 0);
+  data.type = down ? KeyEventType::kDown : KeyEventType::kUp;
+  return {data};
 }
 
 }  // namespace momo::embedder::macos
