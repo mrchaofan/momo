@@ -314,9 +314,10 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 ```objc
 // 伪代码：指针事件（embedder/macos/mac_window.mm、mac_mouse_events.mm）
 void MacWindow::SendEvent(NSEvent* e, super) {         // MomoWindow / MomoPanel -sendEvent: 调用
-  if (窗口装饰的按下序列或跟踪区事件) return super(e);    // 红绿灯、边缘缩放区归 AppKit
+  if (窗口装饰的按下序列) return super(e);                // 红绿灯、边缘缩放区的按下归 AppKit
   mouse_.Dispatch(e, this);                            // MacMouseInput：翻译为 PointerInput（类型、屏幕坐标、按键、
-}                                                      // 滚动位移…；不做决定）→ PointerDispatcher 决定接收方
+  ForwardToWindowChrome(e);                            // 滚动位移…；不做决定）→ PointerDispatcher 决定接收方
+}                                                      // 装饰的跟踪区照常记账：进入/离开由输入流推导（红绿灯悬停）
 
 // MacWindow 作为 PointerWindow 执行：
 void MacWindow::SendToMomo(PointerDataPacket packet, const PointerInput&) {

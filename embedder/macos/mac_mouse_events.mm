@@ -83,6 +83,92 @@ BOOL MomoDeliverMouseMoved(NSView* root, NSEvent* event, NSView* skip) {
   return delivered;
 }
 
+namespace {
+
+constexpr NSTrackingAreaOptions kEnterExitOrCursor = NSTrackingMouseEnteredAndExited | NSTrackingCursorUpdate;
+
+// 以 like 的位置/时间/修饰键合成 area 的跟踪事件(进入/离开/光标更新)并投递给其 owner。
+void SendTrackingEvent(NSEventType type, NSTrackingArea* area, NSEvent* like) {
+  NSEvent* event = [NSEvent enterExitEventWithType:type
+                                          location:like.locationInWindow
+                                     modifierFlags:like.modifierFlags
+                                         timestamp:like.timestamp
+                                      windowNumber:like.windowNumber
+                                           context:nil
+                                       eventNumber:0
+                                    trackingNumber:(NSInteger)(__bridge void*)area
+                                          userData:(__bridge void*)area.userInfo];
+  id owner = area.owner;
+  switch (type) {
+    case NSEventTypeMouseEntered:
+      if ([owner respondsToSelector:@selector(mouseEntered:)]) [owner mouseEntered:event];
+      break;
+    case NSEventTypeMouseExited:
+      if ([owner respondsToSelector:@selector(mouseExited:)]) [owner mouseExited:event];
+      break;
+    case NSEventTypeCursorUpdate:
+      if ([owner respondsToSelector:@selector(cursorUpdate:)]) [owner cursorUpdate:event];
+      break;
+    default:
+      break;
+  }
+}
+
+}  // namespace
+
+void MomoUpdateTrackingAreas(NSView* root, NSView* skip, NSEvent* event, BOOL pointerOver, BOOL dragging,
+                             NSHashTable<NSTrackingArea*>* inside) {
+  NSHashTable<NSTrackingArea*>* installed =
+      [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
+  NSMutableArray<NSTrackingArea*>* entering = [NSMutableArray array];
+  NSMutableArray<NSTrackingArea*>* leaving = [NSMutableArray array];
+  NSMutableArray<NSView*>* pending = root != nil ? [NSMutableArray arrayWithObject:root] : [NSMutableArray array];
+  while (pending.count > 0) {
+    NSView* view = pending.lastObject;
+    [pending removeLastObject];
+    if (view == skip) continue;
+    const NSPoint p = [view convertPoint:event.locationInWindow fromView:nil];
+    const BOOL visible = !view.hidden;
+    for (NSTrackingArea* area in view.trackingAreas) {
+      const NSTrackingAreaOptions o = area.options;
+      if ((o & kEnterExitOrCursor) == 0) continue;
+      [installed addObject:area];
+      if (dragging && (o & NSTrackingEnabledDuringMouseDrag) == 0) continue;  // 抬起后再更新
+      const BOOL in = pointerOver && visible && MomoTrackingAreaIsActive(area, view) &&
+                      NSPointInRect(p, MomoTrackingRect(area, view));
+      const BOOL was = [inside containsObject:area];
+      if (in && !was) [entering addObject:area];
+      if (!in && was) [leaving addObject:area];
+    }
+    if (visible) [pending addObjectsFromArray:view.subviews];
+  }
+  for (NSTrackingArea* area in inside.allObjects) {
+    if (![installed containsObject:area]) [inside removeObject:area];
+  }
+  for (NSTrackingArea* area in leaving) {
+    [inside removeObject:area];
+    if (area.options & NSTrackingMouseEnteredAndExited) SendTrackingEvent(NSEventTypeMouseExited, area, event);
+  }
+  for (NSTrackingArea* area in entering) {
+    [inside addObject:area];
+    if (area.options & NSTrackingMouseEnteredAndExited) SendTrackingEvent(NSEventTypeMouseEntered, area, event);
+    if (area.options & NSTrackingCursorUpdate) SendTrackingEvent(NSEventTypeCursorUpdate, area, event);
+  }
+}
+
+BOOL MomoSubtreeManagesTrackingArea(NSView* root, NSView* skip, NSTrackingArea* area) {
+  if (area == nil || (area.options & kEnterExitOrCursor) == 0) return NO;
+  NSMutableArray<NSView*>* pending = root != nil ? [NSMutableArray arrayWithObject:root] : [NSMutableArray array];
+  while (pending.count > 0) {
+    NSView* view = pending.lastObject;
+    [pending removeLastObject];
+    if (view == skip) continue;
+    if ([view.trackingAreas containsObject:area]) return YES;
+    [pending addObjectsFromArray:view.subviews];
+  }
+  return NO;
+}
+
 namespace momo::embedder::macos {
 
 namespace {
