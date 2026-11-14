@@ -4,7 +4,7 @@
 #import <IOSurface/IOSurface.h>
 #import <QuartzCore/QuartzCore.h>
 
-#include "embedder/macos/mac_unfair_lock.h"
+#include "base/lock.h"
 
 namespace momo::embedder::macos {
 
@@ -44,7 +44,7 @@ struct MacSoftwareSurface::PresentState {
     if (pending != nullptr) CFRelease(pending);
     if (displayed != nullptr) CFRelease(displayed);
   }
-  UnfairLock lock;
+  Mutex lock;
   IOSurfaceRef pending = nullptr;    // 待主线程显示(持有引用)
   IOSurfaceRef displayed = nullptr;  // 当前 layer.contents(持有引用)
   bool dispatch_scheduled = false;
@@ -54,7 +54,7 @@ struct MacSoftwareSurface::PresentState {
   static void DisplayPending(const std::shared_ptr<PresentState>& state) {
     IOSurfaceRef surface = nullptr;
     {
-      UnfairLockScope scope(state->lock);
+      MutexLock scope(state->lock);
       surface = state->pending;
       state->pending = nullptr;
       state->dispatch_scheduled = false;
@@ -69,7 +69,7 @@ struct MacSoftwareSurface::PresentState {
       view.layer.contents = (__bridge id)surface;
       [CATransaction commit];
     }
-    UnfairLockScope scope(state->lock);
+    MutexLock scope(state->lock);
     if (state->displayed != nullptr) {
       CFRelease(state->displayed);
     }
@@ -124,7 +124,7 @@ IOSurfaceRef MacSoftwareSurface::PickBuffer(int width, int height) {
   IOSurfaceRef pending = nullptr;
   IOSurfaceRef displayed = nullptr;
   {
-    UnfairLockScope scope(state_->lock);
+    MutexLock scope(state_->lock);
     pending = state_->pending;
     displayed = state_->displayed;
   }
@@ -146,7 +146,7 @@ bool MacSoftwareSurface::Present(IOSurfaceRef surface) {
   IOSurfaceUnlock(surface, 0, nullptr);
   bool schedule = false;
   {
-    UnfairLockScope scope(state_->lock);
+    MutexLock scope(state_->lock);
     if (state_->pending != nullptr) {
       CFRelease(state_->pending);  // 主线程还没来得及显示的旧帧: 直接丢弃
     }

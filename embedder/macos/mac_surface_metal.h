@@ -3,8 +3,9 @@
 // MacMetalSurface: CAMetalLayer surface(docs/03 §1、docs/05 §4 MetalBackend 的平台端)。仅被 .mm 包含。
 //
 // 结构: 视图保持 layer-backed(普通 CALayer, 软件回退时 contents 放 IOSurface);CAMetalLayer 挂在一个
-// 专用的底层子视图(内容视图的第一个子视图)里铺满视图。层级用 AppKit 的子视图顺序表达(平台视图宿主
-// 在其后加入, 位于其上), 不依赖 zPosition: AppKit 不按 zPosition 排列视图的 backing layer 与手动子层。pixelFormat = BGRA8Unorm, framebufferOnly = NO(Skia 需要采样/拷贝), colorspace = sRGB。
+// 专用的底层子视图(MomoSurfaceBaseView, 内容视图的第一个子视图)里铺满视图。层级只用 AppKit 的子视图顺序
+// 表达(平台视图宿主在其后加入, 位于其上), 不用 zPosition。
+// pixelFormat = BGRA8Unorm, framebufferOnly = NO(Skia 需要采样/拷贝), colorspace = sRGB。
 //
 // 线程:
 //   - platform 线程: 构造/析构、UpdateGeometry(resize/DPI 变化时同步 frame 与 contentsScale)。
@@ -29,13 +30,12 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "base/time.h"
 #include "embedder/common/engine_platform.h"
 #include "embedder/macos/mac_surface_software.h"
 #include "engine/platform/render_surface.h"
-
-#include <vector>
 
 #ifdef __OBJC__
 @class NSView;
@@ -74,9 +74,11 @@ class MacMetalSurface final : public platform::RenderSurface {
   // 呈现等要经过主线程, 不执行会死锁。超时返回 false(内容暂时被拉伸, 帧到达后照常呈现)。
   bool WaitForFrame(Size physical_size, TimeDelta timeout, const std::function<void()>& pump);
   // 是否已呈现过帧(引擎在出帧;没有帧时等待只会超时)。
-  bool has_presented() const { return has_presented_->load(std::memory_order_acquire); }
+  bool has_presented() const;
 
  private:
+  struct MainThreadPresents;
+
   MacMetalSurface(NSView* view, id<MTLDevice> device, id<MTLCommandQueue> queue);
 
   // raster 线程。
@@ -96,12 +98,9 @@ class MacMetalSurface final : public platform::RenderSurface {
   // 仅 raster 线程。
   std::vector<CAMetalLayer*> overlay_layers_;
   bool presents_with_transaction_ = false;
-  // 已投递到主线程、尚未呈现的帧数(raster 写 +1, 主线程 -1)。
-  std::shared_ptr<std::atomic<int>> pending_main_presents_ = std::make_shared<std::atomic<int>>(0);
-  // 主线程呈现队列(raster 入队, 主线程按序执行;见 mac_surface_metal.mm)。
-  std::shared_ptr<class MainThreadPresenter> presenter_;
+  // 经主线程呈现的帧队列与呈现状态(present 闭包与主线程块共享;见 mac_surface_metal.mm)。
+  std::shared_ptr<MainThreadPresents> presents_;
   std::atomic<bool> live_resizing_{false};
-  std::shared_ptr<std::atomic<bool>> has_presented_ = std::make_shared<std::atomic<bool>>(false);
 };
 
 }  // namespace momo::embedder::macos

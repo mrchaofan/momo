@@ -8,7 +8,7 @@
 #include <utility>
 
 #include "base/logging.h"
-#include "embedder/macos/mac_unfair_lock.h"
+#include "base/lock.h"
 
 namespace momo::embedder::macos {
 
@@ -37,7 +37,7 @@ CGDirectDisplayID DisplayIdForWindow(NSWindow* window) {
 // platform 线程与 CVDisplayLink 线程共享的状态(全部字段受 lock 保护)。
 // CVDisplayLink 线程只写入最新帧时间并投递通知, 从不调用 callback(回调在调用方线程执行)。
 struct MacVsyncDisplayLink::Shared {
-  UnfairLock lock;
+  Mutex lock;
   bool destroyed = false;     // 析构已开始: 回调线程不再投递
   bool tick_posted = false;   // 已向 platform 线程投递 OnTick 且尚未处理(合并多余的 tick)
   TimePoint frame_start;      // 最近一个 tick 的帧时间
@@ -55,7 +55,7 @@ struct MacVsyncDisplayLink::Shared {
     if (target <= start) {
       target = start + std::chrono::milliseconds(16);
     }
-    UnfairLockScope scope(shared->lock);
+    MutexLock scope(shared->lock);
     if (shared->destroyed) {
       return kCVReturnSuccess;
     }
@@ -103,14 +103,14 @@ MacVsyncDisplayLink::~MacVsyncDisplayLink() {
     screen_observer_ = nil;
   }
   {
-    UnfairLockScope scope(shared_->lock);
+    MutexLock scope(shared_->lock);
     shared_->destroyed = true;  // 之后的 tick 什么也不做
   }
   // 非回调线程调用 Stop 会等待在途回调返回;此后 link 不再引用 shared_。
   CVDisplayLinkStop(link_);
   CVDisplayLinkRelease(link_);
   link_ = nullptr;
-  { UnfairLockScope scope(shared_->lock); }  // 与可能仍持锁的回调汇合(防御)
+  { MutexLock scope(shared_->lock); }  // 与可能仍持锁的回调汇合(防御)
 }
 
 void MacVsyncDisplayLink::RequestFrameCallback(Callback callback) {
@@ -130,7 +130,7 @@ void MacVsyncDisplayLink::OnTick() {
   TimePoint start;
   TimePoint target;
   {
-    UnfairLockScope scope(shared_->lock);
+    MutexLock scope(shared_->lock);
     shared_->tick_posted = false;
     start = shared_->frame_start;
     target = shared_->frame_target;

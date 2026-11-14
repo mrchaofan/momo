@@ -12,6 +12,7 @@
 #include "base/testing/scoped_test_event_loop.h"
 #include "embedder/common/engine_platform.h"
 #include "embedder/macos/mac_key_mapping.h"
+#include "embedder/macos/mac_mouse_events.h"
 #include "embedder/macos/mac_text_input.h"
 #include "embedder/macos/mac_vsync_displaylink.h"
 #include "embedder/macos/mac_platform_views.h"
@@ -115,16 +116,22 @@ extern "C" void CGEventSetWindowLocation(CGEventRef event, CGPoint location);
 
 class MacPointerSequenceTest : public ::testing::Test {
  protected:
-  void SetUp() override { [NSApplication sharedApplication]; }
+  void SetUp() override {
+    [NSApplication sharedApplication];
+    mouse_ = std::make_unique<MacMouseInput>();
+  }
+  static NSWindow* NSWindowOf(const MacWindow& window) {
+    return ((__bridge NSView*)window.native_handle()).window;
+  }
   // 屏幕上互不重叠的窗口: AppKit 只为屏幕上的窗口投递鼠标事件, 命中也只认最上层的窗口。
   std::unique_ptr<MacWindow> Window(PointerRecordingDelegate* delegate) {
     momo::embedder::WindowSpec spec;
     spec.size = {200, 100};
-    auto window = std::make_unique<MacWindow>(spec, delegate);
+    auto window = std::make_unique<MacWindow>(spec, delegate, *mouse_);
     static int count = 0;
     const NSRect screen = NSScreen.mainScreen.visibleFrame;
-    [window->ns_window() setFrameTopLeftPoint:NSMakePoint(NSMinX(screen) + 250 * (count++ % 4), NSMaxY(screen))];
-    [window->ns_window() orderFrontRegardless];
+    [NSWindowOf(*window) setFrameTopLeftPoint:NSMakePoint(NSMinX(screen) + 250 * (count++ % 4), NSMaxY(screen))];
+    [NSWindowOf(*window) orderFrontRegardless];
     return window;
   }
   // 屏幕位置 screen(主屏左上原点)处的鼠标事件, 属于 window_number 的窗口(已关闭的窗口编号: 不属于任何窗口)。
@@ -153,8 +160,10 @@ class MacPointerSequenceTest : public ::testing::Test {
     return Mouse(type, NSMakePoint(0, 0), window_number);
   }
   static void Send(MacWindow& window, NSEventType type) {
-    [window.ns_window() sendEvent:Mouse(type, Center(window), window.ns_window().windowNumber)];
+    [NSWindowOf(window) sendEvent:Mouse(type, Center(window), NSWindowOf(window).windowNumber)];
   }
+
+  std::unique_ptr<MacMouseInput> mouse_;  // 窗口(测试体内的局部对象)先于它销毁
 };
 
 // 原生事件落在平台视图上(且没被 momo 内容盖住): 主线程直接交给原生视图, momo 收不到;盖住的部分归 momo。
@@ -165,7 +174,7 @@ TEST_F(MacPointerSequenceTest, WindowStateChangesAreReported) {
   PointerRecordingDelegate delegate;
   momo::embedder::WindowSpec spec;
   spec.size = {200, 100};
-  MacWindow window(spec, &delegate);
+  MacWindow window(spec, &delegate, *mouse_);
   EXPECT_FALSE(window.state().visible) << "not shown yet";
   window.Show();
   ASSERT_FALSE(delegate.states.empty());
@@ -231,13 +240,13 @@ TEST_F(MacPointerSequenceTest, CapturedSequenceContinuesAfterTheOriginWindowClos
   EXPECT_EQ(da.phases, (Phases{Phase::kDown})) << "the origin no longer reports the pointer";
   EXPECT_EQ(db.phases, (Phases{Phase::kMove})) << "the receiver does (with buttons held)";
 
-  const NSInteger origin = a->ns_window().windowNumber;
+  const NSInteger origin = NSWindowOf(*a).windowNumber;
   a->ReleasePointerCapture();  // 关窗前交出捕获: 它已不是接收方, 什么也不做
   a.reset();
-  EXPECT_TRUE(MomoRoutePointerSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, Center(*b), origin)));
-  EXPECT_TRUE(MomoRoutePointerSequenceEvent(Mouse(NSEventTypeLeftMouseUp, Center(*b), origin)));
+  EXPECT_TRUE(mouse_->RouteSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, Center(*b), origin)));
+  EXPECT_TRUE(mouse_->RouteSequenceEvent(Mouse(NSEventTypeLeftMouseUp, Center(*b), origin)));
   EXPECT_EQ(db.phases, (Phases{Phase::kMove, Phase::kMove, Phase::kUp}));
-  EXPECT_FALSE(MomoRoutePointerSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, Center(*b), origin)))
+  EXPECT_FALSE(mouse_->RouteSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, Center(*b), origin)))
       << "the sequence ended with the release";
 }
 
@@ -280,14 +289,14 @@ TEST_F(MacPointerSequenceTest, AStaleSequenceEndsOnTheNextMoveOrPress) {
 TEST_F(MacPointerSequenceTest, ClosingTheReceiverCancelsTheSequence) {
   PointerRecordingDelegate da;
   auto a = Window(&da);
-  const NSInteger number = a->ns_window().windowNumber;
+  const NSInteger number = NSWindowOf(*a).windowNumber;
   Send(*a, NSEventTypeLeftMouseDown);
   a->ReleasePointerCapture();
   EXPECT_EQ(da.phases, (Phases{Phase::kDown, Phase::kCancel}));
   a.reset();
-  EXPECT_TRUE(MomoRoutePointerSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, number))) << "dropped";
-  EXPECT_TRUE(MomoRoutePointerSequenceEvent(Mouse(NSEventTypeLeftMouseUp, number))) << "dropped; ends";
-  EXPECT_FALSE(MomoRoutePointerSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, number)));
+  EXPECT_TRUE(mouse_->RouteSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, number))) << "dropped";
+  EXPECT_TRUE(mouse_->RouteSequenceEvent(Mouse(NSEventTypeLeftMouseUp, number))) << "dropped; ends";
+  EXPECT_FALSE(mouse_->RouteSequenceEvent(Mouse(NSEventTypeLeftMouseDragged, number)));
 }
 
 // 没有进行中的序列(已抬起): 改交什么也不做, 抬起已由原接收窗口上报。
@@ -302,7 +311,6 @@ TEST(MacTextInputTest, IgnoresInputWhenHidden) {
   RecordingDelegate delegate;
   MacTextInput input(nil, &delegate);
   input.InsertText(@"a", NSMakeRange(NSNotFound, 0));
-  input.DoCommand(@selector(deleteBackward:));
   EXPECT_TRUE(delegate.events.empty());
   EXPECT_FALSE(input.active());
 }
@@ -352,19 +360,6 @@ TEST(MacTextInputTest, EmptyMarkedTextEndsComposingAndUnmarkCommits) {
   EXPECT_EQ(delegate.events[3].type, momo::embedder::TextInputEvent::Type::kCommit);
   EXPECT_EQ(delegate.events[3].text, "ka");
   EXPECT_FALSE(input.HasMarkedText());
-}
-
-TEST(MacTextInputTest, CommandsDropTrailingColonAndNoop) {
-  RecordingDelegate delegate;
-  MacTextInput input(nil, &delegate);
-  input.Show();
-  input.DoCommand(@selector(insertNewline:));
-  input.DoCommand(@selector(noop:));
-  input.DoCommand(@selector(moveToBeginningOfLine:));
-  ASSERT_EQ(delegate.events.size(), 2u);
-  EXPECT_EQ(delegate.events[0].type, momo::embedder::TextInputEvent::Type::kCommand);
-  EXPECT_EQ(delegate.events[0].command, "insertNewline");
-  EXPECT_EQ(delegate.events[1].command, "moveToBeginningOfLine");
 }
 
 TEST(MacTextInputTest, HideDiscardsCompositionSilently) {

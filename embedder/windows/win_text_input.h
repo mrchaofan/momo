@@ -1,6 +1,6 @@
 #pragma once
 
-// WinTextInput: TextInputConnection 的 IMM32 实现(docs/03 §3, text_input_connection.h)。
+// WinTextInput: TextInputConnection 的 IMM32 实现(docs/03 §3, embedder/common/text_input.h)。
 // 仅被 embedder/windows 的 .cc 包含。
 // 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
 //
@@ -20,7 +20,7 @@
 //   - 非 IME 输入: Show 期间 WM_CHAR 的可打印字符(含代理对拼接)→ kCommit;控制字符(退格/回车/Tab/
 //     Ctrl+字母等产生的 WM_CHAR)忽略。
 //   - 编辑键(退格/Delete/方向键/Home/End/回车/Tab/全选等)只以 KeyData 送达框架, 本对象**不**为它们发
-//     kCommand(text_input_connection.h 契约: 否则框架执行两次)。Windows 端目前没有发 kCommand 的来源。
+//     kCommand(embedder/common/text_input.h 契约: 否则框架执行两次)。Windows 端目前没有发 kCommand 的来源。
 //   - SetEditingState: 记录(供日后的重新转换 IMR_RECONVERTSTRING 使用;当前未实现)。
 // 线程约定: 只在 platform 线程使用。生命周期: 由 WinWindow 拥有, HWND 比本对象活得久。
 

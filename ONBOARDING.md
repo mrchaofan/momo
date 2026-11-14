@@ -89,7 +89,9 @@ embedder/macos/mac_surface_metal.mm   AcquireFrame / present
 **一天：跟一次点击**
 
 ```
-embedder/macos/mac_window.mm             mouseDown → dispatchPointer
+embedder/macos/mac_window.mm             MacWindow::SendEvent → SendToMomo
+embedder/macos/mac_mouse_events.mm       MacMouseInput::Dispatch(翻译)
+embedder/common/pointer_dispatcher.cc    Dispatch(决定接收方)
 embedder/common/window_controller.cc     OnPointerPacket
 engine/shell/shell.cc                    OnPointerPacket → PostToEngine
 engine/ui/platform_dispatcher_binding.cc              UiBindings::PointerPacket
