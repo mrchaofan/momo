@@ -6,7 +6,7 @@
 
 namespace momo::embedder {
 
-// 显示器信息。bounds/work_area 为逻辑坐标。
+// 显示器信息。bounds/work_area 为逻辑点, 主屏左上原点、y 向下(与 PlatformWindow::screen_frame 同一坐标系)。
 struct DisplayInfo {
   uint64_t id = 0;
   Rect bounds;

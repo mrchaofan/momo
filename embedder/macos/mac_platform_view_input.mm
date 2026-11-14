@@ -11,21 +11,6 @@ namespace {
 
 using momo::engine::platform::PointerPhase;
 
-// 跟踪区当前是否生效(按其激活条件, 与 AppKit 相同)。
-BOOL TrackingAreaIsActive(NSTrackingArea* area, NSView* view) {
-  const NSTrackingAreaOptions o = area.options;
-  NSWindow* window = view.window;
-  if (o & NSTrackingActiveAlways) return YES;
-  if ((o & NSTrackingActiveInActiveApp) && NSApp.isActive) return YES;
-  if ((o & NSTrackingActiveInKeyWindow) && window.isKeyWindow) return YES;
-  if ((o & NSTrackingActiveWhenFirstResponder) && window.firstResponder == view) return YES;
-  return NO;
-}
-
-NSRect TrackingRect(NSTrackingArea* area, NSView* view) {
-  return (area.options & NSTrackingInVisibleRect) ? view.visibleRect : area.rect;
-}
-
 // 以 like 的位置/时间/修饰键合成 area 的跟踪事件(进入/离开/光标更新)并投递给其 owner。
 void SendTrackingEvent(NSEventType type, NSTrackingArea* area, NSEvent* like) {
   NSEvent* event = [NSEvent enterExitEventWithType:type
@@ -165,34 +150,11 @@ void SendTrackingEvent(NSEventType type, NSTrackingArea* area, NSEvent* like) {
 - (void)deliverMove:(NSEvent*)event toPlatformView:(int64_t)viewId {
   MomoPlatformViews* views = _views;
   NSView* native = [views hostedNativeForPlatformView:viewId];
-  if (native == nil) {
+  if (native == nil || MomoDeliverMouseMoved(native, event, nil)) {
     return;
   }
-  BOOL delivered = NO;
-  NSMutableArray<NSView*>* pending = [NSMutableArray arrayWithObject:native];
-  NSHashTable* owners = [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
-  while (pending.count > 0) {
-    NSView* view = pending.lastObject;
-    [pending removeLastObject];
-    if (view.hidden) continue;
-    const NSPoint p = [view convertPoint:event.locationInWindow fromView:nil];
-    for (NSTrackingArea* area in view.trackingAreas) {
-      if ((area.options & NSTrackingMouseMoved) == 0 || !TrackingAreaIsActive(area, view)) continue;
-      id owner = area.owner;
-      if (!NSPointInRect(p, TrackingRect(area, view)) || [owners containsObject:owner] ||
-          ![owner respondsToSelector:@selector(mouseMoved:)]) {
-        continue;
-      }
-      [owners addObject:owner];  // 同一 owner 只收一次(多个跟踪区共用 owner)
-      [owner mouseMoved:event];
-      delivered = YES;
-    }
-    [pending addObjectsFromArray:view.subviews];
-  }
-  if (!delivered) {
-    if (NSView* hit = [views nativeHitTestForPlatformView:viewId windowPoint:event.locationInWindow]) {
-      [hit mouseMoved:event];
-    }
+  if (NSView* hit = [views nativeHitTestForPlatformView:viewId windowPoint:event.locationInWindow]) {
+    [hit mouseMoved:event];
   }
 }
 
@@ -242,8 +204,8 @@ void SendTrackingEvent(NSEventType type, NSTrackingArea* area, NSEvent* like) {
         if ((o & (NSTrackingMouseEnteredAndExited | NSTrackingCursorUpdate)) == 0) continue;
         [installed addObject:area];
         if (dragging && (o & NSTrackingEnabledDuringMouseDrag) == 0) continue;  // 抬起后再更新
-        const BOOL in = owned && visible && TrackingAreaIsActive(area, view) &&
-                        NSPointInRect(p, TrackingRect(area, view));
+        const BOOL in = owned && visible && MomoTrackingAreaIsActive(area, view) &&
+                        NSPointInRect(p, MomoTrackingRect(area, view));
         const BOOL was = [inside containsObject:area];
         if (in && !was) [entering addObject:area];
         if (!in && was) [leaving addObject:area];

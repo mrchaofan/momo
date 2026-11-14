@@ -678,7 +678,7 @@ void WinWindow::OnKey(UINT message, WPARAM wparam, LPARAM lparam) {
       }
     }
   }
-  // 编辑键(退格/方向键/回车等)只走 platform::KeyData, 不再发 kCommand(text_input_connection.h);
+  // 编辑键(退格/方向键/回车等)只走 platform::KeyData, 不再发 kCommand(embedder/common/text_input.h);
   // 可打印字符随后经 WM_CHAR → WinTextInput 以 kCommit 送达。
   delegate_->OnKeyData(data);
 }

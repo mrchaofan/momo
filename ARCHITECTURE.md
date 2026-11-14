@@ -56,11 +56,12 @@ embedder ──► engine（含 engine/platform 契约）──► base
 main()                                         embedder/macos/main_mac.mm
 └─ embedder::Application              (platform)  进程生命周期状态机与退出流程(Quit / Exit);不决定窗口
    ├─ PlatformIntegration (Mac)       (platform)  工厂：窗口、VSync、服务、应用能力(PlatformApp)、显示器、原生循环
+   │   └─ MacMouseInput               (platform)  进程内唯一的指针输入:PointerDispatcher + 序列监视器(注入每个 MacWindow)
    ├─ EventLoop  + NativeMessagePump  (platform)  跑在 [NSApp run] 之上
    ├─ engine::ThreadHost                          创建并 join ui / raster / io 三个线程
    ├─ WindowManager                   (platform)  窗口注册表:创建、关闭询问、焦点/IME 路由(视图 0 = 启动窗口)
    │   └─ 视图 id → WindowController  (platform)  窗口 ⇄ Shell 视图的粘合层
-   │       └─ MacWindow               (platform)  NSWindow + MomoContentView
+   │       └─ MacWindow               (platform)  MomoWindow/MomoPanel + MomoContentView
    │           ├─ MacMetalSurface / MacSoftwareSurface   (由 raster 线程使用)
    │           └─ MacTextInput        (platform)
    ├─ AppChannel                      (platform)  宿主通道 momo/app(§3.10)
@@ -221,14 +222,16 @@ macOS 实现（`embedder/macos/`）：
 |---|---|---|
 | `main_mac.mm` | — | 进程入口，只做翻译（<100 行） |
 | `mac_app_delegate.mm` | `NSApplicationDelegate` | 退出拦截、隐藏/显示 → 生命周期；最小主菜单（隐藏、退出） |
-| `mac_platform_integration.mm` | `PlatformIntegration`、`PlatformServices`（embedder 抽象） | 工厂；剪贴板（NSPasteboard）、打开 URL（NSWorkspace）；`NSScreen` → `DisplayInfo` |
+| `mac_platform_integration.mm` | `PlatformIntegration`、`PlatformApp`、`PlatformServices`（embedder 抽象） | 工厂；应用隐藏/激活（NSApp）；剪贴板（NSPasteboard）、打开 URL（NSWorkspace）；`NSScreen` → `DisplayInfo`（主屏左上原点）；持有进程内唯一的 `MacMouseInput` 并注入每个窗口 |
 | `mac_native_loop.mm` | `NativeLoop` | GCD 主队列 + `[NSApp run]` / `[NSApp stop:]` |
-| `mac_window.mm` | `PlatformWindow` | `NSWindow` + `MomoContentView`（自定义 `NSView`，first responder，实现 `NSTextInputClient`）；全部可选窗口能力（隐藏标题栏、系统拖动、移动循环、指针捕获…） |
-| `mac_surface_metal.mm` | `RenderSurface` | `CAMetalLayer` 子层；可回退为软件 |
+| `mac_window.mm` | `PlatformWindow`、`PointerWindow` | `MomoWindow`（NSWindow）/ `MomoPanel`（NSPanel，非激活面板）只把 `-sendEvent:` 转给 `MacWindow::SendEvent`；`MomoContentView`（自定义 `NSView`，first responder，键盘、`NSTextInputClient`、光标）；全部可选窗口能力（隐藏标题栏、系统拖动、移动循环、指针捕获…） |
+| `mac_mouse_events.mm` | — | `MacMouseInput`：持有 `PointerDispatcher`，`NSEvent` → `PointerInput`；进程级本地监视器接住序列期间不属于任何 momo 窗口的事件；跟踪区工具、屏幕坐标换算 |
+| `mac_platform_views.mm` / `mac_platform_view_input.mm` | — | 平台视图宿主（几何）/ 平台视图的输入投递（docs/05 §9） |
+| `mac_surface_metal.mm` | `RenderSurface` | `CAMetalLayer`（挂在专用底层子视图 `MomoSurfaceBaseView` 里）；平台视图合成与拖拽缩放时经主线程呈现队列；可回退为软件 |
 | `mac_surface_software.mm` | `RenderSurface` | 最多 3 个 IOSurface 轮换，设为 `layer.contents` |
 | `mac_vsync_displaylink.mm` | `VsyncSource` | `CVDisplayLink`，按需启停 |
 | `mac_text_input.mm` | `TextInputConnection`（embedder 抽象） | IME 状态与 `NSTextInputClient` 的同步查询 |
-| `mac_key_mapping.mm` | — | macOS keyCode → USB HID usage 全表、逻辑键 |
+| `mac_key_mapping.mm` | — | 键盘事件 → `KeyData`：keyCode → USB HID usage 全表、逻辑键、修饰键（`flagsChanged`） |
 
 ### 3.2 启动流程
 
@@ -309,11 +312,11 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 键盘事件在 platform 线程归一化为平台无关的 `engine/platform/input_types.h` 类型，经 `WindowDelegate`（即 `WindowController`）转给 `Shell`。指针事件多一步：谁接收由进程内唯一的 `PointerDispatcher`（`embedder/common/pointer_dispatcher.h`，平台无关）决定——平台层只**翻译**原生事件、**执行**投递（中介者），按下序列、悬停、滚动锁定这些状态只在派发器里有一份（见 §3.10"指针派发"）：
 
 ```objc
-// 伪代码：指针事件（embedder/macos/mac_window.mm）
-- (void)handleMouseEvent:(NSEvent*)e {                  // MomoWindow -sendEvent: 调用
-  PointerInput in = Translate(e, _owner);              // 类型、屏幕坐标（逻辑点）、按键、滚动位移…；不做决定
-  Dispatcher().Dispatch(in);                           // 决定接收方：某窗口的 momo 内容或某个平台视图
-}
+// 伪代码：指针事件（embedder/macos/mac_window.mm、mac_mouse_events.mm）
+void MacWindow::SendEvent(NSEvent* e, super) {         // MomoWindow / MomoPanel -sendEvent: 调用
+  if (窗口装饰的按下序列或跟踪区事件) return super(e);    // 红绿灯、边缘缩放区归 AppKit
+  mouse_.Dispatch(e, this);                            // MacMouseInput：翻译为 PointerInput（类型、屏幕坐标、按键、
+}                                                      // 滚动位移…；不做决定）→ PointerDispatcher 决定接收方
 
 // MacWindow 作为 PointerWindow 执行：
 void MacWindow::SendToMomo(PointerDataPacket packet, const PointerInput&) {
@@ -330,7 +333,7 @@ void MacWindow::SendToPlatformView(int64_t view, const PointerInput& in, Pointer
 
 滚动位移统一成"视口滚动方向"（AppKit 给的是内容移动方向），保留惯性阶段标记；普通滚轮按行换算为点。
 
-键盘事件产出 `KeyData{type, physical_key（USB HID usage）, logical_key, character, modifiers}`。几个 AppKit 特性要专门处理：
+键盘事件由 `mac_key_mapping` 翻译为 `KeyData{type, physical_key（USB HID usage）, logical_key, character, modifiers}`。几个 AppKit 特性要专门处理：
 
 - 修饰键只有 `flagsChanged`，按下/抬起由修饰位判断；CapsLock 每次切换只有一个事件，合成一次完整的 down + up。
 - 按住 Command 时，`-[NSApplication sendEvent:]` 会吞掉 `keyUp`，窗口和 first responder 都收不到。用 `NSEvent` 本地监视器补发，与 Flutter macOS embedder 的做法相同（子类化 `NSApplication` 也能解决，但要改 `NSPrincipalClass`，更侵入）。`keyUp:` 按 `NSEvent` 对象去重，万一 AppKit 也正常投递，只处理一次。
@@ -346,7 +349,7 @@ void MacWindow::SendToPlatformView(int64_t view, const PointerInput& in, Pointer
 
 `RenderSurface`（`engine/platform/render_surface.h`）只有一个核心方法：在 raster 线程上 `AcquireFrame(physical_size)`，返回本帧的 `SurfaceFrame`（像素缓冲或 GPU 目标，外加一个 `present` 闭包）。
 
-**Metal 路径（默认）**：`MacMetalSurface` 在内容视图的 layer 上加一个 `CAMetalLayer` 子层（BGRA8Unorm、sRGB、`framebufferOnly = NO`、最多 3 个 drawable）。
+**Metal 路径（默认）**：`MacMetalSurface` 在内容视图最底层加一个专用子视图 `MomoSurfaceBaseView`，`CAMetalLayer`（BGRA8Unorm、sRGB、`framebufferOnly = NO`、最多 3 个 drawable）挂在它的 layer 上；平台视图宿主是其后加入的子视图，层级只由子视图顺序决定。下面是普通帧的路径；平台视图合成帧与拖拽缩放期间的帧改经主线程呈现队列，与平台视图几何、新窗口尺寸在同一个 `CATransaction` 里生效（docs/05）。
 
 ```objc
 // 伪代码：raster 线程（embedder/macos/mac_surface_metal.mm）
@@ -367,7 +370,7 @@ StatusOr<SurfaceFrame> AcquireFrame(Size size) {
 }
 ```
 
-drawable 尺寸以 raster 线程本帧请求的尺寸为准，所以 resize 时不需要跨线程同步 `drawableSize`。主线程只在 `setFrameSize` / backing 变化时更新子层的 `frame` 和 `contentsScale`。
+drawable 尺寸以 raster 线程本帧请求的尺寸为准，所以 resize 时不需要跨线程同步 `drawableSize`。主线程只在 `setFrameSize` / backing 变化时更新图层的 `frame` 和 `contentsScale`。
 
 **软件路径（回退）**：`MacSoftwareSurface` 在 raster 线程直接把像素画进 IOSurface（零拷贝），由主线程设为 `layer.contents`。为了让主队列和内存有界，主线程最多挂起一帧：
 
@@ -436,7 +439,7 @@ void OnTick() {
 `MomoContentView` 实现 `NSTextInputClient`，把每个调用转给 `MacTextInput`（`TextInputConnection` 的实现）：
 
 - **JS 是编辑模型的权威**：JS 经 `momo/textinput` 通道下发 `SetEditingState`（文本、选区、composing 区间，UTF-16 下标），覆盖本地状态。
-- 两次同步之间，输入法事件先在本地**乐观应用**，保证 `hasMarkedText` / `markedRange` / `selectedRange` 这些同步查询立即反映最新的预编辑；同时翻译成 `TextInputEvent`（commit / composing 等），经 `Shell::OnTextInput` 走 `momo/textinput` 通道发给 JS。
+- 两次同步之间，输入法事件先在本地**乐观应用**，保证 `hasMarkedText` / `markedRange` / `selectedRange` 这些同步查询立即反映最新的预编辑；同时翻译成 `TextInputEvent`（commit / composing 等），经 `WindowDelegate::OnTextInput` → `WindowController` → `PlatformChannels` 走 `momo/textinput` 通道发给 JS（不经过 Shell）。
 - JS 上报的光标矩形（物理像素，相对内容区）用于 `firstRectForCharacterRange`，决定候选窗位置。
 
 ### 3.8 退出与有序关闭
@@ -1058,7 +1061,7 @@ handlePointerPacket(data: Float64Array, count, dpr) {
 
 | # | 线程 | 发生了什么 |
 |---|---|---|
-| 1 | platform | AppKit 调 `MomoContentView mouseDown:` → 坐标换算为物理像素，补 `kAdd` → `WindowController::OnPointerPacket` → `Shell::OnPointerPacket` 投递到 ui |
+| 1 | platform | `MomoWindow -sendEvent:` → `MacWindow::SendEvent` → `MacMouseInput` 翻译 → `PointerDispatcher` 判定接收方为 momo 内容（补 `kAdd`）→ `MacWindow::SendToMomo` 换算为物理像素 → `WindowController::OnPointerPacket` → `Shell::OnPointerPacket` 投递到 ui |
 | 2 | ui · C++ | `Engine::OnPointerPacket` → `UiBindings::PointerPacket`：写入复用的 `Float64Array` → `view.onPointerPacket(data, count)` |
 | 3 | ui · JS | `GestureBinding` 命中测试，`TapGestureRecognizer` 入场；`mouseUp` 后竞技场裁决 → `onPressed` → `setState` → `markNeedsBuild` → `platformDispatcher.scheduleFrame()` |
 | 4 | ui · C++ | `Animator::RequestFrame` → `PlatformVsyncWaiter` → `PostToObject` 到 platform |

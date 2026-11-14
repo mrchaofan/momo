@@ -25,10 +25,10 @@
   <!-- pointer row -->
   <text x="20" y="84" class="row">指针</text>
   <rect x="20" y="92" width="180" height="96" rx="7" class="b"/>
-  <text x="30" y="110" class="n">MomoContentView</text>
-  <text x="30" y="128" class="i">mouse* · scrollWheel</text>
-  <text x="30" y="144" class="i">点 → 物理像素，翻转为左上原点</text>
-  <text x="30" y="160" class="i">进入补 kAdd · 离开补 kRemove</text>
+  <text x="30" y="110" class="n">MacWindow::SendEvent</text>
+  <text x="30" y="128" class="i">MacMouseInput 翻译 NSEvent</text>
+  <text x="30" y="144" class="i">PointerDispatcher 定接收方</text>
+  <text x="30" y="160" class="i">屏幕坐标 → 物理像素</text>
   <text x="30" y="176" class="i">滚轮：行 → px，方向统一为视口</text>
   <line x1="200" y1="140" x2="213" y2="140" class="arr" marker-end="url(#a)"/>
   <rect x="215" y="92" width="175" height="96" rx="7" class="b"/>
@@ -103,7 +103,7 @@
   <text x="225" y="378" class="n">MacTextInput</text>
   <text x="225" y="396" class="i">本地乐观应用预编辑</text>
   <text x="225" y="412" class="i">→ TextInputEvent</text>
-  <text x="225" y="428" class="i">→ Shell::OnTextInput</text>
+  <text x="225" y="428" class="i">→ WindowDelegate::OnTextInput</text>
   <line x1="390" y1="406" x2="410" y2="406" class="arr" marker-end="url(#a)"/>
   <rect x="412" y="360" width="174" height="92" rx="7" class="b"/>
   <text x="422" y="378" class="n">MessageChannelHub</text>

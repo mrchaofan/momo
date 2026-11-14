@@ -236,8 +236,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
     _host = [[MomoPlatformViewsHostView alloc] initWithFrame:contentView.bounds];
     _host.owner = self;
     _host.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-    _host.wantsLayer = YES;
-    _host.layer.zPosition = 1;  // 在主帧 CAMetalLayer 之上
+    _host.wantsLayer = YES;  // 子视图顺序在主帧(MomoSurfaceBaseView)之后, 位于其上
     [contentView addSubview:_host];
   }
   return self;
@@ -245,10 +244,6 @@ MOMO_SWALLOW_MOUSE_EVENTS
 
 - (void)dealloc {
   [_host removeFromSuperview];
-}
-
-- (BOOL)hasViews {
-  return !_containers.empty();
 }
 
 - (CGFloat)scale {
@@ -330,7 +325,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
 - (void)applyLayout:(const CompositionLayout&)layout
       overlayLayers:(const std::vector<CAMetalLayer*>&)overlayLayers {
   const CGFloat scale = [self scale];
-  CGFloat z = 1;  // 合成顺序(base → view0 → overlay0 → view1 …), 也用于子视图排序
+  int z = 0;  // 合成顺序(view0 → overlay0 → view1 …), 子视图按它排序
   std::map<NSView*, int> rank;
   std::map<int64_t, bool> shown;
   std::vector<bool> overlay_shown(_overlays.size(), false);
@@ -366,8 +361,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
         container.native.frame = ToPoints(g.frame.Offset(-visible->x, -visible->y), scale);
         container.alphaValue = static_cast<CGFloat>(std::clamp(g.opacity, 0.0, 1.0));
         container.layer.cornerRadius = static_cast<CGFloat>(CornerRadius(g, *visible) / scale);
-        rank[container] = static_cast<int>(z);
-        container.layer.zPosition = z++;
+        rank[container] = z++;
         std::vector<NSRect> occluders;
         occluders.reserve(g.occluders.size());
         for (const momo::Rect& r : g.occluders) {
@@ -385,8 +379,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
       MomoOverlayView* overlay = [self overlayAt:i layer:layer];
       overlay.frame = ToPoints(*layout.overlays[i], scale);
       layer.contentsScale = scale;
-      rank[overlay] = static_cast<int>(z);
-      overlay.layer.zPosition = z++;
+      rank[overlay] = z++;
       overlay.hidden = NO;
       if (i >= overlay_shown.size()) {
         overlay_shown.resize(i + 1, false);
@@ -394,7 +387,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
       overlay_shown[i] = true;
     }
   }
-  // 层级以子视图顺序为准(AppKit 不按 zPosition 排 backing layer)。sortSubviews 原地重排,
+  // 层级只用子视图顺序表达(AppKit 的命中测试与 backing layer 的顺序都以它为准)。sortSubviews 原地重排,
   // 不移出/重新加入子视图, 原生视图的第一响应者不受影响。只在顺序变化时排序。
   if (!rank.empty()) {
     NSArray<NSView*>* subviews = _host.subviews;

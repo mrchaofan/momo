@@ -2,14 +2,13 @@
 
 // MomoPlatformViews: 平台视图在 macOS 窗口中的宿主(docs/05 §9)。仅被 .mm 包含。
 //
-// 视图层级(内容视图 MomoContentView 之下):
-//   content.layer
-//   ├── CAMetalLayer(主帧, MacMetalSurface;zPosition = -1)
+// 视图层级(内容视图 MomoContentView 的子视图, 自下而上):
+//   ├── MomoSurfaceBaseView(主帧 CAMetalLayer, MacMetalSurface)
 //   └── MomoPlatformViewsHostView(铺满内容视图, flipped, 自身不可命中)
 //       ├── MomoPlatformViewContainer(每个平台视图一个: 可见区域裁剪 + 原生视图)
 //       └── MomoOverlayView(每个 overlay 一个: 承载一个 CAMetalLayer, 不可命中)
-// z 序由各子视图 layer 的 zPosition 决定(按合成布局 base → view0 → overlay0 → view1 …), 避免为调序
-// 而移除/重新加入子视图(会让 WKWebView 丢失第一响应者)。
+// z 序只用子视图顺序表达(按合成布局 view0 → overlay0 → view1 …), 用 sortSubviews 原地重排, 不移除/重新加入
+// 子视图(会让 WKWebView 丢失第一响应者)。
 // 输入: 这里只提供几何。每一帧的几何(可见矩形、z 序、盖在其上的 momo 内容)与画面在同一个 CATransaction 里
 //   生效(applyLayout), 所以 platformViewAtWindowPoint: 回答的就是"用户此刻看到的指针下是什么"——内容视图据此在
 //   主线程同步决定原生事件的接收方(PointerDispatcher), 不经 ui 线程往返。投递由窗口的
@@ -53,8 +52,6 @@
 - (int64_t)platformViewOwningTrackingArea:(NSTrackingArea*)area;
 // responder 属于哪个平台视图;不属于返回 0。
 - (int64_t)viewIdForResponder:(NSResponder*)responder;
-// 是否持有任何平台视图。
-@property(nonatomic, readonly) BOOL hasViews;
 // 指针此刻归本窗口的谁(PointerDispatcher): 0 = momo 内容, 其他 = 平台视图 id, -1 = 宿主不掌握指针
 // (指针不在本窗口、拖放会话等)。AppKit 的几何命中测试据此回答(见实现处说明)。
 @property(nonatomic, copy) int64_t (^pointerOwner)(void);
