@@ -6,7 +6,8 @@
 //   - MacMouseInput: 进程内一个(由 MacPlatformIntegration 持有, 注入每个 MacWindow)。持有平台无关的
 //     PointerDispatcher, 把 NSEvent 翻译成 PointerInput 交给它;并用进程级本地事件监视器接住按下序列期间
 //     不属于任何 momo 窗口的事件(按下所在的窗口已关闭、拖到了别的窗口上)。
-//   - 跟踪区工具: 按 AppKit 的规则判断跟踪区是否生效、把移动投递给跟踪区 owner(窗口装饰与平台视图共用)。
+//   - 跟踪区工具: 按 AppKit 的规则判断跟踪区是否生效、把移动投递给跟踪区 owner、由有序输入流推导进入/离开
+//     (窗口装饰与平台视图共用)。
 //   - 屏幕坐标: 对外统一为主屏左上原点、y 向下的逻辑点(与 Quartz 全局坐标一致)。
 // 线程约定: 只在主(platform)线程使用。
 
@@ -41,6 +42,16 @@ NSRect MomoTrackingRect(NSTrackingArea* area, NSView* view);
 // 按 AppKit 的跟踪区规则把移动投递给 root 子树(跳过隐藏的视图与 skip 子树)中包含指针、当前生效的
 // NSTrackingMouseMoved 跟踪区的 owner(同一 owner 只收一次)。返回是否投递给了任何 owner。
 BOOL MomoDeliverMouseMoved(NSView* root, NSEvent* event, NSView* skip);
+// 按有序输入流中的一个事件更新 root 子树(跳过 skip 子树与隐藏视图的子视图)中进入/离开/光标更新跟踪区的
+// 状态, 按 AppKit 的规则把变化投递给 owner。inside: 已投递进入、尚未投递离开的跟踪区(调用方持有, 跨调用保存)。
+// 跟踪区在内 = pointerOver(指针此刻在这棵子树所在的区域上) && 视图可见 && 跟踪区生效 && 指针在跟踪区内。
+// dragging(按下拖动中): 只更新带 NSTrackingEnabledDuringMouseDrag 的跟踪区, 其余保持原状直到抬起(AppKit
+// 同样推迟)。先离开后进入;进入时带 NSTrackingCursorUpdate 的补一次光标更新。已从视图上移除的跟踪区直接丢弃,
+// 不投递离开(AppKit 也不会)。
+void MomoUpdateTrackingAreas(NSView* root, NSView* skip, NSEvent* event, BOOL pointerOver, BOOL dragging,
+                             NSHashTable<NSTrackingArea*>* inside);
+// area 是否是 MomoUpdateTrackingAreas 在 root 子树(跳过 skip 子树)中管理的跟踪区(进入/离开或光标更新)。
+BOOL MomoSubtreeManagesTrackingArea(NSView* root, NSView* skip, NSTrackingArea* area);
 
 namespace momo::embedder::macos {
 

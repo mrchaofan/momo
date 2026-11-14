@@ -30,6 +30,23 @@
 - (BOOL)acceptsFirstMouse:(NSEvent*)e { return YES; }
 @end
 
+// 窗口装饰(内容视图之外的视图, 如红绿灯所在的标题栏视图): 只靠进入/离开跟踪区维护悬停状态。
+@interface DecorationView : NSView
+@property(nonatomic) std::vector<std::string>* log;
+@end
+@implementation DecorationView
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  for (NSTrackingArea* area in self.trackingAreas) [self removeTrackingArea:area];
+  [self addTrackingArea:[[NSTrackingArea alloc] initWithRect:self.bounds
+                                                     options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways
+                                                       owner:self
+                                                    userInfo:nil]];
+}
+- (void)mouseEntered:(NSEvent*)e { self.log->push_back("entered"); }
+- (void)mouseExited:(NSEvent*)e { self.log->push_back("exited"); }
+@end
+
 
 namespace momo::embedder::macos {
 namespace {
@@ -223,6 +240,42 @@ TEST_F(MacPointerSequenceTest, PlatformViewInputIsRoutedOnTheMainThreadByFrameGe
   EXPECT_EQ(log, std::vector<std::string>{});
   EXPECT_EQ(std::count(delegate.phases.begin(), delegate.phases.end(), Phase::kDown), 1);
   window->RemovePlatformView(9);
+}
+
+// 窗口装饰的跟踪区: 移动交给派发器、不经 AppKit, 装饰的进入/离开由输入流推导(红绿灯靠它显示悬停符号)。
+// 按下序列中推迟, 抬起后补上;momo 照常收到移动。
+TEST_F(MacPointerSequenceTest, WindowDecorationsSeeEnterAndExitDerivedFromMoves) {
+  PointerRecordingDelegate delegate;
+  auto window = Window(&delegate);
+  NSWindow* ns_window = NSWindowOf(*window);
+  NSView* frame = ns_window.contentView.superview;
+  std::vector<std::string> log;
+  // 盖住内容区中央的装饰视图(主题框架的子视图, 在内容视图之上)。
+  const NSPoint center = Center(*window);
+  const NSPoint cocoa = NSMakePoint(center.x, NSMaxY(NSScreen.screens.firstObject.frame) - center.y);
+  const NSPoint in_frame = [frame convertPoint:[ns_window convertPointFromScreen:cocoa] fromView:nil];
+  DecorationView* decoration = [[DecorationView alloc] initWithFrame:NSMakeRect(in_frame.x - 10, in_frame.y - 10, 20, 20)];
+  decoration.log = &log;
+  [frame addSubview:decoration];
+  [decoration updateTrackingAreas];
+  const NSInteger number = ns_window.windowNumber;
+  const NSPoint outside = NSMakePoint(center.x + 50, center.y);  // 窗口内、装饰外
+
+  Send(*window, NSEventTypeMouseMoved);
+  EXPECT_EQ(log, std::vector<std::string>{"entered"});
+  Send(*window, NSEventTypeMouseMoved);
+  EXPECT_EQ(log, std::vector<std::string>{"entered"}) << "entered once";
+  EXPECT_NE(std::count(delegate.phases.begin(), delegate.phases.end(), Phase::kHover), 0) << "momo sees the moves";
+  [ns_window sendEvent:Mouse(NSEventTypeMouseMoved, outside, number)];
+  EXPECT_EQ(log, (std::vector<std::string>{"entered", "exited"}));
+
+  log.clear();
+  [ns_window sendEvent:Mouse(NSEventTypeLeftMouseDown, outside, number)];
+  [ns_window sendEvent:Mouse(NSEventTypeLeftMouseDragged, center, number)];
+  EXPECT_EQ(log, std::vector<std::string>{}) << "deferred while dragging";
+  [ns_window sendEvent:Mouse(NSEventTypeLeftMouseUp, center, number)];
+  EXPECT_EQ(log, std::vector<std::string>{"entered"});
+  [decoration removeFromSuperview];
 }
 
 // 拖动中并入另一个窗口: 序列改交目标窗口, 按下所在的窗口随后关闭, 拖动照常继续到抬起。

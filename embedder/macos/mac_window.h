@@ -22,6 +22,8 @@
 #include "embedder/common/pointer_dispatcher.h"
 
 @class NSEvent;
+@class NSHashTable<ObjectType>;
+@class NSTrackingArea;
 @class NSWindow;
 @class MomoContentView;
 @class MomoWindowObserver;
@@ -114,6 +116,8 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   PointerDispatcher& dispatcher() const;
   // 不经 AppKit 处理的按下: 自行完成点击激活(面板只成为 key, 不激活应用)。
   void ActivateForMomoClick();
+  // 窗口装饰(内容视图之外)的跟踪区记账: 由有序输入流推导进入/离开、转发移动。返回装饰是否改变了光标。
+  bool ForwardToWindowChrome(NSEvent* event);
 
   WindowDelegate* delegate_;
   MacMouseInput& mouse_;
@@ -122,6 +126,7 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   MomoWindowObserver* observer_;
   MomoPlatformViews* platform_views_;
   MomoPlatformViewInputRouter* input_router_;  // 平台视图的输入投递(谁接收由 PointerDispatcher 决定)
+  NSHashTable<NSTrackingArea*>* chrome_inside_;  // 窗口装饰已投递进入、尚未投递离开的跟踪区
   NSEvent* sequence_down_ = nullptr;  // 本窗口 momo 内容收到的最近一个序列的按下(startDrag)
   int64_t sequence_down_id_ = 0;
   bool non_activating_ = false;  // NSPanel(非激活面板): 显示/激活时不激活应用

@@ -6,39 +6,7 @@
 #include "embedder/macos/mac_mouse_events.h"
 #include "embedder/macos/mac_platform_views.h"
 
-
-namespace {
-
 using momo::engine::platform::PointerPhase;
-
-// 以 like 的位置/时间/修饰键合成 area 的跟踪事件(进入/离开/光标更新)并投递给其 owner。
-void SendTrackingEvent(NSEventType type, NSTrackingArea* area, NSEvent* like) {
-  NSEvent* event = [NSEvent enterExitEventWithType:type
-                                          location:like.locationInWindow
-                                     modifierFlags:like.modifierFlags
-                                         timestamp:like.timestamp
-                                      windowNumber:like.windowNumber
-                                           context:nil
-                                       eventNumber:0
-                                    trackingNumber:(NSInteger)(__bridge void*)area
-                                          userData:(__bridge void*)area.userInfo];
-  id owner = area.owner;
-  switch (type) {
-    case NSEventTypeMouseEntered:
-      if ([owner respondsToSelector:@selector(mouseEntered:)]) [owner mouseEntered:event];
-      break;
-    case NSEventTypeMouseExited:
-      if ([owner respondsToSelector:@selector(mouseExited:)]) [owner mouseExited:event];
-      break;
-    case NSEventTypeCursorUpdate:
-      if ([owner respondsToSelector:@selector(cursorUpdate:)]) [owner cursorUpdate:event];
-      break;
-    default:
-      break;
-  }
-}
-
-}  // namespace
 
 @implementation MomoPlatformViewInputRouter {
   MomoPlatformViews* __weak _views;
@@ -175,56 +143,16 @@ void SendTrackingEvent(NSEventType type, NSTrackingArea* area, NSEvent* like) {
                                 userData:nullptr];
 }
 
-// 按输入流中的一个事件更新平台视图的跟踪区状态(与 AppKit 的规则相同): 指针悬停在该平台视图上、位于跟踪区内、
-// 跟踪区生效 → 在内。按下拖动期间只更新带 NSTrackingEnabledDuringMouseDrag 的跟踪区, 其余的保持原状
-// 直到抬起(AppKit 同样推迟)。先离开后进入;进入时带 NSTrackingCursorUpdate 的跟踪区补一次光标更新。
-// 已从视图上移除的跟踪区不再投递(AppKit 也不会为移除的跟踪区发离开)。
+// 按输入流中的一个事件更新平台视图的跟踪区状态(MomoUpdateTrackingAreas, 规则与 AppKit 相同):
+// 指针悬停在该平台视图上(派发器的悬停目标)才可能在内。
 // AppKit 自己为这些跟踪区生成的事件不投递(routeTrackingEvent:): 它们按 AppKit 自己的几何产生, 与派发器
 // 对画面(遮挡、z 序)的判定没有先后关系, 投递会让原生视图在派发器判定的"离开"之后又回到悬停状态。
 // 同 Chromium: 渲染器看到的 MouseLeave 与移动在同一个有序输入队列里。
 - (void)updateTracking:(int64_t)viewId event:(NSEvent*)event dragging:(BOOL)dragging {
   if (event == nil) event = [self eventAtCurrentLocation];
-  NSHashTable<NSTrackingArea*>* inside = [self insideOf:viewId];
-  const BOOL owned = viewId == _hoverView;
   MomoPlatformViews* views = _views;
-  NSView* native = [views hostedNativeForPlatformView:viewId];
-  NSHashTable<NSTrackingArea*>* installed =
-      [NSHashTable hashTableWithOptions:NSPointerFunctionsObjectPointerPersonality];
-  NSMutableArray<NSTrackingArea*>* entering = [NSMutableArray array];
-  NSMutableArray<NSTrackingArea*>* leaving = [NSMutableArray array];
-  if (native != nil) {
-    NSMutableArray<NSView*>* pending = [NSMutableArray arrayWithObject:native];
-    while (pending.count > 0) {
-      NSView* view = pending.lastObject;
-      [pending removeLastObject];
-      const NSPoint p = [view convertPoint:event.locationInWindow fromView:nil];
-      const BOOL visible = !view.hidden;
-      for (NSTrackingArea* area in view.trackingAreas) {
-        const NSTrackingAreaOptions o = area.options;
-        if ((o & (NSTrackingMouseEnteredAndExited | NSTrackingCursorUpdate)) == 0) continue;
-        [installed addObject:area];
-        if (dragging && (o & NSTrackingEnabledDuringMouseDrag) == 0) continue;  // 抬起后再更新
-        const BOOL in = owned && visible && MomoTrackingAreaIsActive(area, view) &&
-                        NSPointInRect(p, MomoTrackingRect(area, view));
-        const BOOL was = [inside containsObject:area];
-        if (in && !was) [entering addObject:area];
-        if (!in && was) [leaving addObject:area];
-      }
-      if (visible) [pending addObjectsFromArray:view.subviews];
-    }
-  }
-  for (NSTrackingArea* area in inside.allObjects) {
-    if (![installed containsObject:area]) [inside removeObject:area];
-  }
-  for (NSTrackingArea* area in leaving) {
-    [inside removeObject:area];
-    if (area.options & NSTrackingMouseEnteredAndExited) SendTrackingEvent(NSEventTypeMouseExited, area, event);
-  }
-  for (NSTrackingArea* area in entering) {
-    [inside addObject:area];
-    if (area.options & NSTrackingMouseEnteredAndExited) SendTrackingEvent(NSEventTypeMouseEntered, area, event);
-    if (area.options & NSTrackingCursorUpdate) SendTrackingEvent(NSEventTypeCursorUpdate, area, event);
-  }
+  MomoUpdateTrackingAreas([views hostedNativeForPlatformView:viewId], nil, event, viewId == _hoverView, dragging,
+                          [self insideOf:viewId]);
 }
 
 - (BOOL)routeTrackingEvent:(NSEvent*)event {

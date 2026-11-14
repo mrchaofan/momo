@@ -61,6 +61,18 @@ bool HitsWindowControl(NSView* hit) {
   return false;
 }
 
+// Cocoa 屏幕点 cocoa 处 window 被本应用更靠前的窗口遮住。遮住的地方不属于 window(重叠的窗口之间只有最上层的
+// 那个接收指针)。别的应用的窗口盖住时系统根本不把事件交给本应用, 不必考虑。
+bool CoveredByOtherWindow(NSWindow* window, NSPoint cocoa) {
+  for (NSNumber* number in [NSWindow windowNumbersWithOptions:0]) {  // 本应用的屏幕上窗口, 由前到后
+    NSWindow* w = [NSApp windowWithWindowNumber:number.integerValue];
+    if (w != nil && !w.ignoresMouseEvents && NSPointInRect(cocoa, w.frame)) {
+      return w != window;
+    }
+  }
+  return false;
+}
+
 // 双击标题栏(拖动区域)的系统动作: 遵循"连按窗口标题栏以…"设置(缩放 / 最小化 / 无操作)。
 void TitleBarDoubleClick(NSWindow* window) {
   NSString* action = [[NSUserDefaults standardUserDefaults] stringForKey:@"AppleActionOnDoubleClick"];
@@ -69,19 +81,6 @@ void TitleBarDoubleClick(NSWindow* window) {
   } else if (![action isEqualToString:@"None"]) {
     [window zoom:nil];
   }
-}
-
-// 窗口装饰(主题框架、标题栏、红绿灯等内容视图之外的视图)的跟踪区: 不论事件由谁消费都照常收到移动。
-// 它们维护窗口级状态而不是消费事件——典型是边缘缩放光标: 主题框架靠移动得知指针离开了缩放区,
-// 才把光标交还给应用;收不到移动时窗口服务器会一直显示缩放光标并忽略应用设置的光标。
-// 只转给装饰自己的跟踪区, 不经 AppKit 的全局投递, 所以平台视图(网页)收不到不属于它的移动。
-// 返回装饰是否在处理中改变了当前光标(即装饰此刻拥有光标, 如位于缩放区)。
-bool ForwardMoveToWindowChrome(NSView* content, NSEvent* event) {
-  NSView* frame = content.superview;
-  if (frame == nil) return false;
-  NSCursor* before = NSCursor.currentCursor;
-  MomoDeliverMouseMoved(frame, event, content);  // 内容子树归派发器
-  return NSCursor.currentCursor != before;
 }
 
 }  // namespace
@@ -602,6 +601,7 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate, MacMouseI
   }
   input_router_ = [[MomoPlatformViewInputRouter alloc] initWithPlatformViews:platform_views_
                                                                  contentView:view_];
+  chrome_inside_ = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory];
   MomoContentView* __weak weak_view = view_;
   MacMouseInput* mouse_input = &mouse_;  // 比窗口活得久
   // 几何变化(新的一帧已呈现、视图移除): 在呈现事务之外(下一轮主循环)请派发器重新判定指针下的接收方。
@@ -924,18 +924,26 @@ PointerDispatcher& MacWindow::dispatcher() const { return mouse_.dispatcher(); }
 std::optional<int64_t> MacWindow::PointerOwner() const { return dispatcher().PointerOwner(this); }
 
 // 鼠标与其他位置型输入的入口(docs/05 §9 "输入"): 交给派发器决定接收方(momo 内容或平台视图), 不经 AppKit
-// 投递。只有窗口装饰(红绿灯、边缘缩放区)的按下序列与它们自己的跟踪区事件直接交给 AppKit。窗口拖动由应用在
-// 按下时请求(momo/window startDrag), StartWindowDrag 以该序列的按下开始系统拖动。
+// 投递。只有窗口装饰(红绿灯、边缘缩放区)的按下序列直接交给 AppKit;装饰的跟踪区由 ForwardToWindowChrome
+// 照常记账。窗口拖动由应用在按下时请求(momo/window startDrag), StartWindowDrag 以该序列的按下开始系统拖动。
 void MacWindow::SendEvent(NSEvent* event, MomoSuperSendEvent super_send) {
   const MomoMouseEventKind kind = MomoClassifyMouseEvent(event);
   // 跟踪区事件(进入/离开/光标更新)按归属分三类:
   //   原生视图(平台视图)的 → 不投递, 原生视图的跟踪状态由有序输入流推导(MomoPlatformViewInputRouter);
   //   momo 内容视图的 → 派发器;
-  //   窗口装饰(主题框架、标题栏、红绿灯)的 → AppKit, 它们维护窗口级状态, 不参与归属。
+  //   窗口装饰(主题框架、标题栏、红绿灯)的 → 不投递, 同样由有序输入流推导(ForwardToWindowChrome)。移动不经
+  //     AppKit, 它多数时候根本不为装饰产生这些事件(红绿灯因此不显示悬停符号);偶尔产生的(如指针离开窗口)
+  //     只用来触发一次重新推导, 免得重复投递。
   const bool tracking = event.type == NSEventTypeCursorUpdate || kind == MomoMouseEventKindEnter ||
                         kind == MomoMouseEventKindExit;
-  if (tracking && event.trackingArea != nil && [input_router_ routeTrackingEvent:event]) {
-    return;
+  if (tracking && event.trackingArea != nil) {
+    if ([input_router_ routeTrackingEvent:event]) {
+      return;
+    }
+    if (MomoSubtreeManagesTrackingArea(view_.superview, view_, event.trackingArea)) {
+      ForwardToWindowChrome(event);
+      return;
+    }
   }
   if (kind == MomoMouseEventKindNone) {
     super_send(event);
@@ -944,7 +952,10 @@ void MacWindow::SendEvent(NSEvent* event, MomoSuperSendEvent super_send) {
   // 窗口控件(红绿灯)优先于 momo: 整个按下序列交给 AppKit。
   if (system_tracking_) {
     super_send(event);
-    if (kind == MomoMouseEventKindUp) system_tracking_ = false;
+    if (kind == MomoMouseEventKindUp) {
+      system_tracking_ = false;
+      ForwardToWindowChrome(event);  // 补上序列期间推迟的装饰跟踪区更新
+    }
     return;
   }
   if (kind == MomoMouseEventKindDown && !dispatcher().has_sequence()) {
@@ -972,7 +983,7 @@ void MacWindow::SendEvent(NSEvent* event, MomoSuperSendEvent super_send) {
   }
   if ((kind == MomoMouseEventKindEnter || kind == MomoMouseEventKindExit) &&
       event.trackingArea.owner != view_) {
-    super_send(event);  // 窗口装饰自己的跟踪区域(原生视图的已在上面处理)
+    super_send(event);  // 不属于任何跟踪区视图的(窗口级)进入/离开
     return;
   }
   // 交给派发器, 再完成点击激活: 按下不经 AppKit, 窗口激活由这里完成(面板只成为 key, 不激活应用)。
@@ -982,19 +993,40 @@ void MacWindow::SendEvent(NSEvent* event, MomoSuperSendEvent super_send) {
       ActivateForMomoClick();
       break;
     case MomoMouseEventKindMove:
-      // 窗口装饰照常记账;光标归属: 装饰在处理中设置了光标(缩放区)则归装饰, 否则重新应用 momo 的光标
-      // (指针归平台视图时由原生视图管理, 见 refreshCursor)。先应用 momo 的光标, 装饰改动与否才可比较。
-      [view_ refreshCursor];
-      if (!ForwardMoveToWindowChrome(view_, event)) [view_ refreshCursor];
-      break;
     case MomoMouseEventKindDrag:
     case MomoMouseEventKindEnter:
     case MomoMouseEventKindExit:
+      // 窗口装饰照常记账;光标归属: 装饰在处理中设置了光标(缩放区)则归装饰, 否则重新应用 momo 的光标
+      // (指针归平台视图时由原生视图管理, 见 refreshCursor)。先应用 momo 的光标, 装饰改动与否才可比较。
       [view_ refreshCursor];
+      if (!ForwardToWindowChrome(event)) [view_ refreshCursor];
+      break;
+    case MomoMouseEventKindUp:
+      ForwardToWindowChrome(event);  // 补上拖动期间推迟的装饰跟踪区更新
       break;
     default:
       break;
   }
+}
+
+// 窗口装饰(内容视图之外的主题框架、标题栏、红绿灯)的跟踪区。鼠标事件交给派发器、不经 AppKit 投递, AppKit
+// 因此不为它们产生进入/离开, 也不投递移动——这里照 AppKit 的规则由有序输入流推导进入/离开(同平台视图,
+// MomoUpdateTrackingAreas), 再把移动转给它们的 NSTrackingMouseMoved 跟踪区。装饰维护窗口级状态而不是消费
+// 事件, 不论事件由谁消费都照常记账: 红绿灯靠进入/离开显示悬停符号;主题框架靠移动得知指针离开了缩放区, 才把
+// 光标交还给应用(收不到时窗口服务器会一直显示缩放光标并忽略应用设置的光标)。只转给装饰自己的跟踪区, 不经
+// AppKit 的全局投递, 所以平台视图(网页)收不到不属于它的移动。
+// 返回装饰是否在处理中改变了当前光标(即装饰此刻拥有光标, 如位于缩放区)。
+bool MacWindow::ForwardToWindowChrome(NSEvent* event) {
+  NSView* frame = view_.superview;
+  if (frame == nil) return false;
+  NSCursor* before = NSCursor.currentCursor;
+  const NSPoint screen = [window_ convertPointToScreen:event.locationInWindow];
+  const bool over =
+      window_.visible && NSPointInRect(screen, window_.frame) && !CoveredByOtherWindow(window_, screen);
+  // 内容子树归派发器;按下序列中(包括刚按下)只更新拖动中也生效的跟踪区, 抬起后补上。
+  MomoUpdateTrackingAreas(frame, view_, event, over, dispatcher().has_sequence(), chrome_inside_);
+  if (MomoClassifyMouseEvent(event) == MomoMouseEventKindMove) MomoDeliverMouseMoved(frame, event, view_);
+  return NSCursor.currentCursor != before;
 }
 
 // 直接调用父类实现(不经 SendEvent 分流): 投递期间宿主的命中测试只落在该平台视图的原生视图子树里,
@@ -1025,15 +1057,9 @@ std::optional<int64_t> MacWindow::HitTest(Point screen) const {
   if (!window_.visible) {
     return std::nullopt;
   }
-  // 被本应用的别的窗口遮住的地方不属于本窗口(重叠的窗口之间只有最上层的那个接收指针)。别的应用的窗口
-  // 盖住时系统根本不把事件交给本应用, 不必考虑。
   const NSPoint cocoa = FlipScreenY(NSMakePoint(screen.x, screen.y));
-  for (NSNumber* number in [NSWindow windowNumbersWithOptions:0]) {  // 本应用的屏幕上窗口, 由前到后
-    NSWindow* w = [NSApp windowWithWindowNumber:number.integerValue];
-    if (w != nil && !w.ignoresMouseEvents && NSPointInRect(cocoa, w.frame)) {
-      if (w != window_) return std::nullopt;
-      break;
-    }
+  if (CoveredByOtherWindow(window_, cocoa)) {
+    return std::nullopt;
   }
   const NSPoint in_window = [window_ convertPointFromScreen:cocoa];
   if (!NSPointInRect([view_ convertPoint:in_window fromView:nil], view_.bounds)) {
