@@ -313,8 +313,12 @@ export class Widget extends EventEmitter<WidgetEvents> {
   setResizable(resizable: boolean): void {
     this.#call("setResizable", { resizable });
   }
-  /** 窗口内侧的系统缩放边框(与 setResizable 互不覆盖)。 */
-  setResizeBorder(border: WidgetResizeBorder): void {
+  /** 窗口内侧的系统缩放边框(与 setResizable 互不覆盖);null = 各边恢复宿主默认值。 */
+  setResizeBorder(border: WidgetResizeBorder | null): void {
+    if (border === null) {
+      this.#call("setResizeBorder", { reset: true });
+      return;
+    }
     const edges = typeof border === "number" ? { left: border, top: border, right: border, bottom: border } : border;
     this.#call("setResizeBorder", { ...edges });
   }
