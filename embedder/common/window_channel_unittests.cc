@@ -179,6 +179,8 @@ TEST_F(WindowChannelTest, ResizableAndResizeBorderMerge) {
   EXPECT_EQ(w->resize_options().border_right, WindowResizeOptions{}.border_right);
   ASSERT_TRUE(Call("setResizable", {{"view", view}, {"resizable", true}}).ok());
   EXPECT_EQ(w->resize_options().border_left, 8) << "resizable does not reset the border";
+  ASSERT_TRUE(Call("setResizeBorder", {{"view", view}, {"reset", true}}).ok());
+  EXPECT_EQ(w->resize_options(), WindowResizeOptions{}) << "reset restores every edge to the default";
 }
 
 // 隐藏标题栏: 应用只给出自己的标题栏高度;系统控制按钮的占用范围由宿主报告(getState / controlsChanged)。

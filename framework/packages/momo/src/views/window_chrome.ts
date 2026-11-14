@@ -6,6 +6,7 @@
 //   哪里可以拖动由应用自己决定(例如在按下时调用;见 examples/webview 的 WindowDragArea)。
 import type { Key } from "../foundation/key";
 import { EdgeInsets } from "../painting/edge_insets";
+import type { Widget } from "../services/widget";
 import { State, StatefulView, type BuildContext, type View } from "./framework";
 import { WidgetScope } from "./widget_scope";
 
@@ -14,7 +15,8 @@ import { WidgetScope } from "./widget_scope";
  *
  * - hiddenTitleBar(缺省 true): 隐藏系统标题栏、内容铺满窗口、保留系统窗口控制按钮;titleBarHeight 是应用自绘
  *   标题栏的高度——宿主让控制按钮在这个高度内垂直居中。控制按钮占用的区域见 MediaQuery.windowControls。
- * - resizeBorder: 窗口内侧的系统缩放边框(逻辑像素, 数字或各边独立的 EdgeInsets;未给出时用宿主默认 5)。在这里
+ * - resizeBorder: 窗口内侧的系统缩放边框(逻辑像素, 数字或各边独立的 EdgeInsets;未给出时用宿主默认 5, 从给出改回
+ *   未给出时恢复宿主默认)。在这里
  *   光标显示为缩放形状、按下交给系统缩放, 优先于应用内容。0 = 该边没有内侧边框, 应用内容收到这里的全部输入
  *   (系统在窗口外侧的缩放区仍可用)——例如顶栏铺满可点击的标签页时用 EdgeInsets.only({ left: 5, right: 5, bottom: 5 })。
  *
@@ -45,7 +47,8 @@ export class WindowChrome extends StatefulView {
 
 class WindowChromeState extends State<WindowChrome> {
   #applied: string | null = null;
-  #appliedResize: string | null = null;
+  // 上次设置的缩放边框(null = 宿主默认);窗口变了视为新窗口, 新窗口本就是默认值。
+  #appliedResize: { widget: Widget; edges: string | null } | null = null;
   #apply(): void {
     const widget = WidgetScope.maybeOf(this.context);
     if (widget === null) return;
@@ -56,12 +59,12 @@ class WindowChromeState extends State<WindowChrome> {
       widget.setTitleBar({ hidden: w.hiddenTitleBar, height: w.titleBarHeight ?? undefined });
     }
     const border = w.resizeBorder;
-    if (border === null) return;
-    const edges = typeof border === "number" ? border : { left: border.left, top: border.top, right: border.right, bottom: border.bottom };
-    const resizeKey = `${widget.id}:${JSON.stringify(edges)}`;
-    if (resizeKey === this.#appliedResize) return;
-    this.#appliedResize = resizeKey;
-    widget.setResizeBorder(edges);
+    const edges = border === null ? null
+      : typeof border === "number" ? border : { left: border.left, top: border.top, right: border.right, bottom: border.bottom };
+    const resizeKey = edges === null ? null : JSON.stringify(edges);
+    const previous = this.#appliedResize?.widget === widget ? this.#appliedResize.edges : null;
+    this.#appliedResize = { widget, edges: resizeKey };
+    if (resizeKey !== previous) widget.setResizeBorder(edges);
   }
   override didChangeDependencies(): void {
     this.#apply();

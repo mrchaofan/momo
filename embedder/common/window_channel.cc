@@ -69,8 +69,15 @@ WindowOptions ParseWindowOptions(const EncodableValue& a) {
   return o;
 }
 
-// setResizeBorder: 给出的边覆盖当前值(负数按 0), 未给出的边保持不变。
+// setResizeBorder: reset 为 true 时各边先恢复默认值;再由给出的边覆盖(负数按 0), 未给出的边保持不变。
 WindowResizeOptions MergeResizeBorder(WindowResizeOptions o, const EncodableValue& a) {
+  if (Bool(a, "reset", false)) {
+    const WindowResizeOptions defaults;
+    o.border_left = defaults.border_left;
+    o.border_top = defaults.border_top;
+    o.border_right = defaults.border_right;
+    o.border_bottom = defaults.border_bottom;
+  }
   auto edge = [&a](std::string_view key, double current) {
     const std::optional<double> v = OptNum(a, key);
     return v.has_value() ? (*v > 0 ? *v : 0.0) : current;

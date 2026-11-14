@@ -104,6 +104,9 @@ group("multi-window", () => {
     await t.pumpView(new WindowChrome({ resizeBorder: EdgeInsets.only({ left: 4, right: 4, bottom: 4 }), child: new SizedBox({}) }));
     await t.pump();
     expect.deepEqual(mock.resizeBorders.get(0), { left: 4, top: 0, right: 4, bottom: 4 });
+    await t.pumpView(new WindowChrome({ child: new SizedBox({}) }));
+    await t.pump();
+    expect.isFalse(mock.resizeBorders.has(0), "border removed: the window goes back to the host default");
 
     const win = await Widget.create({ width: 200, height: 100, resizable: false });
     expect.equal(mock.lastCreateViewOptions?.resizable, false, "create-time value");

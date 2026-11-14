@@ -15,7 +15,8 @@
 //     setTitle {view, title} / setMinSize {view, width, height} / setCursor {view, cursor}
 //     setAlwaysOnTop {view, on} / setPosition {view, x, y}
 //     setResizable {view, resizable}     用户能否拖动边框缩放窗口
-//     setResizeBorder {view, left?, top?, right?, bottom?}   窗口内侧的系统缩放边框(未给出的边保持不变)
+//     setResizeBorder {view, reset?, left?, top?, right?, bottom?}   窗口内侧的系统缩放边框(reset: 各边先恢复
+//                                         默认值;未给出的边保持不变)
 //     setTitleBar {view, hidden, height?}
 //     startDrag {view, sequenceId}        以进行中的 momo 按下序列开始系统窗口拖动(业务层决定哪里可拖)
 //     startMoveLoop {view, x, y} / endMoveLoop {view}   宿主驱动的窗口跟随指针(x, y = 抓取偏移)

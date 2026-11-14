@@ -852,8 +852,11 @@ function handleWindowCall(call: MethodCall): unknown {
       control.resizable.set(view, a["resizable"] === true);
       return null;
     case "setResizeBorder": {
-      const { view: _v, ...edges } = a;
-      control.resizeBorders.set(view, { ...control.resizeBorders.get(view), ...(edges as Record<string, number>) });
+      const { view: _v, reset, ...edges } = a;
+      // reset: 各边恢复宿主默认值(不再记录覆盖值)。
+      const base = reset === true ? {} : control.resizeBorders.get(view);
+      if (reset === true && Object.keys(edges).length === 0) control.resizeBorders.delete(view);
+      else control.resizeBorders.set(view, { ...base, ...(edges as Record<string, number>) });
       return null;
     }
     case "setTitleBar":
