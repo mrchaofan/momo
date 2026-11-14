@@ -10,6 +10,15 @@
 add_library(momo_embedder_pointer STATIC common/pointer_dispatcher.cc)
 target_link_libraries(momo_embedder_pointer PUBLIC momo_engine_platform)
 
+# Windows 平台实现中不依赖 <windows.h> 的纯逻辑(键码映射、鼠标消息翻译、多 DPI 屏幕坐标、窗口框架命中):
+# 在所有平台编译, 单测在 macOS 上同样运行;Windows 的平台实现链接它。
+add_library(momo_embedder_windows_portable STATIC
+  windows/win_frame.cc
+  windows/win_key_mapping.cc
+  windows/win_mouse_events.cc
+  windows/win_screen_layout.cc)
+target_link_libraries(momo_embedder_windows_portable PUBLIC momo_engine_platform momo_embedder_pointer)
+
 add_library(momo_embedder_common STATIC
   common/app_channel.cc
   common/app_config.cc
@@ -89,26 +98,29 @@ if(APPLE)
     set_property(TARGET momo_app_mac APPEND PROPERTY INSTALL_RPATH "@executable_path/../Frameworks")
   endif()
 elseif(WIN32)
-  # 注意: embedder/windows 未在 Windows 上编译验证(实现于 macOS, 无 Windows SDK)。
-  # GPU(ANGLE, kAngleGl)surface 未实现: 窗口只用 GDI 软件 surface(win_surface_software.cc)。
-  # Win10 API(GetDpiForWindow、AdjustWindowRectExForDpi、SetProcessDpiAwarenessContext 等)。
-  # UNICODE/NOMINMAX/WIN32_LEAN_AND_MEAN 在 MSVC 下已由 momo_compile_options 定义, 这里对其他工具链兜底。
+  # 注意: embedder/windows 未在 Windows 上编译运行验证(实现于 macOS: 纯逻辑部分有单测, 依赖 Win32 的部分只经
+  # mingw-w64 头文件交叉编译检查)。Win10 API(GetDpiForWindow、AdjustWindowRectExForDpi、
+  # SetProcessDpiAwarenessContext 等)。UNICODE/NOMINMAX/WIN32_LEAN_AND_MEAN 在 MSVC 下已由 momo_compile_options
+  # 定义, 这里对其他工具链兜底。
   set(_momo_win_defines _WIN32_WINNT=0x0A00 WINVER=0x0A00 UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
 
-  # ---- Windows 平台实现(原 platform/windows)----
+  # ---- Windows 平台实现 ----
   add_library(momo_embedder_windows STATIC
-    windows/win_key_mapping.cc
+    windows/win_app.cc
+    windows/win_caption_buttons.cc
+    windows/win_displays.cc
     windows/win_native_loop.cc
     windows/win_platform_integration.cc
     windows/win_services.cc
+    windows/win_surface_d3d.cc
     windows/win_surface_software.cc
     windows/win_text_input.cc
     windows/win_util.cc
     windows/win_vsync_dwm.cc
     windows/win_window.cc)
   target_link_libraries(momo_embedder_windows
-    PUBLIC momo_engine_platform
-    PRIVATE user32 gdi32 dwmapi imm32 shcore shell32 ole32 advapi32)
+    PUBLIC momo_engine_platform momo_embedder_pointer momo_embedder_windows_portable
+    PRIVATE user32 gdi32 dwmapi imm32 shcore shell32 ole32 advapi32 winmm d3d12 dxgi)
   target_compile_definitions(momo_embedder_windows PRIVATE ${_momo_win_defines})
 
   if(MOMO_BUILD_TESTS)
@@ -120,9 +132,13 @@ elseif(WIN32)
   endif()
 
   set(_momo_app_win_sources windows/main_win.cc windows/win_app_delegate.cc)
+  # 清单: Win10/11 兼容声明(分层子窗口 WS_EX_LAYERED 需要 Win8+ 声明)、PerMonitorV2 DPI 感知、UTF-8 活动代码页。
+  # MSVC/clang-cl 链接器直接嵌入 .manifest;其他工具链(MinGW)经资源脚本嵌入。
   if(MSVC)
-    # 清单: Win10/11 兼容声明、PerMonitorV2 DPI 感知、UTF-8 活动代码页(MSVC/clang-cl 链接器自动嵌入)。
     list(APPEND _momo_app_win_sources windows/momo_app_win.manifest)
+  else()
+    enable_language(RC)
+    list(APPEND _momo_app_win_sources windows/momo_app_win.rc)
   endif()
   add_executable(momo_app_win WIN32 ${_momo_app_win_sources})
   target_link_libraries(momo_app_win PRIVATE momo_embedder_common momo_embedder_windows shell32 user32)
@@ -138,17 +154,8 @@ elseif(WIN32)
               "$<TARGET_FILE_DIR:momo_app_win>/bundle.js"
       COMMENT "Copying default JS bundle next to Momo.exe")
   endif()
-  # libnode: Windows 尚无构建(tools/build_libnode.py 只支持 macOS), cmake/momo_prebuilt.cmake 只在 APPLE 上
-  # 导出 momo::v8, 因此 Windows 上 MOMO_HAVE_V8 恒为 OFF。接入时把 MOMO_V8_RUNTIME_DIR 下的 libnode DLL
-  # 拷到 exe 同级(DLL 搜索路径首选 exe 目录)。
-  if(MOMO_HAVE_V8)
-    file(GLOB _momo_v8_dlls "${MOMO_V8_RUNTIME_DIR}/*.dll")
-    if(_momo_v8_dlls)
-      add_custom_command(TARGET momo_app_win POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_momo_v8_dlls} "$<TARGET_FILE_DIR:momo_app_win>"
-        COMMENT "Copying libnode DLL next to Momo.exe")
-    endif()
-  endif()
+  # libnode.dll 拷到 exe 同级(DLL 搜索路径首选 exe 目录;tools/build_libnode.py 在 Windows 上构建)。
+  momo_target_use_v8_runtime(momo_app_win)
 endif()
 
 # ---- momo_headless: 无窗口运行 bundle(headless 测试运行器的引擎侧, docs/09 §5)----
@@ -184,4 +191,9 @@ if(MOMO_BUILD_TESTS)
     common/window_channel_unittests.cc)
   target_link_libraries(momo_embedder_unittests PRIVATE momo_embedder_common GTest::gtest_main)
   gtest_discover_tests(momo_embedder_unittests)
+
+  add_executable(momo_embedder_windows_portable_unittests windows/win_portable_unittests.cc)
+  target_link_libraries(momo_embedder_windows_portable_unittests PRIVATE momo_embedder_windows_portable
+                        GTest::gtest_main)
+  gtest_discover_tests(momo_embedder_windows_portable_unittests)
 endif()

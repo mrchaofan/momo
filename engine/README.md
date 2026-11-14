@@ -19,7 +19,7 @@
 ## 状态(M5)
 
 全部模块已实现。图片缓存(ImageCache, LRU)在框架层 `painting/`(与 Flutter 一致), 引擎只负责解码。
-GPU: Metal 后端已接入(创建失败自动回退软件);ANGLE/D3D(Windows)未实现。
+GPU: Metal 后端已接入(创建失败自动回退软件);Direct3D 12 后端(Windows, `graphics/gpu/d3d_rasterizer.cc`)已实现, 未在 Windows 上运行验证。
 
 帧路径:JS `window.scheduleFrame()` → `Animator::RequestFrame` → VsyncWaiter → `Engine::BeginFrame`(JS onBeginFrame + onDrawFrame → 各视图 `view.render(scene)`)→ `Animator::Render` → `Pipeline`(深度 2)→ raster `Rasterizer::Draw` → `graphics::RasterizeLayerTree` → surface present。
 

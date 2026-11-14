@@ -1,17 +1,14 @@
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-
 #include "embedder/windows/win_app_delegate.h"
 
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#include "embedder/windows/win_util.h"
+
 #include <shellapi.h>
 
 #include <cwchar>
 #include <utility>
 
 #include "base/logging.h"
+#include "embedder/common/application.h"
 
 namespace momo::embedder {
 
@@ -26,16 +23,6 @@ constexpr int kFindReceiverRetries = 20;
 constexpr DWORD kFindReceiverIntervalMs = 50;
 constexpr UINT kSendTimeoutMs = 3000;
 
-std::string WideToUtf8(const wchar_t* wide) {
-  const int len = ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-  if (len <= 1) {
-    return {};
-  }
-  std::string out(static_cast<size_t>(len - 1), '\0');
-  ::WideCharToMultiByte(CP_UTF8, 0, wide, -1, out.data(), len, nullptr, nullptr);
-  return out;
-}
-
 // 完整命令行(含 argv[0])→ UTF-8 参数(不含 argv[0])。
 std::vector<std::string> ParseCommandLine(const wchar_t* command_line) {
   std::vector<std::string> args;
@@ -45,15 +32,13 @@ std::vector<std::string> ParseCommandLine(const wchar_t* command_line) {
     return args;
   }
   for (int i = 1; i < argc; ++i) {
-    args.push_back(WideToUtf8(argv[i]));
+    args.push_back(windows::WideToUtf8(argv[i]));
   }
   ::LocalFree(argv);
   return args;
 }
 
-std::wstring ReceiverClassName(const std::wstring& app_id) {
-  return L"MomoSingleInstance." + app_id;
-}
+std::wstring ReceiverClassName(const std::wstring& app_id) { return L"MomoSingleInstance." + app_id; }
 
 }  // namespace
 
@@ -63,28 +48,33 @@ struct WinAppDelegate::Receiver {
       const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lparam);
       ::SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(create->lpCreateParams));
     }
-    if (message == WM_COPYDATA) {
-      auto* self = reinterpret_cast<WinAppDelegate*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-      const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
-      if (self == nullptr || data == nullptr || data->dwData != kCopyDataMagic ||
-          data->lpData == nullptr || data->cbData < sizeof(wchar_t) ||
-          data->cbData % sizeof(wchar_t) != 0 || data->cbData > kMaxCopyDataBytes) {
-        return FALSE;
+    auto* self = reinterpret_cast<WinAppDelegate*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (message) {
+      case WM_COPYDATA: {
+        const auto* data = reinterpret_cast<const COPYDATASTRUCT*>(lparam);
+        if (self == nullptr || data == nullptr || data->dwData != kCopyDataMagic || data->lpData == nullptr ||
+            data->cbData < sizeof(wchar_t) || data->cbData % sizeof(wchar_t) != 0 ||
+            data->cbData > kMaxCopyDataBytes) {
+          return FALSE;
+        }
+        // 数据只在本次消息处理期间有效: 先拷贝, 且不信任结尾 NUL。
+        std::wstring command_line(static_cast<const wchar_t*>(data->lpData), data->cbData / sizeof(wchar_t));
+        while (!command_line.empty() && command_line.back() == L'\0') {
+          command_line.pop_back();
+        }
+        self->OnSecondInstance(ParseCommandLine(command_line.c_str()));
+        return TRUE;
       }
-      // 数据只在本次消息处理期间有效: 先拷贝, 且不信任结尾 NUL。
-      std::wstring command_line(static_cast<const wchar_t*>(data->lpData),
-                                data->cbData / sizeof(wchar_t));
-      while (!command_line.empty() && command_line.back() == L'\0') {
-        command_line.pop_back();
-      }
-      std::vector<std::string> args = ParseCommandLine(command_line.c_str());
-      MOMO_LOG(INFO) << "Second instance forwarded " << args.size() << " argument(s)";
-      if (self->second_instance_handler_) {
-        self->second_instance_handler_(std::move(args));
-      }
-      return TRUE;
+      case WM_QUERYENDSESSION:
+        return TRUE;  // 允许结束会话(无法同步询问 JS)
+      case WM_ENDSESSION:
+        if (wparam != FALSE && self != nullptr) {
+          self->OnEndSession();
+        }
+        return 0;
+      default:
+        return ::DefWindowProcW(hwnd, message, wparam, lparam);
     }
-    return ::DefWindowProcW(hwnd, message, wparam, lparam);
   }
 };
 
@@ -119,10 +109,10 @@ bool WinAppDelegate::AcquireSingleInstance(const std::wstring& app_id) {
   }
   if (::GetLastError() == ERROR_ALREADY_EXISTS) {
     ::CloseHandle(mutex);
-    // 把命令行转发给已有实例(由它激活自己的窗口)。
+    // 把命令行转发给已有实例(由它重新激活)。
     HWND target = nullptr;
     for (int i = 0; i < kFindReceiverRetries && target == nullptr; ++i) {
-      target = ::FindWindowExW(HWND_MESSAGE, nullptr, class_name.c_str(), nullptr);
+      target = ::FindWindowW(class_name.c_str(), nullptr);
       if (target == nullptr) {
         ::Sleep(kFindReceiverIntervalMs);
       }
@@ -143,16 +133,15 @@ bool WinAppDelegate::AcquireSingleInstance(const std::wstring& app_id) {
     data.lpData = const_cast<wchar_t*>(command_line);
     DWORD_PTR result = 0;
     if (data.cbData <= kMaxCopyDataBytes &&
-        ::SendMessageTimeoutW(target, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data),
-                              SMTO_ABORTIFHUNG | SMTO_BLOCK, kSendTimeoutMs, &result) == 0) {
-      MOMO_LOG(WARNING) << "Forwarding the command line to the running instance failed: "
-                        << ::GetLastError();
+        ::SendMessageTimeoutW(target, WM_COPYDATA, 0, reinterpret_cast<LPARAM>(&data), SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                              kSendTimeoutMs, &result) == 0) {
+      MOMO_LOG(WARNING) << "Forwarding the command line to the running instance failed: " << ::GetLastError();
     }
     return false;
   }
   instance_mutex_ = mutex;
 
-  // 接收后续实例转发的命令行(消息窗口: 不可见、不参与枚举, 但可被 FindWindowEx(HWND_MESSAGE) 找到)。
+  // 接收窗口: 从不显示的顶层窗口(消息窗口 HWND_MESSAGE 收不到会话结束等广播)。
   HINSTANCE instance = ::GetModuleHandleW(nullptr);
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -163,7 +152,7 @@ bool WinAppDelegate::AcquireSingleInstance(const std::wstring& app_id) {
     MOMO_LOG(WARNING) << "RegisterClassExW(single instance) failed: " << ::GetLastError();
     return true;
   }
-  receiver_window_ = ::CreateWindowExW(0, class_name.c_str(), L"", 0, 0, 0, 0, 0, HWND_MESSAGE,
+  receiver_window_ = ::CreateWindowExW(WS_EX_TOOLWINDOW, class_name.c_str(), L"", WS_POPUP, 0, 0, 0, 0, nullptr,
                                        nullptr, instance, this);
   if (receiver_window_ == nullptr) {
     MOMO_LOG(WARNING) << "CreateWindowExW(single instance) failed: " << ::GetLastError();
@@ -171,20 +160,42 @@ bool WinAppDelegate::AcquireSingleInstance(const std::wstring& app_id) {
   return true;
 }
 
-void WinAppDelegate::ActivateWindow(void* handle) {
-  HWND hwnd = static_cast<HWND>(handle);
-  if (hwnd == nullptr || !::IsWindow(hwnd)) {
+void WinAppDelegate::OnAppActiveChanged(bool active) {
+  if (application_ != nullptr) {
+    application_->OnAppActiveChanged(active);
+  }
+}
+
+void WinAppDelegate::OnSecondInstance(std::vector<std::string> args) {
+  MOMO_LOG(INFO) << "Second instance forwarded " << args.size() << " argument(s)";
+  if (application_ == nullptr) {
     return;
   }
-  ::ShowWindow(hwnd, ::IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
-  ::SetForegroundWindow(hwnd);
+  // WM_COPYDATA 可能在系统模态循环或嵌套等待里送达: 投递到 platform 线程的下一个任务再处理, 不在这里重入。
+  application_->task_runner()->PostTask([weak = WeakPtr<Application>(application_)] {
+    Application* app = weak.get();
+    if (app == nullptr || app->state() == Application::State::kTerminating) {
+      return;
+    }
+    // 系统在 macOS 上点击 Dock 图标时做的事: 有可见窗口则激活应用(最前面的窗口到前台)。之后交给 JS。
+    const bool has_visible_windows = app->windows().has_visible_window();
+    if (has_visible_windows) {
+      app->platform().app().Activate(/*steal=*/true).IgnoreError();
+    }
+    app->OnReopen(has_visible_windows);
+  });
 }
 
-std::vector<std::string> WinAppDelegate::CommandLineArgsUtf8() {
-  return ParseCommandLine(::GetCommandLineW());
+void WinAppDelegate::OnEndSession() {
+  if (application_ != nullptr && application_->state() != Application::State::kTerminating) {
+    MOMO_LOG(INFO) << "Session is ending; shutting down";
+    application_->Terminate(0);
+  }
 }
 
-std::filesystem::path WinAppDelegate::ExecutableDir() {
+std::vector<std::string> WinAppDelegate::CommandLineArgsUtf8() { return ParseCommandLine(::GetCommandLineW()); }
+
+std::filesystem::path WinAppDelegate::ExecutablePath() {
   std::wstring buffer(MAX_PATH, L'\0');
   for (;;) {
     const DWORD len = ::GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
@@ -197,7 +208,7 @@ std::filesystem::path WinAppDelegate::ExecutableDir() {
     }
     buffer.resize(buffer.size() * 2);
   }
-  return std::filesystem::path(buffer).parent_path();
+  return std::filesystem::path(buffer);
 }
 
 }  // namespace momo::embedder

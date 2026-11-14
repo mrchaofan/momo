@@ -2,18 +2,22 @@
 """从源码构建 libnode(Node.js 共享库)并安装到 third_party/prebuilt/node/(docs/09 §2)。
 
 Node 官方不发布 libnode 二进制, 所以按 cmake/deps.lock.json 的 node 条目从源码构建:
-  下载源码包 → SHA256 校验 → configure(--shared --without-npm --ninja)→ ninja libnode
-  → 安装头文件(Node 的 tools/install.py --headers-only)与 libnode.<模块版本>.dylib → 写戳记。
+  下载源码包 → SHA256 校验 → 构建 → 安装头文件(Node 的 tools/install.py --headers-only)与库 → 写戳记。
+    macOS:   configure(--shared --without-npm --ninja)→ ninja libnode → libnode.<模块版本>.dylib
+    Windows: vcbuild.bat release x64 dll nonpm(需要 Visual Studio 2022 + ClangCL 组件, 见 Node 的
+             BUILDING.md)→ libnode.dll + 导入库 libnode.lib
 
 用法:
   python3 tools/build_libnode.py               # 已安装且版本一致时跳过
   python3 tools/build_libnode.py --force
   python3 tools/build_libnode.py --jobs 8 --work-dir /tmp/libnode
 
-要求: Python 3.10+(Node 的 configure 要求)、ninja、Xcode 命令行工具。
+要求: Python 3.10+(Node 的 configure 要求);macOS: ninja、Xcode 命令行工具;Windows: Visual Studio 2022。
 产物:
   third_party/prebuilt/node/include/node/   node.h、uv.h、v8*.h、libplatform/ …
-  third_party/prebuilt/node/lib/libnode.<ver>.dylib(install name @rpath/…)
+  third_party/prebuilt/node/lib/libnode.<ver>.dylib(install name @rpath/…)          macOS
+  third_party/prebuilt/node/lib/libnode.dll + libnode.lib                             Windows
+  注意: Windows 分支未在 Windows 上运行验证。
   third_party/prebuilt/node/.momo_dep.json  戳记(版本/平台/源码 sha256/configure 参数)
 """
 
@@ -72,13 +76,15 @@ def main():
                         help="source tree and build output (large: ~6 GB)")
     args = parser.parse_args()
 
-    if sys.platform != "darwin":
-        sys.exit("build_libnode: only macOS is supported for now")
+    windows = sys.platform.startswith("win")
+    if sys.platform != "darwin" and not windows:
+        sys.exit("build_libnode: only macOS and Windows are supported")
     with open(LOCK_PATH, encoding="utf-8") as f:
         dep = json.load(f)["deps"]["node"]
     version, source = dep["version"], dep["source_archive"]
-    configure_flags = dep["configure_flags"]
-    stamp = {"name": "node", "version": version, "platform": "macos-arm64",
+    # Windows 用 vcbuild.bat 的参数(configure 由它调用;dll = --shared, nonpm = --without-npm)。
+    configure_flags = ["release", "x64", "dll", "nonpm"] if windows else dep["configure_flags"]
+    stamp = {"name": "node", "version": version, "platform": "windows-x64" if windows else "macos-arm64",
              "sha256": source["sha256"], "configure_flags": configure_flags}
 
     stamp_path = os.path.join(DEST, STAMP_NAME)
@@ -107,14 +113,18 @@ def main():
         with tarfile.open(archive) as tar:
             tar.extractall(args.work_dir, filter="data") if sys.version_info >= (3, 12) else tar.extractall(args.work_dir)
 
-    # 3. configure + ninja libnode。
+    # 3. 构建 libnode。
     python = find_python()
     env = dict(os.environ)
     env["PATH"] = os.path.dirname(python) + os.pathsep + env.get("PATH", "")
-    log(f"configure {' '.join(configure_flags)}")
-    subprocess.run([python, "configure", *configure_flags], cwd=src, env=env, check=True)
-    log(f"ninja libnode (-j{args.jobs}), this takes a while")
-    subprocess.run(["ninja", "-C", "out/Release", f"-j{args.jobs}", "libnode"], cwd=src, env=env, check=True)
+    if windows:
+        log(f"vcbuild.bat {' '.join(configure_flags)}, this takes a while")
+        subprocess.run(["cmd", "/c", "vcbuild.bat", *configure_flags], cwd=src, env=env, check=True)
+    else:
+        log(f"configure {' '.join(configure_flags)}")
+        subprocess.run([python, "configure", *configure_flags], cwd=src, env=env, check=True)
+        log(f"ninja libnode (-j{args.jobs}), this takes a while")
+        subprocess.run(["ninja", "-C", "out/Release", f"-j{args.jobs}", "libnode"], cwd=src, env=env, check=True)
 
     # 4. 安装: 头文件 + dylib。
     if os.path.isdir(DEST):
@@ -125,6 +135,16 @@ def main():
     # Node 的头文件安装不含 V8 inspector 头(libnode 导出其符号): momo 的调试器需要。
     for header in glob.glob(os.path.join(src, "deps", "v8", "include", "v8-inspector*.h")):
         shutil.copy2(header, os.path.join(DEST, "include", "node"))
+    if windows:
+        for name in ("libnode.dll", "libnode.lib"):
+            built = os.path.join(src, "out", "Release", name)
+            if not os.path.exists(built):
+                sys.exit(f"build_libnode: {built} not found")
+            shutil.copy2(built, os.path.join(DEST, "lib", name))
+        with open(stamp_path, "w", encoding="utf-8") as f:
+            json.dump(stamp, f, indent=2)
+        log(f"installed {os.path.join(DEST, 'lib', 'libnode.dll')}")
+        return
     libs = glob.glob(os.path.join(src, "out", "Release", "libnode.*.dylib"))
     if len(libs) != 1:
         sys.exit(f"build_libnode: expected one libnode.*.dylib, found {libs}")

@@ -61,12 +61,14 @@ StatusOr<std::unique_ptr<RenderBackend>> CreateRenderBackend(platform::RenderSur
 | 后端 | 平台 | 说明 |
 |---|---|---|
 | `MetalBackend` | macOS | CAMetalLayer + GrMtlBackendContext,首选 |
-| `AngleGlBackend` | Windows | ANGLE(EGL→D3D11) + GrGLInterface;与 Chromium/Flutter Windows 同路线,避开驱动坑 |
+| `Direct3DBackend` | Windows | DXGI flip-model 交换链 + Ganesh D3D12(`GrD3DBackendContext`;skia-pack 的 Windows 包自带);未在 Windows 上运行验证 |
 | `SoftwareBackend` | 双端 | SkSurface raster + 平台位图呈现(Win: StretchDIBits;Mac: layer contents),远程桌面/无 GPU 回退。**M1 已实现**:`graphics::RasterizeLayerTree` 画进 `platform::SoftwarePixels`(BGRA 预乘),Mac `MacSoftwareSurface`:raster 线程直接画进 IOSurface(≤3 个缓冲, 零拷贝, sRGB 标记由 WindowServer 做色彩匹配), 主线程把它设为 layer.contents;**主线程最多挂起一帧**(新帧覆盖待显示槽, 槽从空变满才投递), 缓冲全忙时丢帧——保证 raster 快于主线程时主队列与内存有界、输入不被饿死 |
 
 后端选择在 Rasterizer 初始化时探测,失败逐级降回软件。**M2 已实现**: `MetalBackend`(`engine/graphics/gpu/metal_rasterizer.mm`,
 CAMetalLayer drawable 包装为 render target)与回退链(GPU 后端创建失败 → `RenderSurface::FallBackToSoftware()` → 软件后端);
-`AngleGlBackend` 未实现(Windows)。io 线程可建共享 context 做纹理预上传(M5+ 优化项,首期图片在 raster 线程惰性上传)。
+`Direct3DBackend`(`engine/graphics/gpu/d3d_rasterizer.cc`, 后台缓冲包装为 render target;每帧 `flush(kPresent)` 后等待 GPU 完成,
+让 Skia 释放对后台缓冲的引用, surface 才能随时 `ResizeBuffers`)。surface 运行中自行改变种类时(Windows 设备丢失后
+`WinD3DSurface` 回退软件), Rasterizer 在下一帧发现 `surface.kind()` 与后端不一致并重建后端;重建 GPU 设备未实现。io 线程可建共享 context 做纹理预上传(M5+ 优化项,首期图片在 raster 线程惰性上传)。
 
 ## 5. 帧调度与同步
 
@@ -79,8 +81,8 @@ CAMetalLayer drawable 包装为 render target)与回退链(GPU 后端创建失�
   `setFrameSize:` 后先把新尺寸交给引擎,再在主线程等待一帧该尺寸的帧(连同之前排队的帧按序)在当前事务里呈现——新尺寸与新内容、
   平台视图几何同一事务生效。等待期间以 `EventLoop::RunDueTasksNested` 执行平台线程任务(vsync 请求与回调要经过主线程,否则死锁);
   上限 100 ms(宿主的实现细节, 不对应用暴露;同 Flutter 的 resize synchronizer),
-  应用更慢时退化为暂时拉伸,不让窗口拖动卡住。软件 surface 尚未同步。Windows 上活动 resize 期间 platform 线程同样
-  阻塞等待该帧 present(消除拉伸)。
+  应用更慢时退化为暂时拉伸,不让窗口拖动卡住。macOS 软件 surface 尚未同步。Windows(`WinWindow::SynchronizeLiveResize`):
+  系统缩放循环里的 `WM_SIZE` 先通知新尺寸, 再等待 D3D 交换链(或软件 surface)呈现一帧该尺寸的帧, 同样上限 100 ms。
 - 首帧特殊路径:`Rasterizer` 支持 `DrawLastLayerTree` 以便窗口显示前预热 shader/上下文。
 
 ## 6. 文本与图片在管线中的位置
@@ -167,4 +169,4 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
   (`PlatformViewRegistry`);热重启与关闭时引擎销毁全部视图(先移出窗口再交给扩展释放,早于扩展 `on_detach`)。
   JS 侧视图 id 带每个运行时随机的高位标签,避免热重启前的在途消息误伤新视图。
 - **限制**:只支持平移与正向缩放(旋转/斜切按包围盒近似并告警);圆角只支持与可见区域贴合的一层;
-  软件渲染 surface 不支持平台视图;Windows embedder 未实现(契约已就绪)。
+  软件渲染 surface 不支持平台视图;Windows embedder 未实现(契约已就绪, 需要子 HWND + 覆盖层合成)。

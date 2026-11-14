@@ -237,7 +237,7 @@ window.scheduleFrame();
 | 应用 | `app.quit()`（可被 `before-quit` / 窗口 `close` / `will-quit` 取消）、`app.exit(code)`（不询问）、`app.hide()` / `app.focus()`；事件 `app.on("window-all-closed" / "activate" / "state-changed", ...)`。**最后一个窗口关闭后应用不会自动退出**，单窗口应用写 `app.on("window-all-closed", () => app.quit())` |
 | 拦截关闭 | 关窗：`widget.on("close", (e) => e.preventDefault())`；退出应用（Cmd+Q）：`app.on("before-quit", (e) => e.preventDefault())`。需要异步确认时用 `e.waitUntil(promise)`（例如提示"有未保存内容"） |
 | 窗口 | `await Widget.create({ title, width, height, show, ... })` 打开窗口（`Widget.fromId(0)` 是启动窗口），内容用 `ViewAnchor({ views: [new RootView({ widget, child })] })` 渲染；`Title` / `MaterialApp({ title })` 设置所在窗口的标题；窗口方法 `close` / `destroy` / `show` / `hide` / `minimize` / `maximize` / `restore` / `focus` / `setPosition`，事件 `closed` / `focus` / `minimize` / `move` / `resize` / `ready-to-show`… |
-| 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`；`WindowDragArea` 声明可拖动窗口的区域 |
+| 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`，两侧留白用 `windowControlsPadding`（macOS 在左、Windows 在右，一份代码适配）；`WindowDragArea` 声明可拖动窗口的区域 |
 | 窗口能力 | `widget.capabilities`、`widget.bounds`、`widget.state`（平台不支持的能力是空操作，可先查询） |
 | 与原生通信 | `new MethodChannel("acme/foo").invokeMethod("bar", args)`；对端由原生扩展注册（见下文） |
 
@@ -488,7 +488,7 @@ C++ 测试经 CTest 运行（gtest + golden 像素比对）；框架测试同时
 
 - M0–M5 已实现，并在 macOS 上构建与测试：CTest 215 项全部通过（其中 9 项因沙箱环境没有 GPU、显示器或端口绑定而跳过）；框架 TS 测试在 Node mock 与真实引擎 headless 两种宿主下均通过。
 - M6 完成了 V8 code cache、精简版 Material、`.app` / DMG 打包；多窗口、无障碍、崩溃上报、性能浮层未做。
-- **Windows**：平台层代码已写完，但**未在 Windows 上编译验证**；ANGLE GPU 后端未实现。
+- **Windows**：平台层（与 macOS 同一套指针派发、窗口能力、应用生命周期）与 D3D12 GPU 后端已实现，但**未在 Windows 上编译运行验证**（macOS 上只做了单测与交叉编译检查）；不支持平台视图。
 - 技术选型：C++20（禁用异常与 RTTI）· V8 · Skia（macOS 走 Metal，CPU 光栅为回退）· SkParagraph（含 ICU）· CMake + Ninja。
 
 逐项状态见 [docs/11-roadmap.md](docs/11-roadmap.md)。

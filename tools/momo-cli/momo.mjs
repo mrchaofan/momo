@@ -7,7 +7,9 @@
 //       2) 扫描依赖中的 package.json "momo.extension" 声明 → 生成 extensions.manifest,
 //          拷贝当前平台的原生库;打印每个扩展申请的 capabilities(构建期可见性, docs/07 §6)
 //       3) macOS: 复制预编译运行时 Momo.app → <out>/<Name>.app, 放入 Resources/{bundle.js, assets/,
-//          extensions/};其他平台: 输出目录布局 <out>/<name>/{bundle.js, assets/, extensions/}
+//          extensions/};Windows: 运行时目录(--runtime, 含 Momo.exe 与 libnode.dll)→ <out>/<Name>/
+//          {<Name>.exe, *.dll, bundle.js, assets/, extensions/}(exe 同级即资源目录, docs/09 §4);
+//          其他平台: 输出目录布局 <out>/<name>/{bundle.js, assets/, extensions/}
 //       --dmg(macOS): 再用 hdiutil 产出 <Name>.dmg
 //   momo ext create <dir> --id=<acme.thing> [--name=<thing>]   扩展脚手架(C ABI 模板 + JS 门面)
 //   momo ext verify <library> [--package=<package.json>]        ABI 符号检查 + manifest 声明校验
@@ -214,6 +216,18 @@ async function build({ positional, flags }) {
       }
       fs.writeFileSync(plist, text);
     }
+  } else if (process.platform === "win32") {
+    const runtime = path.resolve(flags.runtime || path.join(repoRoot, "out/debug/embedder"));
+    const exe = path.join(runtime, "Momo.exe");
+    if (!fs.existsSync(exe)) fail(`runtime not found: ${exe} (build momo_app_win first or pass --runtime=<dir>)`);
+    bundleRoot = path.join(outDir, appName);
+    fs.rmSync(bundleRoot, { recursive: true, force: true });
+    fs.mkdirSync(bundleRoot, { recursive: true });
+    fs.copyFileSync(exe, path.join(bundleRoot, `${appName}.exe`));
+    for (const entry of fs.readdirSync(runtime)) {
+      if (entry.toLowerCase().endsWith(".dll")) fs.copyFileSync(path.join(runtime, entry), path.join(bundleRoot, entry));
+    }
+    resources = bundleRoot;
   } else {
     bundleRoot = path.join(outDir, appName);
     resources = bundleRoot;

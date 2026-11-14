@@ -1,4 +1,5 @@
 import type { Key } from "../foundation/key";
+import { EdgeInsets } from "../painting/edge_insets";
 import { Rect, Size } from "../painting/geometry";
 import { InheritedView, type BuildContext, type View } from "./framework";
 
@@ -16,6 +17,17 @@ export class MediaQueryData {
    * (同 Web 的 Window Controls Overlay)。
    */
   readonly windowControls: Rect | null;
+  /**
+   * 标题栏两侧被系统窗口控制按钮占用的宽度(逻辑像素, 只有 left / right): 按钮在窗口左半边(macOS 红绿灯)计入
+   * left = 按钮区右边缘, 在右半边(Windows 最小化/最大化/关闭)计入 right = 窗口宽 − 按钮区左边缘。自绘标题栏把它
+   * 当作两侧留白, 同一份代码适配两种布局。没有占用时为 EdgeInsets.zero。
+   */
+  get windowControlsPadding(): EdgeInsets {
+    const c = this.windowControls;
+    if (c === null) return EdgeInsets.zero;
+    const onLeft = c.left + c.width / 2 < this.size.width / 2;
+    return onLeft ? EdgeInsets.only({ left: c.right }) : EdgeInsets.only({ right: Math.max(0, this.size.width - c.left) });
+  }
   constructor(o: { size?: Size; devicePixelRatio?: number; textScaleFactor?: number; windowFocused?: boolean; windowControls?: Rect | null } = {}) {
     this.size = o.size ?? Size.zero;
     this.devicePixelRatio = o.devicePixelRatio ?? 1;

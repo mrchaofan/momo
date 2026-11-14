@@ -1,5 +1,3 @@
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK;本文件为纯 C++)。
-
 #include "embedder/windows/win_key_mapping.h"
 
 #include <cstddef>

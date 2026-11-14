@@ -4,7 +4,7 @@
 // 经 CreateRenderBackend 选取;新增后端只需新增实现并在工厂登记, Rasterizer 不变。
 //   kSoftware → SoftwareBackend(CPU 光栅进 SoftwarePixels)
 //   kMetal    → MetalBackend(Apple;GrDirectContext 来自 surface.gpu_context())
-//   kAngleGl  → TODO(M2, Windows)
+//   kDirect3D → Direct3DBackend(Windows;Ganesh D3D12, 设备与队列来自 surface.gpu_context())
 //   kNone     → NullBackend(只走 present, 测试/占位)
 // GPU 后端创建失败时由 Rasterizer 负责回退(surface.FallBackToSoftware() 后重建, rasterizer.cc)。
 // 线程约定: raster 线程创建、使用与析构(GPU 资源归 raster 线程, docs/08 §3)。

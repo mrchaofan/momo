@@ -1,8 +1,6 @@
 #pragma once
 
 // WinVsyncDwm: 基于 DwmFlush 的 platform::VsyncSource(docs/03 §4)。仅被 embedder/windows 的 .cc 包含。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-//
 // 按需运行: 专用线程 "momo.vsync"(momo::Thread, 自带 EventLoop)。RequestFrameCallback 时若未在运行,
 // 向该线程投递一个 Tick 任务;Tick 阻塞在 DwmFlush()(等到下一次 DWM 合成 ≈ vblank), 返回后若有待处理
 // 请求, 就把帧时间 PostToObject 到 platform 线程, 由那里触发一次性 callback, 再投递下一个 Tick。某个 Tick

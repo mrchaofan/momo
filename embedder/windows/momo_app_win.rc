@@ -1,0 +1,3 @@
+// 非 MSVC 工具链(MinGW 等)嵌入应用清单(MSVC 由链接器直接嵌入 momo_app_win.manifest, 见 embedder/CMakeLists.txt)。
+// 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST。
+1 24 "momo_app_win.manifest"

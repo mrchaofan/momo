@@ -9,7 +9,7 @@
 - [~] CMake 骨架 ✅;CMakePresets 与 CI 未建(本仓库仅本地构建)
 - [x] base:Status/StatusOr、logging、TaskRunner/EventLoop(MessagePump)、Object(DeleteLater 生命周期)、WeakPtr、task_util、macros(docs/12)
 - [x] 平台接口头文件定稿(engine/platform 契约 + embedder/common 平台抽象)(M3 补完 IME 协议、M2 补完 GPU 帧)
-- [~] embedder/macos ✅;embedder/windows 代码已写完, **未在 Windows 上编译验证**
+- [~] embedder/macos ✅;embedder/windows 与 macOS 对齐(指针派发、窗口能力、应用生命周期、D3D12), **未在 Windows 上运行验证(macOS 上: 纯逻辑部分有单测, 依赖 Win32 的部分经 mingw-w64 交叉编译检查)**
 - [x] embedder:入口、Application、生命周期状态机、TaskRunners 启动与有序关闭(含单实例/WM_COPYDATA, Windows 未验证)
 - [~] 验收:Mac ✅(单测 + TSan 干净);Windows 待在真机验证
 
@@ -29,8 +29,8 @@
 目标:动起来 + 点得到。
 
 - [x] VsyncSource(Mac CVDisplayLink / Win DwmFlush 未验证);Animator;pipeline 背压
-- [~] MetalBackend ✅(沙箱无 GPU, 真机待验证)+ 软件回退 ✅;AngleGlBackend ⬜(无 ANGLE 预编译包)
-- [x] 输入:PointerData/KeyData 归一化(keycode/扫描码 → HID 全表)、事件打包投递(Float64Array 平铺复用);resize: Mac drawableSize 同步, Windows 同步等帧未做
+- [~] MetalBackend ✅(沙箱无 GPU, 真机待验证)+ 软件回退 ✅;Direct3DBackend(D3D12)已实现, 未在 Windows 上运行验证
+- [x] 输入:PointerData/KeyData 归一化(keycode/扫描码 → HID 全表)、事件打包投递(Float64Array 平铺复用);resize: Mac drawableSize 同步, Windows WM_SIZE 里等待新尺寸帧(未在 Windows 上验证)
 - [x] MessageChannelHub + StandardCodec / StandardMethodCodec(JS/C++ 两端, Flutter 字节格式)
 - [x] V8 Inspector(--dev / --inspect-port / --inspect-brk);M7 起改用 Node 的 inspector
 - [x] 验收:`examples/bounce`(60fps + 鼠标跟随, 示例已于精简时删除);断点暂停/恢复经进程内会话测试, DevTools 连接需真机验证
@@ -72,16 +72,16 @@
 - [~] 冷启动:V8 code cache ✅(ESM 不支持完整 startup snapshot);首帧耗时未在真机测量
 - [~] material 精简版(Theme/Button/Checkbox/TextField/Scaffold/Dialog);文本选择拖柄、撤销重做未做
 - [~] 打包:.app + DMG(`momo build --dmg`)✅;MSIX、崩溃上报、性能浮层/Perfetto ⬜
-- [x] 多窗口支持(Shell 多视图, macOS;docs/02 §2、docs/06 §2);Windows embedder 未实现
+- [x] 多窗口支持(Shell 多视图, macOS;docs/02 §2、docs/06 §2);Windows 已实现, 未验证
 - [x] 分层整理: 窗口外观与行为、剪贴板/URL/输入法移出 engine, 改为 embedder 注册的宿主通道(`momo/window`、`momo/app`…,
       ARCHITECTURE §3.10);可选窗口能力显式声明(`WindowCapability`);所有窗口对等(视图 0 可关闭, `runView`);
       标题栏改为"应用声明高度、宿主报告控制按钮区域";拖动区域改为命中测试 + 手势竞技场;窗口跟随指针改为宿主移动循环;
-      指针序列的接收方固定(框架 `capturePointer` 定逻辑接收方, 宿主定原生接收窗口, 引擎不参与);`PointerEvent.viewId`。Windows 只实现了定位与指针捕获两项可选能力(未编译验证)
+      指针序列的接收方固定(框架 `capturePointer` 定逻辑接收方, 宿主定原生接收窗口, 引擎不参与);`PointerEvent.viewId`。Windows 已接入同一个 `PointerDispatcher`, 可选能力除平台视图与非激活窗口外与 macOS 一致(未在 Windows 上运行验证)
 - [x] 应用生命周期与窗口解耦: 应用状态只看应用本身(隐藏 = Suspended), 窗口可见性按视图(不可见的视图不出帧);
       最后一个窗口关闭不退出(`windowAllClosed`);退出流程 `Quit`(beforeQuit → 窗口 close → willQuit)/ `Exit(code)`;
       `Application` 与 `WindowManager` 拆分, 宿主通道统一为方法注册表(`HostChannel`);JS 侧 `app` / `Widget` 对象,
-      组件基类改名为 `View`(对齐 Chromium views)。Windows 侧的窗口状态与 PlatformApp 未编译验证, `WM_ACTIVATEAPP` /
-      `WM_QUERYENDSESSION` 尚未接入
+      组件基类改名为 `View`(对齐 Chromium views)。Windows: `WM_ACTIVATEAPP`(经 `WinApp`)、再次启动 = 重新激活(`OnReopen`)、
+      `WM_ENDSESSION` 有序关闭已接入, 未在 Windows 上运行验证
 - [ ] 无障碍(语义树 → UIA/AX)——设计预留,独立立项(未做)
 
 ## M7 · 接入 Node.js(参照 Electron `NodeBindings`)
@@ -96,12 +96,12 @@ ui 线程:`uv_run(UV_RUN_NOWAIT)` 由 ui 线程执行,独立的 poll 线程只�
       Node ESM 加载器 + `uv_run` 泵送、UI 事件 `CallbackScope`、`momo:*` / `ext:*` 经 `module.registerHooks`、Node inspector
       (删除自研 inspector)、Node 编译缓存替换自研 code cache;文档 04/08、ARCHITECTURE
 - [x] P2a:`process.exit()` 走应用的有序退出(`node::SetProcessExitHandler` → `Application::Exit`)
-- [ ] P2:Windows `PollEvents`(IOCP,参照 Electron `node_bindings_win.cc`)与 libnode 的 Windows 构建;Node 的
-      `AsyncLocalStorage` 上下文贯穿 momo 回调(`CallbackScope` 带 async context)
+- [~] P2:Windows `PollEvents`(IOCP, `engine/runtime/node_bindings_win.cc`)与 libnode 的 Windows 构建(`build_libnode.py`)已写, 未在
+      Windows 上验证;Node 的 `AsyncLocalStorage` 上下文贯穿 momo 回调(`CallbackScope` 带 async context)未做
 
 ## 风险清单(提前盯防)
 
 1. **Skia/V8 预编译供应链**:ICU 版本冲突、CRT 匹配——M1 第一周先打通,失败则降级为源码构建文档化路径。
-2. **Windows GPU 兼容性**:坚持 ANGLE 路线,软件回退必须始终可用。
+2. **Windows GPU 兼容性**:D3D12(skia-pack 自带, 无需额外依赖), 软件回退必须始终可用(无 D3D12 设备、远程桌面)。
 3. **JS↔C++ 边界性能**:M2 建立绘制压测基准(万级 draw op/帧),TypedArray 平铺方案不达标时改指令缓冲方案(JS 侧直接写 ArrayBuffer 指令流)。
 4. **ABI 稳定性**:C ABI 一旦发布不可破坏——M5 前用两个真实扩展原型验证 API 形状再定稿。

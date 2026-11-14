@@ -12,7 +12,7 @@ namespace {
 const char* BackendName(platform::SurfaceKind kind) {
   switch (kind) {
     case platform::SurfaceKind::kMetal: return "Metal";
-    case platform::SurfaceKind::kAngleGl: return "ANGLE GL";
+    case platform::SurfaceKind::kDirect3D: return "Direct3D 12";
     case platform::SurfaceKind::kSoftware: return "software";
     case platform::SurfaceKind::kNone: return "null";
   }
@@ -186,6 +186,13 @@ void Rasterizer::DrawAndReport(platform::ViewId view_id, ViewState& view,
 }
 
 void Rasterizer::DrawToSurface(ViewState& view, graphics::LayerTree& layer_tree) {
+  if (view.backend != nullptr && view.backend->kind() != view.surface->kind()) {
+    // surface 自己改变了种类(GPU 设备丢失后回退软件等): 按新的种类重建后端(在 raster 线程释放旧的 GPU 资源)。
+    MOMO_LOG(WARNING) << "Rasterizer: surface changed from " << BackendName(view.backend->kind()) << " to "
+                      << BackendName(view.surface->kind()) << "; recreating the render backend.";
+    view.backend.reset();
+    CreateBackend(view);
+  }
   if (view.backend == nullptr) {
     stats_.frames_failed++;
     return;
