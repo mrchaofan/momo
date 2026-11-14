@@ -38,7 +38,7 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
 - **最低 macOS 13.5**:Node 26 的构建目标,项目部署目标随之提高。
 - **libnode 不用于 ASan/TSan 构建**(未以 sanitizer 构建):sanitizer 构建中 `momo::v8` 不可用(`cmake/momo_prebuilt.cmake` 自动关闭)。
 - Windows:Skia 已锁定 `windows-x64` 包(带 Direct3D 12, `momo::skia` 定义 `SK_DIRECT3D`);libnode 由 `build_libnode.py` 在
-  Windows 上用 `vcbuild.bat release x64 dll nonpm` 构建出 `libnode.dll` + 导入库 `libnode.lib`(需要 VS 2022 + ClangCL),
+  Windows 上用 `vcbuild.bat release x64 dll nonpm` 构建出 `libnode.dll` + 导入库 `libnode.lib`(需要 Visual Studio 的 Clang 编译器和 LLVM MSBuild 工具集，以及 PATH 中的 NASM；Node 26 的 Temporal 支持需要 Rust 工具链),
   `momo_target_use_v8_runtime` 把 dll 拷到可执行文件旁边。以上 Windows 路径均未在 Windows 上运行验证。
 
 ### 2.2 获取与接入

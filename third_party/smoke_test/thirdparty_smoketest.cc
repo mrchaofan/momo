@@ -13,13 +13,18 @@
 #include "include/core/SkPathBuilder.h"
 #include "include/core/SkSurface.h"
 #include "include/effects/SkGradientShader.h"
+#if defined(_WIN32)
+#include "include/ports/SkTypeface_win.h"
+#else
 #include "include/ports/SkFontMgr_mac_ct.h"
+#endif
 #include "libplatform/libplatform.h"
 #include "modules/skparagraph/include/FontCollection.h"
 #include "modules/skparagraph/include/Paragraph.h"
 #include "modules/skparagraph/include/ParagraphBuilder.h"
 #include "modules/skunicode/include/SkUnicode_icu.h"
 #include "v8.h"
+#include "node.h"
 #include "gtest/gtest.h"
 
 namespace {
@@ -58,7 +63,11 @@ TEST(SkiaSmokeTest, RasterSurfaceDrawsGradientAndPath) {
 }
 
 TEST(SkiaSmokeTest, ParagraphLaysOutMixedScriptText) {
+#if defined(_WIN32)
+  sk_sp<SkFontMgr> font_mgr = SkFontMgr_New_DirectWrite();
+#else
   sk_sp<SkFontMgr> font_mgr = SkFontMgr_New_CoreText(nullptr);
+#endif
   ASSERT_NE(font_mgr, nullptr);
   auto fonts = sk_make_sp<skia::textlayout::FontCollection>();
   fonts->setDefaultFontManager(font_mgr);
@@ -87,7 +96,15 @@ TEST(SkiaSmokeTest, ParagraphLaysOutMixedScriptText) {
 class V8SmokeTest : public ::testing::Test {
  protected:
   static void SetUpTestSuite() {
-    ASSERT_TRUE(v8::V8::InitializeICU());  // ICU 数据编入 libnode
+    // libnode owns its embedded ICU data and must initialize it before V8.
+    auto node_init = node::InitializeOncePerProcess(
+        {"momo-smoke"},
+        {node::ProcessInitializationFlags::kNoInitializeV8,
+         node::ProcessInitializationFlags::kNoInitializeNodeV8Platform,
+         node::ProcessInitializationFlags::kNoStdioInitialization,
+         node::ProcessInitializationFlags::kNoDefaultSignalHandling,
+         node::ProcessInitializationFlags::kDisableNodeOptionsEnv});
+    ASSERT_EQ(node_init->exit_code(), 0);
     platform_ = v8::platform::NewDefaultPlatform();
     v8::V8::InitializePlatform(platform_.get());
     ASSERT_TRUE(v8::V8::Initialize());

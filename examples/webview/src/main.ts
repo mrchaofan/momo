@@ -35,6 +35,8 @@ import { DetachedPage, DetachedPlaceholder } from "./detached";
 /** 起始页的内部地址(WebView 扩展的 momo:// 页面: 真实地址, 刷新后仍是起始页)。 */
 export const kNewTabUrl = "momo://newtab";
 
+const primaryShortcut = isApplePlatform() ? { meta: true } : { control: true };
+
 const kStartPage = `<!doctype html>
 <html><head><meta charset="utf-8"><title>新标签页</title>
 <style>
@@ -772,11 +774,11 @@ class BrowserPageState extends State<BrowserPage> {
 
     return new Shortcuts({
       shortcuts: new Map([
-        [new SingleActivator(LogicalKeyboardKey.keyT, { meta: true }), new NewTabIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyN, { meta: true }), new NewWindowIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyW, { meta: true }), new CloseTabIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyR, { meta: true }), new ReloadIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyL, { meta: true }), new FocusAddressIntent()],
+        [new SingleActivator(LogicalKeyboardKey.keyT, primaryShortcut), new NewTabIntent()],
+        [new SingleActivator(LogicalKeyboardKey.keyN, primaryShortcut), new NewWindowIntent()],
+        [new SingleActivator(LogicalKeyboardKey.keyW, primaryShortcut), new CloseTabIntent()],
+        [new SingleActivator(LogicalKeyboardKey.keyR, primaryShortcut), new ReloadIntent()],
+        [new SingleActivator(LogicalKeyboardKey.keyL, primaryShortcut), new FocusAddressIntent()],
         [new SingleActivator(LogicalKeyboardKey.tab, { control: true }), new NextTabIntent()],
         [new SingleActivator(LogicalKeyboardKey.tab, { control: true, shift: true }), new PreviousTabIntent()],
       ]),

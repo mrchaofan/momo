@@ -225,7 +225,9 @@ async function build({ positional, flags }) {
     fs.mkdirSync(bundleRoot, { recursive: true });
     fs.copyFileSync(exe, path.join(bundleRoot, `${appName}.exe`));
     for (const entry of fs.readdirSync(runtime)) {
-      if (entry.toLowerCase().endsWith(".dll")) fs.copyFileSync(path.join(runtime, entry), path.join(bundleRoot, entry));
+      if (entry.toLowerCase().endsWith(".dll") || entry === "icudtl.dat") {
+        fs.copyFileSync(path.join(runtime, entry), path.join(bundleRoot, entry));
+      }
     }
     resources = bundleRoot;
   } else {
@@ -272,13 +274,13 @@ async function build({ positional, flags }) {
 // ---------------------------------------------------------------------------
 // ext verify / create
 
-function exportedSymbols(library) {
+function exportedSymbols(library, dumpbin) {
   if (process.platform === "darwin" || process.platform === "linux") {
     const out = execFileSync("nm", ["-gU", library], { encoding: "utf8" });
     return out.split("\n").map((l) => l.trim().split(/\s+/).pop()).filter(Boolean)
       .map((s) => (process.platform === "darwin" ? s.replace(/^_/, "") : s));
   }
-  const out = execFileSync("dumpbin", ["/exports", library], { encoding: "utf8" });
+  const out = execFileSync(dumpbin || "dumpbin", ["/exports", library], { encoding: "utf8" });
   return out.split("\n").map((l) => l.trim().split(/\s+/).pop()).filter(Boolean);
 }
 
@@ -286,7 +288,7 @@ function verify({ positional, flags }) {
   const library = positional[0] && path.resolve(positional[0]);
   if (!library || !fs.existsSync(library)) fail("usage: momo ext verify <library> [--package=package.json]");
   const problems = [];
-  const symbols = exportedSymbols(library);
+  const symbols = exportedSymbols(library, flags.dumpbin);
   if (!symbols.includes("momo_ext_init")) problems.push("does not export the C symbol momo_ext_init");
   const cxx = symbols.filter((s) => s.startsWith("_Z") || s.startsWith("?"));
   if (cxx.length) problems.push(`exports ${cxx.length} C++ (mangled) symbols; only momo_ext_init should be exported (use hidden visibility)`);

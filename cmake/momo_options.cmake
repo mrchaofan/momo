@@ -17,8 +17,8 @@ add_library(momo_compile_options INTERFACE)
 
 if(MSVC)
   # /wd4100: 未使用的形参(与 GCC/Clang 的 -Wno-unused-parameter 对齐)。
-  target_compile_options(momo_compile_options INTERFACE /W4 /wd4100 /EHs-c- /GR- /utf-8 /permissive-)
-  target_compile_definitions(momo_compile_options INTERFACE _HAS_EXCEPTIONS=0 NOMINMAX
+  target_compile_options(momo_compile_options INTERFACE /W4 /wd4100 /EHs-c- /GR- /utf-8 /permissive- /Zc:__cplusplus)
+  target_compile_definitions(momo_compile_options INTERFACE _CRT_SECURE_NO_WARNINGS _HAS_EXCEPTIONS=0 NOMINMAX
                              WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
   if(MOMO_WARNINGS_AS_ERRORS)
     target_compile_options(momo_compile_options INTERFACE /WX)

@@ -370,6 +370,9 @@ TEST_F(ApplicationTest, HungUiThreadForcesExitAfterCloseTimeout) {
     };
   });
   ASSERT_TRUE(app->Launch().ok());
+  app->shell()->hub()->SetJsEndpoint(
+      app->task_runners().ui,
+      [](const std::string&, engine::MessageBytes, engine::MessageReply) {});
   app->task_runners().ui->PostTask([&] { release_ui.Wait(); });  // 模拟 JS 卡死
   Application* raw = app.get();
   PostToPlatform(*app, [raw] { raw->Quit(); });

@@ -6,6 +6,11 @@ cmake_minimum_required(VERSION 3.24)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.5" CACHE STRING "Minimum macOS version (Node 26 / libnode 要求)")
 
 project(momo LANGUAGES C CXX)
+if(MSVC)
+  # The Windows Skia prebuilt uses the static release CRT in every configuration.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)
+  add_compile_definitions(_ITERATOR_DEBUG_LEVEL=0)
+endif()
 if(APPLE)
   enable_language(OBJCXX)
 endif()

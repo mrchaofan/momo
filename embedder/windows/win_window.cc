@@ -10,8 +10,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdlib>
-#include <cstring>
 #include <cwchar>
 #include <string>
 #include <utility>
@@ -45,8 +43,9 @@ constexpr TimeDelta kLiveResizeFrameWait = std::chrono::milliseconds(100);
 LONG Round(double value) { return static_cast<LONG>(std::lround(value)); }
 
 bool SoftwareRenderingForced() {
-  const char* value = std::getenv("MOMO_SOFTWARE_RENDERING");
-  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+  wchar_t value[2]{};
+  const DWORD length = ::GetEnvironmentVariableW(L"MOMO_SOFTWARE_RENDERING", value, 2);
+  return length > 1 || (length == 1 && value[0] != L'0');
 }
 
 uint32_t CurrentModifiers() {

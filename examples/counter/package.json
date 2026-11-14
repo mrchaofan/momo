@@ -2,6 +2,7 @@
   "name": "momo-example-counter",
   "private": true,
   "type": "module",
+  "main": "src/main.ts",
   "dependencies": {
     "@momo/framework": "file:../../framework/packages/momo"
   },
