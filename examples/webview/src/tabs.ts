@@ -243,8 +243,10 @@ export interface TabStripOptions {
   tabs: readonly Tab[];
   activeId: number;
   tabWidth: number;
-  /** 标签区左侧的留白(系统窗口控制按钮占用的宽度)。 */
+  /** 标签区左侧的留白(系统窗口控制按钮在左时为其占用的宽度)。 */
   leading: number;
+  /** 标签区右侧的留白(系统窗口控制按钮在右时为其占用的宽度)。 */
+  trailing: number;
   /** 正在本标签栏里排序的标签(拖出成窗口或在别的窗口时为 null)。 */
   drag: TabDrag | null;
   onSelect: (tab: Tab) => void;
@@ -305,7 +307,7 @@ class TabStripState extends State<TabStrip> {
   };
 
   build(_c: BuildContext): View {
-    const { tabs, activeId, tabWidth, leading, drag, onSelect, onClose, onContextMenu, onNew } = this.view.o;
+    const { tabs, activeId, tabWidth, leading, trailing, drag, onSelect, onClose, onContextMenu, onNew } = this.view.o;
     const instant = this.#instant;
     this.#instant = false;
     const live = tabs.filter((t) => !t.closing);
@@ -341,6 +343,8 @@ class TabStripState extends State<TabStrip> {
         new Padding({ padding: EdgeInsets.symmetric({ horizontal: 6 }), child: new IconTap({ glyph: "+", onTap: onNew }) }),
         // 标签之后的空白: 拖动窗口, 双击缩放。
         new Expanded({ child: new WindowDragArea() }),
+        // 系统窗口控制按钮(在右侧时)的位置。
+        new SizedBox({ width: trailing, height: kTabHeight }),
       ],
     });
     // 浮动副本: 跟随指针, 限制在标签区内。

@@ -26,4 +26,4 @@ new SizedBox({ height: 400, child: new WebView({
 node tools/momo-cli/momo.mjs build examples/webview
 ```
 
-只实现了 macOS;Windows 需要 embedder 侧的平台视图支持(契约已就绪,未实现)。
+只实现了 macOS;Windows 需要 embedder 侧的平台视图支持(契约已就绪, Windows 宿主未实现)。

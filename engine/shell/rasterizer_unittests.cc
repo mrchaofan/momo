@@ -158,6 +158,37 @@ TEST(RasterizerTest, GpuBackendFailureWithoutFallbackDropsFrames) {
   ASSERT_NE(rasterizer.last_layer_tree(), nullptr);
 }
 
+// 运行中自行改变种类的 surface(GPU 设备丢失后回退软件): 起初是无绘制目标的 kNone, switched 后为软件。
+class FakeSwitchingSurface final : public platform::RenderSurface {
+ public:
+  platform::SurfaceKind kind() const override {
+    return switched ? platform::SurfaceKind::kSoftware : platform::SurfaceKind::kNone;
+  }
+  StatusOr<platform::SurfaceFrame> AcquireFrame(Size size) override {
+    StatusOr<platform::SurfaceFrame> frame = software.AcquireFrame(size);
+    if (frame.ok() && !switched) frame->kind = platform::SurfaceKind::kNone;
+    return frame;
+  }
+  FakeSurface software;
+  bool switched = false;
+};
+
+TEST(RasterizerTest, RecreatesBackendWhenSurfaceChangesKind) {
+  momo::testing::ScopedTestEventLoop loop;
+  auto pipeline = LayerTreePipeline::Create(2);
+  FakeSwitchingSurface surface;
+  Rasterizer rasterizer;
+  rasterizer.Setup(&surface);
+  EXPECT_EQ(rasterizer.backend_kind(), platform::SurfaceKind::kNone);
+
+  surface.switched = true;  // 设备丢失: surface 自己改为软件呈现
+  Enqueue(*pipeline, 14);
+  rasterizer.Draw(*pipeline);
+  EXPECT_EQ(rasterizer.backend_kind(), platform::SurfaceKind::kSoftware);
+  EXPECT_EQ(rasterizer.stats().frames_presented, 1u);
+  EXPECT_EQ(surface.software.last_width.load(), 14);  // 新的软件后端画进了 surface 的软件帧
+}
+
 // ---- 平台视图合成路径(docs/05 §9)----
 
 // 支持平台视图的软件 surface: 记录每次合成帧的布局, 主帧与 overlay 都是软件像素缓冲。

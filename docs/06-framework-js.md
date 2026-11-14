@@ -50,7 +50,7 @@ view/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`/`
 - `RootView({ widget, child })`:把 child 渲染进窗口:为它建立自己的 `RenderView` + `PipelineOwner`,向 `ViewsBinding.registerView` 登记;每帧共用一次 build,各窗口分别 layout/paint/合成并 `viewport.render`(不可见的窗口跳过)。每个窗口有自己的 `MediaQuery`、`Overlay`(对话框、菜单只出现在本窗口)、默认快捷键与根焦点作用域(挂在焦点树根下,与其他窗口并列;窗口获得系统焦点时恢复其上次的焦点)。RootView 不打开也不关闭窗口。
 - `ViewAnchor({ child, views })`:child 在原处正常渲染;views(各窗口的 RootView)挂在 element 树的这里(继承此处的 InheritedView 与状态),但渲染到各自的窗口。
 - `WidgetScope.of(context)` 取子树所在的窗口;`Title({ title, child })` 声明窗口标题(`MaterialApp({ title })` 用它)。
-- 外观由窗口内容里的 `WindowChrome({ hiddenTitleBar, titleBarHeight, resizeBorder })` 声明;隐藏标题栏后系统窗口控制按钮占用的区域由宿主报告, 经 `MediaQuery.windowControls` 提供(自绘标题栏据此避让, 不写死平台尺寸)。拖动窗口只有能力、没有框架内置区域: `Widget.startDrag(sequenceId)` 以进行中的按下序列(`PointerDownEvent.sequenceId`)开始系统拖动, 哪里可拖由应用决定(examples/webview 的 `WindowDragArea`)。
+- 外观由窗口内容里的 `WindowChrome({ hiddenTitleBar, titleBarHeight, resizeBorder })` 声明;隐藏标题栏后系统窗口控制按钮占用的区域由宿主报告, 经 `MediaQuery.windowControls` 提供(自绘标题栏据此避让, 不写死平台尺寸);`MediaQueryData.windowControlsPadding` 把它换算成标题栏左右留白(按钮在左半边计入 left, 在右半边计入 right), 应用不必判断平台。拖动窗口只有能力、没有框架内置区域: `Widget.startDrag(sequenceId)` 以进行中的按下序列(`PointerDownEvent.sequenceId`)开始系统拖动, 哪里可拖由应用决定(examples/webview 的 `WindowDragArea`)。
 - 入口:`runApp(view)` 把根渲染进隐式视图 0;`runView(view)` 不绑定视图, 每个窗口(含启动窗口)的内容由 RootView 渲染(所有窗口对等)。任何窗口都可以关闭。
 - 指针事件按来源窗口命中测试;每个 `PointerEvent` 带 `viewId`(同 Flutter), 光标等都按它找窗口, 没有"当前视图"这种全局状态。
 - 子树可以用 `GlobalKey` 在窗口之间移动并保留 State;含平台视图的子树移动时原生视图换窗口而不重建(MomoBrowser 的"移到新窗口")。

@@ -16,7 +16,6 @@ python3 tools/fetch_deps.py     # → third_party/prebuilt/{skia,v8}(已 gitigno
 | Skia (+skparagraph/skshaper/skunicode) | 跟随 chrome/mXXX 稳定分支,季度评估 | 预编译 + IMPORTED target |
 | V8 (monolith) | 稳定分支,与 Skia 同一 ICU | 预编译 + IMPORTED target |
 | ICU | 由 Skia/V8 包统一提供 | 预编译 |
-| ANGLE | Windows only | 预编译 |
 | spdlog / googletest / rapidjson | 固定 tag | FetchContent |
 
 `patches/` 子目录(需要时建立)存放对预编译脚本或源码构建的补丁,每个补丁附上游 issue 链接。

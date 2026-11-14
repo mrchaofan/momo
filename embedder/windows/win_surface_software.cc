@@ -1,5 +1,3 @@
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-
 #include "embedder/windows/win_surface_software.h"
 
 #include <utility>
@@ -107,6 +105,37 @@ void WinSoftwareSurface::DisplayPending() {
   ::ReleaseDC(hwnd_, dc);
   // 整个客户区已是最新帧: 取消尚未处理的 WM_PAINT(避免重复绘制)。
   ::ValidateRect(hwnd_, nullptr);
+}
+
+bool WinSoftwareSurface::has_presented() const {
+  MutexLock lock(mutex_);
+  return displayed_ >= 0;
+}
+
+bool WinSoftwareSurface::WaitForFrame(Size physical_size, TimeDelta timeout,
+                                      const std::function<bool()>& pump) {
+  const int width = static_cast<int>(physical_size.width);
+  const int height = static_cast<int>(physical_size.height);
+  const TimePoint deadline = Clock::now() + timeout;
+  while (true) {
+    bool ready = false;
+    {
+      MutexLock lock(mutex_);
+      // 待显示缓冲的尺寸由 raster 在 present 之前写好, 经 mutex_ 发布。
+      ready = pending_ >= 0 && buffers_[pending_].width == width && buffers_[pending_].height == height;
+    }
+    if (ready) {
+      DisplayPending();
+      return true;
+    }
+    if (Clock::now() >= deadline) {
+      return false;
+    }
+    if (!pump()) {
+      return false;  // 本对象已随窗口销毁
+    }
+    ::Sleep(1);  // 拖拽缩放期间窗口把系统定时器精度调到 1 ms(timeBeginPeriod)
+  }
 }
 
 void WinSoftwareSurface::Paint(HDC dc) {

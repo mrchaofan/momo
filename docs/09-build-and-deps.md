@@ -18,7 +18,6 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
 | spdlog | 日志 | FetchContent,header-only 模式 |
 | googletest | 测试 | FetchContent |
 | rapidjson 或 simdjson | manifest/配置解析 | FetchContent(禁异常配置) |
-| ANGLE | Windows GL→D3D11 | 预编译包(可取自 Chromium 发布或自建) |
 
 所有预编译包带 SHA256 锁定在 `cmake/deps.lock.json`;`tools/fetch_deps.py` 支持离线镜像。
 
@@ -38,7 +37,9 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
   脚本会在 PATH 与 uv 管理的解释器中查找)。打包 `.app` 时 dylib 拷进 `Contents/Frameworks`。
 - **最低 macOS 13.5**:Node 26 的构建目标,项目部署目标随之提高。
 - **libnode 不用于 ASan/TSan 构建**(未以 sanitizer 构建):sanitizer 构建中 `momo::v8` 不可用(`cmake/momo_prebuilt.cmake` 自动关闭)。
-- Windows:Skia 已锁定 `windows-x64` 包;libnode 尚未在 Windows 上构建(`build_libnode.py` 目前只支持 macOS)。
+- Windows:Skia 已锁定 `windows-x64` 包(带 Direct3D 12, `momo::skia` 定义 `SK_DIRECT3D`);libnode 由 `build_libnode.py` 在
+  Windows 上用 `vcbuild.bat release x64 dll nonpm` 构建出 `libnode.dll` + 导入库 `libnode.lib`(需要 VS 2022 + ClangCL),
+  `momo_target_use_v8_runtime` 把 dll 拷到可执行文件旁边。以上 Windows 路径均未在 Windows 上运行验证。
 
 ### 2.2 获取与接入
 
@@ -65,7 +66,7 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 - framework/ 独立 npm workspace;`npm run build` 用 esbuild 产出 `framework/out/momo_framework.js`(ESM, 单文件)。
 - 应用打包不走 CMake,由 `tools/momo-cli/momo.mjs build` 完成:调 esbuild 打应用 bundle,扫描依赖产出 `extensions.manifest`,拷贝进:
   - macOS: `<Name>.app/Contents/Resources/{bundle.js, assets/, extensions/}`
-  - Windows: `<name>/{bundle.js, assets/, extensions/}`(exe 同级,未验证)
+  - Windows: `<Name>/{<Name>.exe, libnode.dll, bundle.js, assets/, extensions/}`(exe 同级即资源目录;`momo build --runtime=<含 Momo.exe 的目录>`, 未验证)
 - CMake 只做一件相关的事:把 `MOMO_APP_DEFAULT_BUNDLE`(默认 `examples/hello_frame/main.js`)拷进 `Momo.app` 作为默认 bundle。
 - startup snapshot(`tools/make_snapshot`)未实现,见 docs/04 §1。
 

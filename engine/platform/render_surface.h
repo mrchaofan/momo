@@ -13,7 +13,7 @@
 
 namespace momo::engine::platform {
 
-enum class SurfaceKind { kMetal, kAngleGl, kSoftware, kNone };
+enum class SurfaceKind { kMetal, kDirect3D, kSoftware, kNone };
 
 // 软件帧的像素缓冲: 32bpp、预乘 alpha、内存字节序 B,G,R,A
 // (= Skia kBGRA_8888_SkColorType / CoreGraphics kCGImageAlphaPremultipliedFirst | ByteOrder32Little)。
@@ -28,7 +28,9 @@ struct SoftwarePixels {
 //   kSoftware: software 有效。
 //   kMetal:    gpu_target = id<CAMetalDrawable>(非拥有, 帧内有效), GPU 后端把它包装为 render target;
 //              present 负责 presentDrawable(后端在 present 前已提交命令缓冲)。
-//   kAngleGl:  gpu_target = 当前帧 FBO id(以 intptr 存放), EGL context 已在 raster 线程 current。
+//   kDirect3D: gpu_target = ID3D12Resource*(swapchain 的当前后台缓冲, 非拥有, 帧内有效, 状态为
+//              D3D12_RESOURCE_STATE_PRESENT);后端画完后把它转回 PRESENT 并等待 GPU 完成, present 负责
+//              IDXGISwapChain::Present。
 struct SurfaceFrame {
   SurfaceKind kind = SurfaceKind::kNone;
   SoftwarePixels software;      // kind == kSoftware
@@ -39,7 +41,7 @@ struct SurfaceFrame {
 
 // GPU surface 的设备信息(raster 线程上取用, 在 surface 存活期间有效)。
 //   kMetal:   device = id<MTLDevice>, queue = id<MTLCommandQueue>
-//   kAngleGl: device = EGLDisplay, queue = EGLContext
+//   kDirect3D: device = ID3D12Device*, queue = ID3D12CommandQueue*(DIRECT 队列)
 struct GpuContextInfo {
   void* device = nullptr;
   void* queue = nullptr;

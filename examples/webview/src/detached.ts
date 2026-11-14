@@ -127,13 +127,15 @@ export class DetachedPage extends StatelessView {
     if (m) host = m[1]!;
     if (tab.url === "about:blank" || tab.url === "" || tab.url.startsWith("momo:")) host = tab.displayTitle;
     const progress = tab.loading ? Math.max(0.05, tab.progress) : 0;
+    // 系统窗口控制按钮占用的宽度(宿主报告;macOS 在左, Windows 在右)。
+    const controls = MediaQuery.of(context).windowControlsPadding;
     const titleBar = new Container({
       height: kTitleBarHeight,
-      padding: EdgeInsets.only({ right: 8 }),
+      padding: EdgeInsets.only({ right: 8 + controls.right }),
       child: new Row({
         children: [
           // 系统窗口控制按钮占用的宽度(宿主报告), 也可拖动窗口。
-          new SizedBox({ width: MediaQuery.of(context).windowControls?.right ?? kStripLeadingPadding, height: kTitleBarHeight, child: new WindowDragArea() }),
+          new SizedBox({ width: Math.max(controls.left, kStripLeadingPadding), height: kTitleBarHeight, child: new WindowDragArea() }),
           new Expanded({
             child: new WindowDragArea({
               child: new Align({

@@ -101,8 +101,12 @@ export class BrowserWindow {
   /** 窗口尺寸与(拖出时的)位置: 仅用于创建窗口。 */
   size = { width: 1024, height: 720 };
   pos: { x: number; y: number } | null = null;
-  /** 标签区左侧的留白(系统窗口控制按钮占用的宽度;页面构建时按 MediaQuery.windowControls 更新)。 */
+  /**
+   * 标签区两侧的留白: 系统窗口控制按钮占用的宽度(macOS 在左, Windows 在右;页面构建时按
+   * MediaQuery.windowControlsPadding 更新)。
+   */
   leading = kStripLeadingPadding;
+  trailing = 0;
   /** widget: 使用已打开的窗口(启动窗口)而不是新开窗口。 */
   constructor(widget: Widget | null = null) {
     this.widget = widget;
@@ -391,7 +395,7 @@ export class BrowserAppState extends State<BrowserApp> {
     const w = d.window;
     const live = w.live;
     const from = live.indexOf(d.tab);
-    const to = dropIndex(this.#dragLeft(d, w), tabWidthFor(w.frame.width, live.length), live.length, w.leading);
+    const to = dropIndex(this.#dragLeft(d, w), tabWidthFor(w.frame.width - w.trailing, live.length), live.length, w.leading);
     this.setState(() => {
       if (from < 0 || to === from) return;
       const rest = w.tabs.filter((t) => t !== d.tab);
@@ -413,6 +417,7 @@ export class BrowserAppState extends State<BrowserApp> {
     from.tabs = from.tabs.filter((t) => t !== tab);
     const nw = new BrowserWindow();
     nw.leading = from.leading;  // 同一平台: 打开前按原窗口的留白定位
+    nw.trailing = from.trailing;
     const f = from.frame;
     if (f.width > 0 && f.height > 0) nw.size = { width: f.width, height: f.height };
     nw.tabs = [tab];
@@ -444,7 +449,7 @@ export class BrowserAppState extends State<BrowserApp> {
     const src = d.window;
     const tab = d.tab;
     const live = target.live;
-    const at = dropIndex(this.#dragLeft(d, target), tabWidthFor(target.frame.width, live.length + 1), live.length + 1, target.leading);
+    const at = dropIndex(this.#dragLeft(d, target), tabWidthFor(target.frame.width - target.trailing, live.length + 1), live.length + 1, target.leading);
     const anchor = live[at] ?? null;
     this.setState(() => {
       src.tabs = src.tabs.filter((t) => t !== tab);
@@ -719,10 +724,12 @@ class BrowserPageState extends State<BrowserPage> {
     const w = this.#w;
     const active = w.active;
     const media = MediaQuery.of(context);
+    // 系统窗口控制按钮占用的宽度由宿主报告(不写死平台尺寸与左右位置);应用状态里的拖动计算也用它。
+    const controls = media.windowControlsPadding;
+    w.leading = Math.max(controls.left, kStripLeadingPadding);
+    w.trailing = controls.right;
     const width = media.size.width;
-    const tabWidth = tabWidthFor(width, w.live.length);
-    // 系统窗口控制按钮占用的宽度由宿主报告(不写死平台尺寸);应用状态里的拖动计算也用它。
-    w.leading = media.windowControls?.right ?? kStripLeadingPadding;
+    const tabWidth = tabWidthFor(width - w.trailing, w.live.length);
 
     const pages = new Stack({
       children: [
@@ -748,6 +755,7 @@ class BrowserPageState extends State<BrowserPage> {
             activeId: w.activeId,
             tabWidth,
             leading: w.leading,
+            trailing: w.trailing,
             drag: app.stripDrag(w),
             onSelect: (tab) => app.selectTab(w, tab),
             onClose: (tab) => app.closeTab(w, tab),

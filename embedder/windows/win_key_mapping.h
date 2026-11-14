@@ -5,8 +5,6 @@
 //   logical_key:  可打印键 = 当前布局下不带修饰键时产生的字符(小写)的 Unicode 码点;
 //                 特殊键(功能键、方向键、修饰键、回车/退格等)= kSpecialKeyBase + HID usage。
 // 本头文件不依赖 <windows.h>(纯 C++, 可在任意平台单测)。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-
 #include <cstdint>
 
 namespace momo::embedder::windows {

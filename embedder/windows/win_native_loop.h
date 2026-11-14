@@ -1,8 +1,6 @@
 #pragma once
 
 // WinNativeLoop: base::NativeLoop 的 Win32 实现(docs/03 §1, docs/12 §3)。仅被 embedder/windows 的 .cc 包含。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-//
 // 机制:
 //   - 构造线程即 OS 主线程(记录线程 id, 因此 RunsTasksOnCurrentThread 在 Run 之前也正确)。
 //   - 任务队列在本对象内(Mutex 保护): 立即任务 FIFO + 延迟任务按 (到期时间, 投递顺序) 排序。

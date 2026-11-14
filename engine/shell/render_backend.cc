@@ -7,6 +7,8 @@
 
 #if defined(__APPLE__)
 #include "engine/graphics/gpu/metal_rasterizer.h"
+#elif defined(_WIN32)
+#include "engine/graphics/gpu/d3d_rasterizer.h"
 #endif
 
 namespace momo::engine {
@@ -96,6 +98,43 @@ class MetalBackend final : public RenderBackend {
 };
 #endif
 
+#if defined(_WIN32)
+// Ganesh Direct3D 12: 每帧把 swapchain 的后台缓冲包装为 render target(graphics::D3DRasterizer)。
+// 画完即已转回 PRESENT 状态并等待 GPU 完成, surface 的 present 可以直接 Present。
+class Direct3DBackend final : public RenderBackend {
+ public:
+  explicit Direct3DBackend(std::unique_ptr<graphics::D3DRasterizer> rasterizer)
+      : rasterizer_(std::move(rasterizer)) {}
+
+  platform::SurfaceKind kind() const override { return platform::SurfaceKind::kDirect3D; }
+  Status Draw(graphics::LayerTree& layer_tree, const platform::SurfaceFrame& frame) override {
+    if (frame.kind != platform::SurfaceKind::kDirect3D || frame.gpu_target == nullptr) {
+      return FailedPreconditionError("Direct3DBackend: frame has no back buffer");
+    }
+    return rasterizer_->Draw(layer_tree, frame.gpu_target, frame.size);
+  }
+  Status DrawComposition(const graphics::Composition& composition,
+                         const platform::CompositionFrame& frame) override {
+    if (frame.base.kind != platform::SurfaceKind::kDirect3D || frame.base.gpu_target == nullptr) {
+      return FailedPreconditionError("Direct3DBackend: composition frame has no back buffer");
+    }
+    MOMO_RETURN_IF_ERROR(rasterizer_->DrawSlice(composition, 0, frame.base.gpu_target, {0, 0}));
+    for (size_t i = 0; i < frame.overlays.size(); ++i) {
+      const std::optional<Rect> bounds = composition.slice_bounds(i + 1);
+      if (!frame.overlays[i] || !bounds || frame.overlays[i]->gpu_target == nullptr) {
+        continue;
+      }
+      MOMO_RETURN_IF_ERROR(rasterizer_->DrawSlice(composition, i + 1, frame.overlays[i]->gpu_target,
+                                                  {bounds->x, bounds->y}));
+    }
+    return Status::Ok();
+  }
+
+ private:
+  std::unique_ptr<graphics::D3DRasterizer> rasterizer_;  // 持有 GrDirectContext(raster 线程)
+};
+#endif
+
 }  // namespace
 
 StatusOr<std::unique_ptr<RenderBackend>> CreateRenderBackend(platform::RenderSurface& surface) {
@@ -114,8 +153,16 @@ StatusOr<std::unique_ptr<RenderBackend>> CreateRenderBackend(platform::RenderSur
       return UnimplementedError("Metal backend is only available on Apple platforms");
 #endif
     }
-    case platform::SurfaceKind::kAngleGl:
-      break;  // TODO(M2, Windows): AngleGlBackend
+    case platform::SurfaceKind::kDirect3D: {
+#if defined(_WIN32)
+      const platform::GpuContextInfo gpu = surface.gpu_context();
+      MOMO_ASSIGN_OR_RETURN(std::unique_ptr<graphics::D3DRasterizer> rasterizer,
+                            graphics::D3DRasterizer::Create(gpu.device, gpu.queue));
+      return std::unique_ptr<RenderBackend>(std::make_unique<Direct3DBackend>(std::move(rasterizer)));
+#else
+      return UnimplementedError("Direct3D backend is only available on Windows");
+#endif
+    }
   }
   return UnimplementedError("No render backend for this surface kind yet");
 }

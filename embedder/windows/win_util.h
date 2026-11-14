@@ -1,8 +1,6 @@
 #pragma once
 
 // Windows 平台实现公共小工具(仅被 embedder/windows 的 .cc 包含)。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-//
 //  - 统一以 UNICODE + NOMINMAX + WIN32_LEAN_AND_MEAN 方式包含 <windows.h>(MSVC 构建已由
 //    cmake/momo_options.cmake 定义, 这里再兜底一次, 便于 MinGW/clang 等工具链)。
 //  - <windows.h> 把 CreateWindow 定义成宏(CreateWindowW), 会改写 PlatformIntegration::CreateWindow

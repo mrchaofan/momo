@@ -1,7 +1,5 @@
-// Windows 平台实现单测: 扫描码映射、WinNativeLoop(投递/延迟/嵌套/Quit)、WinTextInput 的字符提交、
+// Windows 平台实现单测(依赖 Win32, 只在 Windows 上编译;纯逻辑部分在 win_portable_unittests.cc): WinNativeLoop(投递/延迟/嵌套/Quit)、WinTextInput 的字符提交、
 // DwmFlush vsync 生命周期、剪贴板往返。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-
 #include "embedder/windows/win_util.h"
 
 #include <atomic>
@@ -13,7 +11,6 @@
 #include "base/testing/scoped_test_event_loop.h"
 #include "base/thread.h"
 #include "embedder/common/engine_platform.h"
-#include "embedder/windows/win_key_mapping.h"
 #include "embedder/windows/win_native_loop.h"
 #include "embedder/windows/win_services.h"
 #include "embedder/windows/win_text_input.h"
@@ -22,43 +19,6 @@
 
 namespace momo::embedder::windows {
 namespace {
-
-// ---- 扫描码映射 ----
-
-TEST(WinKeyMappingTest, MapsToUsbHidUsages) {
-  EXPECT_EQ(WinScanCodeToHidUsage(0x1E, false), 0x04u);  // A
-  EXPECT_EQ(WinScanCodeToHidUsage(0x2C, false), 0x1Du);  // Z
-  EXPECT_EQ(WinScanCodeToHidUsage(0x0B, false), 0x27u);  // 0
-  EXPECT_EQ(WinScanCodeToHidUsage(0x1C, false), 0x28u);  // Enter
-  EXPECT_EQ(WinScanCodeToHidUsage(0x1C, true), 0x58u);   // NumpadEnter
-  EXPECT_EQ(WinScanCodeToHidUsage(0x1D, false), 0xE0u);  // ControlLeft
-  EXPECT_EQ(WinScanCodeToHidUsage(0x1D, true), 0xE4u);   // ControlRight
-  EXPECT_EQ(WinScanCodeToHidUsage(0x38, true), 0xE6u);   // AltRight
-  EXPECT_EQ(WinScanCodeToHidUsage(0x5B, true), 0xE3u);   // MetaLeft
-  EXPECT_EQ(WinScanCodeToHidUsage(0x48, true), 0x52u);   // ArrowUp
-  EXPECT_EQ(WinScanCodeToHidUsage(0x48, false), 0x60u);  // Numpad8
-  EXPECT_EQ(WinScanCodeToHidUsage(0x45, true), 0x53u);   // NumLock
-  EXPECT_EQ(WinScanCodeToHidUsage(0x45, false), 0x48u);  // Pause
-  EXPECT_EQ(WinScanCodeToHidUsage(0x3B, false), 0x3Au);  // F1
-  EXPECT_EQ(WinScanCodeToHidUsage(0x76, false), 0x73u);  // F24
-  EXPECT_EQ(WinScanCodeToHidUsage(0x00, false), 0u);
-  EXPECT_EQ(WinScanCodeToHidUsage(0x7F, true), 0u);
-  EXPECT_EQ(PhysicalKeyFromHidUsage(0x04), 0x00070004u);
-  EXPECT_EQ(PhysicalKeyFromHidUsage(0), 0u);
-}
-
-TEST(WinKeyMappingTest, ClassifiesSpecialKeys) {
-  EXPECT_TRUE(IsSpecialHidUsage(0x28));   // Enter
-  EXPECT_TRUE(IsSpecialHidUsage(0x29));   // Escape
-  EXPECT_TRUE(IsSpecialHidUsage(0xE1));   // ShiftLeft
-  EXPECT_TRUE(IsSpecialHidUsage(0x3A));   // F1
-  EXPECT_TRUE(IsSpecialHidUsage(0x52));   // ArrowUp
-  EXPECT_TRUE(IsSpecialHidUsage(0x58));   // NumpadEnter
-  EXPECT_FALSE(IsSpecialHidUsage(0x04));  // A
-  EXPECT_FALSE(IsSpecialHidUsage(0x2C));  // Space
-  EXPECT_FALSE(IsSpecialHidUsage(0x62));  // Numpad0
-  EXPECT_FALSE(IsSpecialHidUsage(0x67));  // NumpadEqual
-}
 
 // ---- WinNativeLoop ----
 

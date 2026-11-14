@@ -41,11 +41,18 @@ engine/platform/ 只放 engine 自己要用的东西(画面、输入、视图尺
 engine 不需要知道: 它们由 embedder 在引擎的消息通道上注册处理器(宿主通道), JS 与宿主直接往返。
 (原生消息循环接口 NativeLoop 定义在 base/native_loop.h, 见 docs/12)
 
-embedder/windows/                  # Win32 实现(与 main_win.cc 同目录)
-├── win_platform_integration.h/.cc
-├── win_native_loop.h/.cc          # NativeLoop: 隐藏消息窗口 PostMessage + GetMessage 泵
-├── win_window.h/.cc               # HWND 封装、WndProc、DPI per-monitor v2
-├── win_surface_software.h/.cc     # GDI 软件 surface(ANGLE surface 规划中)
+embedder/windows/                  # Win32 实现(与 main_win.cc、win_app_delegate 同目录)
+├── win_platform_integration.h/.cc # 工厂: 持有 WinMouseInput、WinDisplays、WinApp(同 macOS)
+├── win_app.h/.cc                  # PlatformApp(Activate)+ WM_ACTIVATEAPP 汇集(WinAppObserver)
+├── win_native_loop.h/.cc          # NativeLoop: 隐藏消息窗口 PostMessage + 自有消息泵
+├── win_window.h/.cc               # HWND 封装、WndProc、PointerWindow、窗口框架、DPI per-monitor v2
+├── win_mouse_events.h/.cc         # WinMouseInput: 鼠标消息 → PointerInput → PointerDispatcher(纯 C++, 可单测)
+├── win_frame.h/.cc                # 内侧缩放边框、标题栏按钮布局与命中(纯 C++, 可单测)
+├── win_caption_buttons.h/.cc      # 隐藏标题栏时宿主绘制的最小化/最大化/关闭按钮(分层子窗口)
+├── win_screen_layout.h/.cc        # 多 DPI 显示器的物理像素 ↔ 全局逻辑点(纯 C++, 可单测)
+├── win_displays.h/.cc             # 显示器枚举与布局缓存
+├── win_surface_d3d.h/.cc          # D3D12 交换链 surface(可回退软件)
+├── win_surface_software.h/.cc     # GDI 软件 surface
 ├── win_vsync_dwm.h/.cc            # DwmFlush vblank 等待
 ├── win_text_input.h/.cc           # IMM32
 ├── win_services.h/.cc             # 剪贴板、OpenUrl
@@ -129,7 +136,7 @@ class WindowDelegate {
 class RenderSurface {
  public:
   virtual ~RenderSurface() = default;
-  virtual SurfaceKind kind() const = 0;            // kMetal | kAngleGl | kSoftware
+  virtual SurfaceKind kind() const = 0;            // kMetal | kDirect3D | kSoftware
   virtual StatusOr<SurfaceFrame> AcquireFrame(Size physical_size) = 0;
   // SurfaceFrame{kind, software: SoftwarePixels{pixels,row_bytes,width,height}(BGRA 预乘), gpu_target(M2), present}
 };
@@ -155,5 +162,19 @@ class RenderSurface {
 
 ## 6. 实现要点备忘
 
-- **Windows**:WndProc 中避免任何阻塞;WM_SIZE 期间的同步重绘用 raster 线程阻塞交换以消除拉伸闪烁;深色标题栏 DWMWA_USE_IMMERSIVE_DARK_MODE;高 DPI 混合显示器 WM_DPICHANGED。
+- **Windows**(未在 Windows 上运行验证(macOS 上: 纯逻辑部分有单测, 依赖 Win32 的部分经 mingw-w64 交叉编译检查)):
+  - 指针: 与 macOS 同一套路由——`WinMouseInput`(进程内一个, 持有 `PointerDispatcher`)翻译鼠标消息, `WinWindow` 作为
+    `PointerWindow` 执行;本窗口是进行中 momo 序列的接收方时持有 `SetCapture`, `capturePointer` 改交时捕获随之转移。
+    被系统模态循环(系统拖动、菜单)吞掉的抬起由派发器的过期判定补报。
+  - 屏幕坐标: 全局逻辑点(主屏左上原点)按 Chromium 的做法布局混合 DPI 显示器(`WinScreenLayout`), 指针、`screen_frame`、
+    `SetPosition`、`displays()` 共用。
+  - 窗口框架: 内侧缩放边框经 `WM_NCHITTEST` 归系统;隐藏标题栏 = `WM_NCCALCSIZE` 让内容铺满窗口(最大化时内缩一圈边框),
+    系统不再画控制按钮, 由宿主绘制(`WinCaptionButtons`, 命中返回 `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE`, Windows 11 贴靠布局可用),
+    占用区域经 `OnWindowControlsChanged` 报告——应用侧与 macOS 的红绿灯一样只需避让(框架 `MediaQueryData.windowControlsPadding`)。
+    系统拖动 = `WM_NCLBUTTONDOWN(HTCAPTION)`(含 Aero Snap), 双击最大化/还原。
+  - 应用生命周期: `WM_ACTIVATEAPP` → `WinApp` 去重 → 入口的 `WinAppDelegate` → `Application::OnAppActiveChanged`;再次启动应用
+    (单实例转发)= macOS 点击 Dock 图标(激活 + `OnReopen`);`WM_ENDSESSION` 有序关闭。没有应用级隐藏。
+  - 渲染: D3D12 flip-model 交换链(`WinD3DSurface`, raster 线程 `ResizeBuffers`/`Present`), 失败回退 GDI;拖拽缩放时 `WM_SIZE`
+    里等待一帧新尺寸的帧(同 macOS, 上限 100 ms)。深色标题栏 DWMWA_USE_IMMERSIVE_DARK_MODE;WM_DPICHANGED。
+  - 不支持: 平台视图、非激活窗口(`non_activating` 按普通窗口处理)。
 - **macOS**:NSView 开 layer-backed + CAMetalLayer(挂在专用底层子视图里);`drawableSize` 以 raster 请求的尺寸为准,主线程只同步 frame 与 contentsScale;拖拽缩放时等一帧新尺寸的内容与窗口尺寸同一事务提交;快捷键由框架按 KeyData 处理(Cmd 按住时 AppKit 吞掉的 keyUp 用本地监视器补发);Space/全屏切换时 metrics 更新。

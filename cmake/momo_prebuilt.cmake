@@ -48,6 +48,12 @@ if(EXISTS "${_skia_root}/.momo_dep.json" AND EXISTS "${_skia_out}")
       target_link_libraries(momo_skia INTERFACE "${_path}")
     endif()
   endforeach()
+  if(WIN32)
+    # skia-pack 的 Windows 包带 Direct3D 12(Ganesh D3D, engine/graphics/gpu/d3d_rasterizer.cc)与 GL。
+    target_compile_definitions(momo_skia INTERFACE SK_DIRECT3D SK_GL)
+    target_link_libraries(momo_skia INTERFACE d3d12 dxgi d3dcompiler opengl32 dwrite user32 gdi32 ole32
+                          usp10 advapi32)
+  endif()
   if(APPLE)
     target_compile_definitions(momo_skia INTERFACE SK_METAL SK_GL)
     target_link_libraries(momo_skia INTERFACE
@@ -87,14 +93,34 @@ elseif(APPLE AND EXISTS "${_node_root}/.momo_dep.json" AND _node_dylib)
   set(MOMO_V8_RUNTIME_DIR "${_node_root}/lib" CACHE INTERNAL "")
   set(MOMO_HAVE_V8 ON)
   message(STATUS "V8 (libnode) prebuilt: ${_node_dylib}")
+elseif(WIN32 AND EXISTS "${_node_root}/.momo_dep.json" AND EXISTS "${_node_root}/lib/libnode.lib")
+  # Windows: tools/build_libnode.py 在 Windows 上产出 libnode.dll + 导入库 libnode.lib(未在 Windows 上验证)。
+  add_library(momo_v8 INTERFACE)
+  target_include_directories(momo_v8 SYSTEM INTERFACE "${_node_root}/include/node")
+  target_compile_definitions(momo_v8 INTERFACE V8_PROMISE_INTERNAL_FIELD_COUNT=1)
+  target_link_libraries(momo_v8 INTERFACE "${_node_root}/lib/libnode.lib")
+  add_library(momo::v8 ALIAS momo_v8)
+  # 运行期需要: libnode.dll 与 exe 同目录(DLL 搜索路径首选 exe 目录, embedder/CMakeLists.txt 拷贝)。
+  set(MOMO_V8_RUNTIME_DIR "${_node_root}/lib" CACHE INTERNAL "")
+  set(MOMO_HAVE_V8 ON)
+  message(STATUS "V8 (libnode) prebuilt: ${_node_root}/lib/libnode.dll")
 else()
   set(MOMO_HAVE_V8 OFF)
   _momo_prebuilt_missing(node)
 endif()
 
 # 给使用 V8 的可执行目标设置运行期查找路径(构建树内直接运行)。
+# macOS: rpath;Windows 没有 rpath, 把 libnode.dll 拷到可执行文件旁边。
 function(momo_target_use_v8_runtime target)
-  if(MOMO_HAVE_V8)
+  if(NOT MOMO_HAVE_V8)
+    return()
+  endif()
+  if(WIN32)
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MOMO_V8_RUNTIME_DIR}/libnode.dll"
+              "$<TARGET_FILE_DIR:${target}>"
+      COMMENT "Copying libnode.dll next to ${target}")
+  else()
     set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH "${MOMO_V8_RUNTIME_DIR}")
   endif()
 endfunction()

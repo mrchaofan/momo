@@ -3,7 +3,7 @@
 import {
   Builder, Center, ColoredBox, Colors, Focus, FocusManager, FocusNode, GestureDetector, GlobalKey, MediaQuery, Offset,
   RootView, SizedBox, State, StatefulView, Text, ViewAnchor, Widget, WindowChrome, app,
-  ViewsBinding, EdgeInsets, GestureBinding, runView, type BuildContext, type Rect, type View,
+  ViewsBinding, EdgeInsets, GestureBinding, MediaQueryData, Rect, Size, runView, type BuildContext, type View,
 } from "../packages/momo/src/index";
 import { Phase } from "./tester";
 
@@ -93,6 +93,18 @@ group("multi-window", () => {
     await t.pump();
     expect.equal(controls, null);
   }, { mockOnly: true });
+
+  // 控制按钮在哪一侧由宿主报告的区域决定: 自绘标题栏用 windowControlsPadding 做两侧留白, 不判断平台。
+  testViews("MediaQueryData.windowControlsPadding follows the side of the window controls", async () => {
+    const size = new Size(800, 600);
+    const left = new MediaQueryData({ size, windowControls: Rect.fromLTWH(0, 0, 78, 40) });  // macOS 红绿灯
+    expect.equal(left.windowControlsPadding.left, 78);
+    expect.equal(left.windowControlsPadding.right, 0);
+    const right = new MediaQueryData({ size, windowControls: Rect.fromLTWH(662, 0, 138, 32) });  // Windows
+    expect.equal(right.windowControlsPadding.left, 0);
+    expect.equal(right.windowControlsPadding.right, 138);
+    expect.equal(new MediaQueryData({ size }).windowControlsPadding, EdgeInsets.zero);
+  });
 
   // 缩放边框由 WindowChrome 声明;可否缩放是窗口属性(Widget.setResizable)。两者在宿主里合并, 互不覆盖。
   testViews("WindowChrome sets the resize border; Widget sets resizable", async (t, ctx) => {

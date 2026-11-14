@@ -1,11 +1,7 @@
-// Windows 入口: 只做翻译(DPI、单实例、命令行、资源目录), 启动顺序全部在 embedder/common。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
+// Windows 入口: 只做翻译(DPI、单实例、命令行、资源目录、应用级系统事件), 启动顺序全部在 embedder/common
+// (对应 macOS 的 main_mac.mm)。
 
-#include <windows.h>
-// <windows.h> 的 CreateWindow 宏会改写 Application/WindowController/PlatformIntegration 中同名成员。
-#ifdef CreateWindow
-#undef CreateWindow
-#endif
+#include "embedder/windows/win_util.h"  // <windows.h>(并 #undef CreateWindow)
 
 #include <string>
 #include <utility>
@@ -23,8 +19,9 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   WinAppDelegate::EnablePerMonitorDpiAwareness();
 
   WinAppDelegate delegate;
-  if (!delegate.AcquireSingleInstance(L"momo_app")) {
-    return 0;  // 命令行已转发给正在运行的实例
+  // 每个应用(打包后的 exe 名)一个实例。
+  if (!delegate.AcquireSingleInstance(WinAppDelegate::ExecutablePath().stem().wstring())) {
+    return 0;  // 已转发给正在运行的实例(由它重新激活)
   }
 
   auto config = momo::embedder::AppConfig::Parse(WinAppDelegate::CommandLineArgsUtf8());
@@ -37,25 +34,18 @@ int APIENTRY wWinMain(HINSTANCE, HINSTANCE, LPWSTR, int) {
   options.config = std::move(config).value();
   options.resources_dir = WinAppDelegate::ExecutableDir();
 
-  auto app = momo::embedder::Application::Create(
-      std::move(options), momo::embedder::windows::CreateWinPlatformIntegration());
+  auto app = momo::embedder::Application::Create(std::move(options),
+                                                 momo::embedder::windows::CreateWinPlatformIntegration(&delegate));
   if (!app.ok()) {
     MOMO_LOG(ERROR) << app.status();
     return 1;
   }
-  momo::embedder::Application* application = app->get();
-  // 再次启动应用: 激活已有窗口(参数目前只记录日志;打开文件等语义待定义)。
-  delegate.SetSecondInstanceHandler([application](std::vector<std::string>) {
-    momo::embedder::WindowController* controller = application->windows().front_window();
-    if (controller != nullptr && controller->has_window()) {
-      WinAppDelegate::ActivateWindow(controller->window().native_handle());
-    }
-  });
+  delegate.set_application(app->get());
 
   int exit_code = 1;
   if ((*app)->Launch().ok()) {
     exit_code = (*app)->Run();
   }
-  delegate.SetSecondInstanceHandler(nullptr);
+  delegate.set_application(nullptr);
   return exit_code;
 }

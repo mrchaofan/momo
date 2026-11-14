@@ -36,6 +36,10 @@ if(APPLE)
   # Ganesh Metal 后端(docs/05 §4 MetalBackend);Skia target 已带 SK_METAL 与 Metal/QuartzCore 框架。
   target_sources(momo_engine_graphics PRIVATE graphics/gpu/metal_rasterizer.mm)
   target_link_libraries(momo_engine_graphics PRIVATE "-framework Metal" "-framework QuartzCore")
+elseif(WIN32)
+  # Ganesh Direct3D 12 后端(docs/05 §4 Direct3DBackend);Skia target 在 Windows 上带 SK_DIRECT3D。
+  target_sources(momo_engine_graphics PRIVATE graphics/gpu/d3d_rasterizer.cc)
+  target_link_libraries(momo_engine_graphics PRIVATE d3d12 dxgi)
 endif()
 
 # ---- momo_engine_text: SkParagraph 封装(FontCollection、Paragraph)----
@@ -66,7 +70,7 @@ if(MOMO_HAVE_V8)
     runtime/js_runtime.cc
     runtime/js_runtime_impl.cc
     runtime/node_bindings.cc
-    runtime/node_bindings_posix.cc
+    $<IF:$<BOOL:${WIN32}>,runtime/node_bindings_win.cc,runtime/node_bindings_posix.cc>
     runtime/node_bootstrap.cc
     runtime/wrappable.cc)
   target_link_libraries(momo_engine_runtime PUBLIC momo_base momo::v8)
@@ -132,5 +136,6 @@ if(MOMO_BUILD_TESTS)
     MOMO_HAS_JS_RUNTIME=$<BOOL:${MOMO_HAVE_V8}>  # 仅测试用: 选择是否编译端到端 JS 用例
     MOMO_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/graphics/testdata"
     MOMO_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+  momo_target_use_v8_runtime(momo_engine_unittests)  # Windows: libnode.dll 拷到测试旁边
   gtest_discover_tests(momo_engine_unittests)
 endif()

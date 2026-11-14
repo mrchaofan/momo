@@ -1,20 +1,28 @@
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-
 #include "embedder/windows/win_window.h"
 
 #include <dwmapi.h>
 #include <imm.h>
+#include <shellapi.h>
+#include <timeapi.h>
 #include <windowsx.h>
 #include <winreg.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <string>
 #include <utility>
 
+#include "base/event_loop.h"
 #include "base/logging.h"
+#include "embedder/windows/win_app.h"
+#include "embedder/windows/win_caption_buttons.h"
+#include "embedder/windows/win_displays.h"
 #include "embedder/windows/win_key_mapping.h"
+#include "embedder/windows/win_surface_d3d.h"
 #include "embedder/windows/win_surface_software.h"
 #include "embedder/windows/win_text_input.h"
 
@@ -24,9 +32,6 @@ namespace {
 
 constexpr wchar_t kWindowClass[] = L"MomoWindow";
 
-// 普通滚轮每行对应的逻辑像素(与 mac / Chromium 一致)。一格(WHEEL_DELTA)= 系统"每次滚动行数"(默认 3)行。
-constexpr double kScrollLinePixels = 40.0;
-
 // DWMWA_USE_IMMERSIVE_DARK_MODE: Win10 20H1+ 为 20, 更早的 Win10 版本为 19(旧 SDK 无此枚举值)。
 constexpr DWORD kDwmUseImmersiveDarkMode = 20;
 constexpr DWORD kDwmUseImmersiveDarkModeLegacy = 19;
@@ -34,12 +39,15 @@ constexpr DWORD kDwmUseImmersiveDarkModeLegacy = 19;
 // ToUnicodeEx 的 wFlags bit2: 不修改内核键盘状态(不吃掉死键), Win10 1607+。
 constexpr UINT kToUnicodeNoStateChange = 0x4;
 
-// 由触摸/笔模拟出的鼠标消息的 GetMessageExtraInfo 签名(MI_WP_SIGNATURE)。
-constexpr DWORD kPenSignatureMask = 0xFFFFFF00;
-constexpr DWORD kPenSignature = 0xFF515700;
-constexpr DWORD kTouchFlag = 0x80;
+// 拖拽缩放时等待新尺寸帧的上限: 应用在此之内出帧则缩放无拉伸, 否则暂时拉伸旧内容(拖动保持跟手)。
+constexpr TimeDelta kLiveResizeFrameWait = std::chrono::milliseconds(100);
 
 LONG Round(double value) { return static_cast<LONG>(std::lround(value)); }
+
+bool SoftwareRenderingForced() {
+  const char* value = std::getenv("MOMO_SOFTWARE_RENDERING");
+  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
+}
 
 uint32_t CurrentModifiers() {
   uint32_t modifiers = platform::kModifierNone;
@@ -51,14 +59,6 @@ uint32_t CurrentModifiers() {
   }
   if (::GetKeyState(VK_CAPITAL) & 0x0001) modifiers |= platform::kModifierCapsLock;
   return modifiers;
-}
-
-platform::PointerDeviceKind KindFromMessageExtraInfo() {
-  const DWORD extra = static_cast<DWORD>(::GetMessageExtraInfo());
-  if ((extra & kPenSignatureMask) == kPenSignature) {
-    return (extra & kTouchFlag) != 0 ? platform::PointerDeviceKind::kTouch : platform::PointerDeviceKind::kStylus;
-  }
-  return platform::PointerDeviceKind::kMouse;
 }
 
 uint32_t FirstCodePoint(const std::wstring& text) {
@@ -95,12 +95,11 @@ bool AllPrintable(const std::wstring& text) {
 }
 
 // ToUnicodeEx(不改变死键状态)。返回产生的字符串;死键返回其独立形式。
-std::wstring TranslateKey(UINT virtual_key, UINT scan_code, const BYTE* key_state, HKL layout,
-                          bool* dead_key) {
+std::wstring TranslateKey(UINT virtual_key, UINT scan_code, const BYTE* key_state, HKL layout, bool* dead_key) {
   wchar_t buffer[8] = {};
   const int count = ::ToUnicodeEx(virtual_key, scan_code, key_state, buffer,
-                                  static_cast<int>(sizeof(buffer) / sizeof(buffer[0])),
-                                  kToUnicodeNoStateChange, layout);
+                                  static_cast<int>(sizeof(buffer) / sizeof(buffer[0])), kToUnicodeNoStateChange,
+                                  layout);
   *dead_key = count < 0;
   if (count == 0) {
     return {};
@@ -108,9 +107,8 @@ std::wstring TranslateKey(UINT virtual_key, UINT scan_code, const BYTE* key_stat
   return std::wstring(buffer, count < 0 ? 1 : static_cast<size_t>(count));
 }
 
-// logical key: 规则同 mac(LogicalKeyFor)。
-uint64_t LogicalKeyFor(UINT virtual_key, uint16_t scan_code, bool extended, uint32_t usage,
-                       HKL layout) {
+// logical key: 规则同 macOS(LogicalKeyFor)。
+uint64_t LogicalKeyFor(UINT virtual_key, uint16_t scan_code, bool extended, uint32_t usage, HKL layout) {
   if (IsSpecialHidUsage(usage)) {
     return SpecialLogicalKey(usage, scan_code, extended);
   }
@@ -142,35 +140,109 @@ LPCWSTR CursorResource(SystemCursor cursor) {
   return IDC_ARROW;
 }
 
+LRESULT ToHitCode(WinFrameHit hit) {
+  switch (hit) {
+    case WinFrameHit::kClient: return HTCLIENT;
+    case WinFrameHit::kLeft: return HTLEFT;
+    case WinFrameHit::kRight: return HTRIGHT;
+    case WinFrameHit::kTop: return HTTOP;
+    case WinFrameHit::kBottom: return HTBOTTOM;
+    case WinFrameHit::kTopLeft: return HTTOPLEFT;
+    case WinFrameHit::kTopRight: return HTTOPRIGHT;
+    case WinFrameHit::kBottomLeft: return HTBOTTOMLEFT;
+    case WinFrameHit::kBottomRight: return HTBOTTOMRIGHT;
+    case WinFrameHit::kMinimizeButton: return HTMINBUTTON;
+    case WinFrameHit::kMaximizeButton: return HTMAXBUTTON;
+    case WinFrameHit::kCloseButton: return HTCLOSE;
+    case WinFrameHit::kDisabledButton: return HTNOWHERE;
+  }
+  return HTCLIENT;
+}
+
+WinFrameHit CaptionButtonFromHitCode(WPARAM code) {
+  switch (code) {
+    case HTMINBUTTON: return WinFrameHit::kMinimizeButton;
+    case HTMAXBUTTON: return WinFrameHit::kMaximizeButton;
+    case HTCLOSE: return WinFrameHit::kCloseButton;
+    default: return WinFrameHit::kClient;
+  }
+}
+
+LPARAM PointToLParam(POINT p) {
+  return MAKELPARAM(static_cast<WORD>(static_cast<SHORT>(p.x)), static_cast<WORD>(static_cast<SHORT>(p.y)));
+}
+
 }  // namespace
 
-StatusOr<std::unique_ptr<WinWindow>> WinWindow::Create(const WindowSpec& spec,
-                                                       WindowDelegate* delegate) {
-  std::unique_ptr<WinWindow> window(new WinWindow(spec, delegate));
+// ---------------------------------------------------------------------------
+// 创建与销毁
+
+StatusOr<std::unique_ptr<WinWindow>> WinWindow::Create(const WindowSpec& spec, WindowDelegate* delegate,
+                                                       const Context& context) {
+  std::unique_ptr<WinWindow> window(new WinWindow(spec, delegate, context));
   MOMO_RETURN_IF_ERROR(window->Initialize(spec));
   return StatusOr<std::unique_ptr<WinWindow>>(std::move(window));
 }
 
-WinWindow::WinWindow(const WindowSpec& spec, WindowDelegate* delegate)
-    : delegate_(delegate), resizable_(spec.resizable), min_size_(spec.min_size) {}
+WinWindow::WinWindow(const WindowSpec& spec, WindowDelegate* delegate, const Context& context)
+    : delegate_(delegate),
+      mouse_(context.mouse),
+      displays_(context.displays),
+      app_(context.app),
+      min_size_(spec.min_size) {
+  resize_options_.resizable = spec.resizable;
+}
 
 WinWindow::~WinWindow() {
+  dispatcher().RemoveWindow(this);
+  if (in_size_move_) {
+    ::timeEndPeriod(1);  // 缩放循环中被销毁: 配对 WM_ENTERSIZEMOVE 的 timeBeginPeriod
+  }
   if (hwnd_ != nullptr) {
     // 先解除 WndProc 与本对象的关联: 销毁过程中的消息(WM_KILLFOCUS 等)不再触达 delegate。
     ::SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
     text_input_.reset();  // 需要 HWND 仍有效(DestroyCaret 等)
-    if (buttons_ != 0 && ::GetCapture() == hwnd_) {
+    caption_buttons_.reset();
+    if (capturing_ && ::GetCapture() == hwnd_) {
       ::ReleaseCapture();
     }
+    // 交换链先于窗口释放(raster 已解绑: Shell::DetachView 先于窗口销毁)。
+    surface_.reset();
     ::DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
-  surface_.reset();  // raster 已解绑(Shell::DetachView 先于窗口销毁);在途 present 消息随 HWND 丢弃
+  surface_.reset();
+}
+
+WinWindow* WinWindow::FromHwnd(HWND hwnd) {
+  wchar_t name[32] = {};
+  if (hwnd == nullptr || ::GetClassNameW(hwnd, name, 32) == 0 || std::wcscmp(name, kWindowClass) != 0) {
+    return nullptr;
+  }
+  // 别的 momo 进程的窗口也叫这个类名: 只认本进程的(GWLP_USERDATA 是本进程的指针)。
+  DWORD pid = 0;
+  ::GetWindowThreadProcessId(hwnd, &pid);
+  if (pid != ::GetCurrentProcessId()) {
+    return nullptr;
+  }
+  return reinterpret_cast<WinWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+HWND WinWindow::FrontmostVisibleHwnd() {
+  // 顶层窗口按 z 序由前到后。
+  for (HWND hwnd = ::GetTopWindow(nullptr); hwnd != nullptr; hwnd = ::GetWindow(hwnd, GW_HWNDNEXT)) {
+    if (::IsWindowVisible(hwnd) && FromHwnd(hwnd) != nullptr) {
+      return hwnd;
+    }
+  }
+  return nullptr;
 }
 
 DWORD WinWindow::style() const {
-  DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
-  if (!resizable_) {
+  // 不带 WS_CLIPCHILDREN: 唯一的子窗口是分层的控制按钮(WinCaptionButtons, 大部分透明), 软件 surface 的 GDI 绘制
+  // 要画到它下面。
+  DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPSIBLINGS;
+  if (!resize_options_.resizable) {
     style &= ~static_cast<DWORD>(WS_THICKFRAME | WS_MAXIMIZEBOX);
   }
   return style;
@@ -178,10 +250,23 @@ DWORD WinWindow::style() const {
 
 DWORD WinWindow::ex_style() const { return WS_EX_APPWINDOW; }
 
+void WinWindow::ApplyStyle() {
+  const LONG_PTR current = ::GetWindowLongPtrW(hwnd_, GWL_STYLE);
+  const LONG_PTR kept = current & (WS_VISIBLE | WS_MINIMIZE | WS_MAXIMIZE | WS_DISABLED);
+  const LONG_PTR next = kept | static_cast<LONG_PTR>(style());
+  if (next != current) {
+    ::SetWindowLongPtrW(hwnd_, GWL_STYLE, next);
+  }
+  ::SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
+                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 SIZE WinWindow::WindowSizeForClient(double logical_width, double logical_height, UINT dpi) const {
   const double scale = static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI;
   RECT rect = {0, 0, Round(logical_width * scale), Round(logical_height * scale)};
-  ::AdjustWindowRectExForDpi(&rect, style(), FALSE, ex_style(), dpi);
+  if (!title_bar_.hidden) {
+    ::AdjustWindowRectExForDpi(&rect, style(), FALSE, ex_style(), dpi);
+  }
   return {rect.right - rect.left, rect.bottom - rect.top};
 }
 
@@ -189,7 +274,8 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
   HINSTANCE instance = ::GetModuleHandleW(nullptr);
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
-  wc.style = CS_HREDRAW | CS_VREDRAW;  // 缩放时整窗重画(WM_PAINT 拉伸最新帧)
+  // CS_DBLCLKS: 第二次按下以 WM_*BUTTONDBLCLK 到达(startDrag 据此识别双击标题栏)。
+  wc.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS;
   wc.lpfnWndProc = &WinWindow::WndProc;
   wc.hInstance = instance;
   wc.hIcon = ::LoadIconW(instance, MAKEINTRESOURCEW(1));  // exe 资源中的第一个图标(若有)
@@ -203,11 +289,11 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
     return InternalError("RegisterClassExW failed: " + std::to_string(::GetLastError()));
   }
 
-  // 先按系统 DPI 估算尺寸创建(不可见), 再按窗口实际所在显示器的 DPI 精确设置并居中。
+  // 先按系统 DPI 估算尺寸创建(不可见), 再按窗口实际所在显示器的 DPI 精确设置并定位。
   const std::wstring title = Utf8ToWide(spec.title);
   SIZE size = WindowSizeForClient(spec.size.width, spec.size.height, ::GetDpiForSystem());
-  ::CreateWindowExW(ex_style(), kWindowClass, title.c_str(), style(), CW_USEDEFAULT, CW_USEDEFAULT,
-                    size.cx, size.cy, nullptr, nullptr, instance, this);
+  ::CreateWindowExW(ex_style(), kWindowClass, title.c_str(), style(), CW_USEDEFAULT, CW_USEDEFAULT, size.cx,
+                    size.cy, nullptr, nullptr, instance, this);
   if (hwnd_ == nullptr) {  // WM_NCCREATE 中已赋值
     return InternalError("CreateWindowExW failed: " + std::to_string(::GetLastError()));
   }
@@ -225,25 +311,53 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
     const LONG y = work.top + std::max<LONG>(0, (work.bottom - work.top - size.cy) / 2);
     ::SetWindowPos(hwnd_, nullptr, x, y, size.cx, size.cy, SWP_NOZORDER | SWP_NOACTIVATE);
   } else {
-    ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy,
-                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   }
   dpi_ = ::GetDpiForWindow(hwnd_);
 
-  surface_ = std::make_unique<WinSoftwareSurface>(hwnd_, spec.background_argb);
+  CreateSurface(spec.background_argb);
   text_input_ = std::make_unique<WinTextInput>(hwnd_, delegate_);
   cursor_ = ::LoadCursorW(nullptr, IDC_ARROW);
   UpdateDarkMode();
   last_metrics_ = metrics();
+  last_state_ = state();  // 尚未显示
   created_ = true;
   return Status::Ok();
 }
+
+void WinWindow::CreateSurface(uint32_t background_argb) {
+  if (SoftwareRenderingForced()) {
+    MOMO_LOG(INFO) << "MOMO_SOFTWARE_RENDERING set: using the software surface.";
+  } else {
+    StatusOr<std::unique_ptr<WinD3DSurface>> d3d = WinD3DSurface::Create(hwnd_, background_argb);
+    if (d3d.ok()) {
+      d3d_surface_ = d3d->get();
+      software_surface_ = &d3d_surface_->software();
+      surface_ = std::move(d3d).value();
+      return;
+    }
+    MOMO_LOG(WARNING) << "Direct3D surface unavailable (" << d3d.status() << "); using the software surface.";
+  }
+  auto software = std::make_unique<WinSoftwareSurface>(hwnd_, background_argb);
+  software_surface_ = software.get();
+  surface_ = std::move(software);
+}
+
+// ---------------------------------------------------------------------------
+// 显示与状态
 
 void WinWindow::Show() {
   ::ShowWindow(hwnd_, ::IsZoomed(hwnd_) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
   ::SetForegroundWindow(hwnd_);
   ::UpdateWindow(hwnd_);
   NotifyStateChanged();
+}
+
+void WinWindow::Activate() {
+  if (::IsIconic(hwnd_)) {
+    ::ShowWindow(hwnd_, SW_RESTORE);
+  }
+  Show();
 }
 
 WindowStateFlags WinWindow::state() const {
@@ -260,6 +374,13 @@ void WinWindow::NotifyStateChanged() {
   if (s == last_state_) return;
   last_state_ = s;
   delegate_->OnWindowStateChanged(s);
+}
+
+uint32_t WinWindow::capabilities() const {
+  // 平台视图与非激活窗口不支持(见头文件)。
+  return kCapabilityAlwaysOnTop | kCapabilityPosition | kCapabilityResizeOptions | kCapabilityHiddenTitleBar |
+         kCapabilityWindowDrag | kCapabilityMoveLoop | kCapabilityPointerCapture | kCapabilityVisibility |
+         kCapabilityMinMax;
 }
 
 Status WinWindow::Hide() {
@@ -286,9 +407,12 @@ Status WinWindow::Restore() {
   return Status::Ok();
 }
 
-void WinWindow::SetTitle(std::string_view title) {
-  ::SetWindowTextW(hwnd_, Utf8ToWide(title).c_str());
+Status WinWindow::SetAlwaysOnTop(bool on) {
+  ::SetWindowPos(hwnd_, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+  return Status::Ok();
 }
+
+void WinWindow::SetTitle(std::string_view title) { ::SetWindowTextW(hwnd_, Utf8ToWide(title).c_str()); }
 
 void WinWindow::SetMinSize(Size logical_size) {
   min_size_ = logical_size;
@@ -304,48 +428,21 @@ void WinWindow::SetMinSize(Size logical_size) {
   if (width < logical_size.width || height < logical_size.height) {
     const SIZE size = WindowSizeForClient(std::max(width, logical_size.width),
                                           std::max(height, logical_size.height), dpi_);
-    ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy,
-                   SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
   }
 }
 
 Size WinWindow::physical_size() const {
   RECT client{};
   ::GetClientRect(hwnd_, &client);
-  return {static_cast<double>(client.right - client.left),
-          static_cast<double>(client.bottom - client.top)};
+  return {static_cast<double>(client.right - client.left), static_cast<double>(client.bottom - client.top)};
 }
 
-double WinWindow::device_pixel_ratio() const {
-  return static_cast<double>(dpi_) / USER_DEFAULT_SCREEN_DPI;
-}
+double WinWindow::device_pixel_ratio() const { return static_cast<double>(dpi_) / USER_DEFAULT_SCREEN_DPI; }
 
 platform::RenderSurface& WinWindow::surface() { return *surface_; }
 
 TextInputConnection& WinWindow::text_input() { return *text_input_; }
-
-void WinWindow::SetCursor(SystemCursor cursor) {
-  cursor_hidden_ = cursor == SystemCursor::kHidden;
-  if (!cursor_hidden_) {
-    cursor_ = ::LoadCursorW(nullptr, CursorResource(cursor));  // 系统共享光标, 无需释放
-  }
-  if (CursorInClient()) {
-    ApplyCursor();
-  }
-}
-
-bool WinWindow::CursorInClient() const {
-  POINT point{};
-  if (!::GetCursorPos(&point) || ::WindowFromPoint(point) != hwnd_) {
-    return false;
-  }
-  ::ScreenToClient(hwnd_, &point);
-  RECT client{};
-  ::GetClientRect(hwnd_, &client);
-  return ::PtInRect(&client, point) != FALSE;
-}
-
-void WinWindow::ApplyCursor() { ::SetCursor(cursor_hidden_ ? nullptr : cursor_); }
 
 void WinWindow::NotifyMetricsChanged() {
   if (!created_ || minimized_) {
@@ -359,195 +456,288 @@ void WinWindow::NotifyMetricsChanged() {
   delegate_->OnMetricsChanged(current);
 }
 
+void WinWindow::SynchronizeLiveResize() {
+  // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖;还没出过帧时等待只会超时。
+  const bool presented = d3d_surface_ != nullptr ? d3d_surface_->has_presented() : software_surface_->has_presented();
+  if (resize_waiting_ || !presented) {
+    NotifyMetricsChanged();
+    return;
+  }
+  resize_waiting_ = true;
+  // 先把新尺寸交给引擎, 再等它画出这个尺寸的帧(WM_SIZE 返回后系统才显示新尺寸的窗口)。
+  NotifyMetricsChanged();
+  EventLoop* loop = EventLoop::Current();
+  const std::weak_ptr<int> alive = alive_;
+  // 执行平台线程任务(vsync 回调等: 引擎出下一帧要经过 platform 线程)。不派发窗口消息(包括别的线程或进程发来的
+  // 同步消息, 如 WM_ENDSESSION), 尽量少重入;等待有上限, 不会与 raster 线程永久互等。返回本窗口是否仍然存在。
+  const auto pump = [loop, alive] {
+    if (loop != nullptr) {
+      loop->RunDueTasksNested();
+    }
+    return !alive.expired();
+  };
+  const bool got_frame = d3d_surface_ != nullptr
+                             ? d3d_surface_->WaitForFrame(physical_size(), kLiveResizeFrameWait, pump)
+                             : software_surface_->WaitForFrame(physical_size(), kLiveResizeFrameWait, pump);
+  if (alive.expired()) {
+    return;  // 等待期间窗口被关闭(有序关闭等): 不再访问本对象
+  }
+  if (!got_frame) {
+    MOMO_LOG(VERBOSE) << "Live resize: no frame of the new size within the timeout; content is stretched.";
+  }
+  resize_waiting_ = false;
+}
+
 void WinWindow::UpdateDarkMode() {
   DWORD light = 1;
   DWORD size = sizeof(light);
-  const LSTATUS status = ::RegGetValueW(
-      HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-      L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
-  const BOOL dark = (status == ERROR_SUCCESS && light == 0) ? TRUE : FALSE;
+  const LSTATUS status =
+      ::RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &light, &size);
+  dark_ = status == ERROR_SUCCESS && light == 0;
+  const BOOL dark = dark_ ? TRUE : FALSE;
   if (FAILED(::DwmSetWindowAttribute(hwnd_, kDwmUseImmersiveDarkMode, &dark, sizeof(dark)))) {
     ::DwmSetWindowAttribute(hwnd_, kDwmUseImmersiveDarkModeLegacy, &dark, sizeof(dark));
+  }
+  UpdateCaptionButtons();
+}
+
+// ---------------------------------------------------------------------------
+// 光标
+
+void WinWindow::SetCursor(SystemCursor cursor) {
+  cursor_hidden_ = cursor == SystemCursor::kHidden;
+  if (!cursor_hidden_) {
+    cursor_ = ::LoadCursorW(nullptr, CursorResource(cursor));  // 系统共享光标, 无需释放
+  }
+  if (CursorInClient()) {
+    ApplyCursor();
+  }
+}
+
+bool WinWindow::CursorInClient() const {
+  POINT point{};
+  if (!::GetCursorPos(&point)) {
+    return false;
+  }
+  HWND hit = ::WindowFromPoint(point);
+  if (hit != hwnd_ && !::IsChild(hwnd_, hit)) {
+    return false;
+  }
+  ::ScreenToClient(hwnd_, &point);
+  const double dpr = device_pixel_ratio();
+  // 缩放边框与控制按钮的光标归系统。
+  return HitTestFrame(FrameState(), {point.x / dpr, point.y / dpr}) == WinFrameHit::kClient &&
+         point.x >= 0 && point.y >= 0 && point.x < physical_size().width && point.y < physical_size().height;
+}
+
+void WinWindow::ApplyCursor() { ::SetCursor(cursor_hidden_ ? nullptr : cursor_); }
+
+// ---------------------------------------------------------------------------
+// 窗口框架: 缩放边框、隐藏标题栏、系统控制按钮
+
+WinFrameState WinWindow::FrameState() const {
+  WinFrameState s;
+  const double dpr = device_pixel_ratio();
+  const Size size = physical_size();
+  s.client = {size.width / dpr, size.height / dpr};
+  s.resize = resize_options_;
+  s.maximized = ::IsZoomed(hwnd_) != FALSE;
+  s.title_bar_hidden = title_bar_.hidden;
+  if (title_bar_.hidden) {
+    s.buttons = LayoutCaptionButtons(s.client.width, CaptionHeight(), resize_options_.resizable);
+  }
+  return s;
+}
+
+double WinWindow::CaptionHeight() const {
+  if (title_bar_.height > 0) {
+    return title_bar_.height;
+  }
+  // 系统默认: 标准标题栏的高度(标题 + 缩放边框 + 填充)。
+  const int physical = ::GetSystemMetricsForDpi(SM_CYCAPTION, dpi_) + ::GetSystemMetricsForDpi(SM_CYSIZEFRAME, dpi_) +
+                       ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
+  return physical / device_pixel_ratio();
+}
+
+Status WinWindow::SetTitleBar(const TitleBarOptions& options) {
+  title_bar_ = options;
+  if (options.hidden && caption_buttons_ == nullptr) {
+    caption_buttons_ = std::make_unique<WinCaptionButtons>(hwnd_);
+  }
+  // 隐藏标题栏时外框即内容区: 向内容区延伸 1 像素的 DWM 框架, 保留系统阴影(与 Windows 终端等的做法相同)。
+  const MARGINS margins = options.hidden ? MARGINS{0, 0, 1, 0} : MARGINS{0, 0, 0, 0};
+  ::DwmExtendFrameIntoClientArea(hwnd_, &margins);
+  // 重新计算非客户区(WM_NCCALCSIZE): 窗口外框不变, 内容区包含/不含标题栏后尺寸变化。
+  ::SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  NotifyMetricsChanged();
+  NotifyFrameChanged();
+  UpdateCaptionButtons();
+  NotifyControlsChanged();
+  return Status::Ok();
+}
+
+std::optional<Rect> WinWindow::window_controls_rect() const {
+  if (::IsIconic(hwnd_)) {
+    return last_controls_;  // 最小化时客户区为空: 保持最近的值
+  }
+  return WindowControlsRect(FrameState());
+}
+
+void WinWindow::NotifyControlsChanged() {
+  if (!created_) return;
+  const std::optional<Rect> controls = window_controls_rect();
+  if (controls == last_controls_) {
+    return;
+  }
+  last_controls_ = controls;
+  delegate_->OnWindowControlsChanged(controls);
+}
+
+void WinWindow::UpdateCaptionButtons() {
+  if (caption_buttons_ == nullptr) {
+    return;
+  }
+  WinCaptionButtonsAppearance a;
+  a.visible = title_bar_.hidden && !::IsIconic(hwnd_);
+  if (a.visible) {
+    a.layout = FrameState().buttons;
+  }
+  a.dpr = device_pixel_ratio();
+  a.maximized = ::IsZoomed(hwnd_) != FALSE;
+  a.active = active_;
+  a.dark = dark_;
+  a.hover = caption_hover_;
+  a.pressed = caption_pressed_;
+  caption_buttons_->Update(a);
+}
+
+Status WinWindow::SetResizeOptions(const WindowResizeOptions& options) {
+  const bool style_changed = options.resizable != resize_options_.resizable;
+  resize_options_ = options;
+  if (style_changed) {
+    ApplyStyle();
+  }
+  UpdateCaptionButtons();
+  return Status::Ok();
+}
+
+LRESULT WinWindow::OnNcCalcSize(WPARAM wparam, LPARAM lparam) {
+  if (!title_bar_.hidden || wparam == FALSE) {
+    return ::DefWindowProcW(hwnd_, WM_NCCALCSIZE, wparam, lparam);
+  }
+  // 隐藏标题栏: 整个窗口都是内容区(没有非客户区)。最大化时窗口外框超出显示器一圈缩放边框的厚度,
+  // 内容区相应内缩, 否则内容的边缘在屏幕之外。
+  auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+  if (::IsZoomed(hwnd_)) {
+    const int padding = ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi_);
+    const int frame_x = ::GetSystemMetricsForDpi(SM_CXFRAME, dpi_) + padding;
+    const int frame_y = ::GetSystemMetricsForDpi(SM_CYFRAME, dpi_) + padding;
+    RECT& r = params->rgrc[0];
+    r.left += frame_x;
+    r.right -= frame_x;
+    r.top += frame_y;
+    r.bottom -= frame_y;
+    // 内容区正好铺满显示器时, 系统把窗口当作全屏应用, 自动隐藏的任务栏就呼不出来了: 在任务栏那条边上留 1 像素
+    // (Windows 终端、Chromium 的做法)。
+    APPBARDATA state{};
+    state.cbSize = sizeof(state);
+    if ((::SHAppBarMessage(ABM_GETSTATE, &state) & ABS_AUTOHIDE) != 0) {
+      MONITORINFO monitor{};
+      monitor.cbSize = sizeof(monitor);
+      if (::GetMonitorInfoW(::MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        for (UINT edge : {ABE_TOP, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT}) {
+          APPBARDATA bar{};
+          bar.cbSize = sizeof(bar);
+          bar.uEdge = edge;
+          bar.rc = monitor.rcMonitor;
+          if (::SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &bar) == 0) continue;
+          if (edge == ABE_TOP) r.top += 1;
+          if (edge == ABE_BOTTOM) r.bottom -= 1;
+          if (edge == ABE_LEFT) r.left += 1;
+          if (edge == ABE_RIGHT) r.right -= 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+LRESULT WinWindow::OnNcHitTest(LPARAM lparam) {
+  // 系统标题栏与外侧缩放边框(标准框架)照常由系统判断。
+  const LRESULT standard = ::DefWindowProcW(hwnd_, WM_NCHITTEST, 0, lparam);
+  if (standard != HTCLIENT) {
+    return standard;
+  }
+  POINT p{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+  ::ScreenToClient(hwnd_, &p);
+  const double dpr = device_pixel_ratio();
+  return ToHitCode(HitTestFrame(FrameState(), {p.x / dpr, p.y / dpr}));
+}
+
+// 宿主绘制的控制按钮: 悬停、按下、点击都在非客户区消息里处理(按钮子窗口不接收鼠标)。不把按钮的按下交给
+// DefWindowProc —— 它会画出经典样式的按钮。
+bool WinWindow::OnCaptionButtonMessage(UINT message, WPARAM wparam) {
+  if (!title_bar_.hidden) {
+    return false;
+  }
+  const WinFrameHit hit = CaptionButtonFromHitCode(wparam);
+  switch (message) {
+    case WM_NCMOUSEMOVE:
+      if (!tracking_nc_leave_) {
+        TRACKMOUSEEVENT track{};
+        track.cbSize = sizeof(track);
+        track.dwFlags = TME_LEAVE | TME_NONCLIENT;
+        track.hwndTrack = hwnd_;
+        tracking_nc_leave_ = ::TrackMouseEvent(&track) != FALSE;
+      }
+      caption_hover_ = hit;
+      UpdateCaptionButtons();
+      // 按钮上的移动不交给 DefWindowProc(它会按经典样式画按钮的悬停);Windows 11 的贴靠布局只依据
+      // WM_NCHITTEST 返回的 HTMAXBUTTON。
+      return hit != WinFrameHit::kClient;
+    case WM_NCMOUSELEAVE:
+      tracking_nc_leave_ = false;
+      caption_hover_ = WinFrameHit::kClient;
+      caption_pressed_ = WinFrameHit::kClient;
+      UpdateCaptionButtons();
+      return false;
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+      if (hit == WinFrameHit::kClient) return false;
+      caption_pressed_ = hit;
+      UpdateCaptionButtons();
+      return true;
+    case WM_NCLBUTTONUP: {
+      const bool click = hit != WinFrameHit::kClient && caption_pressed_ == hit;
+      caption_pressed_ = WinFrameHit::kClient;
+      UpdateCaptionButtons();
+      if (!click) return hit != WinFrameHit::kClient;
+      WPARAM command = SC_CLOSE;
+      if (hit == WinFrameHit::kMinimizeButton) command = SC_MINIMIZE;
+      if (hit == WinFrameHit::kMaximizeButton) command = ::IsZoomed(hwnd_) ? SC_RESTORE : SC_MAXIMIZE;
+      // 经系统命令执行(关闭 → WM_CLOSE → 询问 JS;最小化/最大化带系统动画)。
+      ::PostMessageW(hwnd_, WM_SYSCOMMAND, command, 0);
+      return true;
+    }
+    default:
+      return false;
   }
 }
 
 // ---------------------------------------------------------------------------
-// 指针
+// 位置与系统拖动
 
-platform::PointerData WinWindow::MakePointer(platform::PointerPhase phase, double x, double y) const {
-  platform::PointerData data;
-  data.timestamp_us = NowMicros();
-  data.kind = last_kind_;
-  data.phase = phase;
-  data.device = 0;
-  data.physical_x = x;  // Per-Monitor-V2: 客户区坐标即物理像素, 左上原点
-  data.physical_y = y;
-  // 屏幕位置(逻辑点): 取消息产生时的屏幕位置(GetMessagePos), 不经窗口当前位置换算——拖动中窗口
-  // 跟随指针移动时, 客户区坐标与窗口位置不同步, 换算会累积误差。按本窗口 DPI 换算(混合 DPI 时为近似)。
-  const DWORD pos = ::GetMessagePos();
-  data.screen_x = static_cast<short>(LOWORD(pos)) / device_pixel_ratio();
-  data.screen_y = static_cast<short>(HIWORD(pos)) / device_pixel_ratio();
-  data.buttons = buttons_;
-  data.sequence_id = sequence_id_;
-  return data;
-}
-
-void WinWindow::DispatchPointer(platform::PointerData data) {
-  platform::PointerDataPacket packet;
-  if (data.phase == platform::PointerPhase::kRemove) {
-    if (!pointer_added_) {
-      return;
-    }
-    pointer_added_ = false;
-  } else if (!pointer_added_) {
-    // 首次出现(进入客户区或首个事件): 先补一个 kAdd(与 mac 一致)。
-    platform::PointerData add = data;
-    add.phase = platform::PointerPhase::kAdd;
-    add.buttons = 0;
-    add.scroll_delta_x = add.scroll_delta_y = 0;
-    add.momentum = false;
-    packet.push_back(add);
-    pointer_added_ = true;
-  }
-  packet.push_back(data);
-  delegate_->OnPointerPacket(std::move(packet));
-}
-
-void WinWindow::OnMouseMove(LPARAM lparam) {
-  const double x = GET_X_LPARAM(lparam);
-  const double y = GET_Y_LPARAM(lparam);
-  last_kind_ = KindFromMessageExtraInfo();
-  if (!tracking_leave_) {
-    TRACKMOUSEEVENT track{};
-    track.cbSize = sizeof(track);
-    track.dwFlags = TME_LEAVE;
-    track.hwndTrack = hwnd_;
-    tracking_leave_ = ::TrackMouseEvent(&track) != FALSE;
-  }
-  // 系统会发出无位移的 WM_MOUSEMOVE(激活、SetCursor 之后等): 去重。
-  if (pointer_added_ && x == last_x_ && y == last_y_) {
-    return;
-  }
-  last_x_ = x;
-  last_y_ = y;
-  DispatchPointer(MakePointer(buttons_ == 0 ? platform::PointerPhase::kHover : platform::PointerPhase::kMove, x, y));
-}
-
-void WinWindow::OnMouseLeave() {
-  tracking_leave_ = false;
-  if (buttons_ == 0) {
-    // 拖拽中(捕获)离开不 remove, 松开时再补发(与 mac 一致)。
-    DispatchPointer(MakePointer(platform::PointerPhase::kRemove, last_x_, last_y_));
-  }
-}
-
-void WinWindow::OnMouseButton(UINT message, WPARAM wparam, LPARAM lparam) {
-  uint32_t bit = 0;
-  bool down = false;
-  switch (message) {
-    case WM_LBUTTONDOWN: bit = 1u << 0; down = true; break;
-    case WM_LBUTTONUP: bit = 1u << 0; break;
-    case WM_RBUTTONDOWN: bit = 1u << 1; down = true; break;
-    case WM_RBUTTONUP: bit = 1u << 1; break;
-    case WM_MBUTTONDOWN: bit = 1u << 2; down = true; break;
-    case WM_MBUTTONUP: bit = 1u << 2; break;
-    case WM_XBUTTONDOWN:
-    case WM_XBUTTONUP:
-      // 侧键: XBUTTON1 = bit3, XBUTTON2 = bit4(mac buttonNumber 3/4)。
-      bit = GET_XBUTTON_WPARAM(wparam) == XBUTTON1 ? (1u << 3) : (1u << 4);
-      down = message == WM_XBUTTONDOWN;
-      break;
-    default:
-      return;
-  }
-  const double x = GET_X_LPARAM(lparam);
-  const double y = GET_Y_LPARAM(lparam);
-  last_x_ = x;
-  last_y_ = y;
-  last_kind_ = KindFromMessageExtraInfo();
-  if (down) {
-    const bool first = buttons_ == 0;
-    buttons_ |= bit;
-    if (first) {
-      static int64_t next_sequence_id = 1;  // 进程内递增(仅 platform 线程)
-      sequence_id_ = next_sequence_id++;
-      ::SetCapture(hwnd_);  // 拖出窗口后仍收到移动/松开
-    }
-    DispatchPointer(MakePointer(first ? platform::PointerPhase::kDown : platform::PointerPhase::kMove, x, y));
-    return;
-  }
-  if ((buttons_ & bit) == 0) {
-    return;  // 按下发生在窗口外(如标题栏双击后)的松开
-  }
-  buttons_ &= ~bit;
-  const bool last = buttons_ == 0;
-  DispatchPointer(MakePointer(last ? platform::PointerPhase::kUp : platform::PointerPhase::kMove, x, y));
-  if (last) {
-    sequence_id_ = 0;
-    ::ReleaseCapture();  // 同步触发 WM_CAPTURECHANGED;此时 buttons_ 已为 0, OnCaptureLost 忽略
-    if (!CursorInClient()) {
-      // 拖出客户区后松开: 补发离开。
-      DispatchPointer(MakePointer(platform::PointerPhase::kRemove, x, y));
-    }
-  }
-}
-
-// ---- 指针序列(原生捕获)----
-// 与 macOS 宿主同一约定(embedder/common/platform_window.h): 一个按下序列只有一个接收窗口——按下时隐式
-// SetCapture 到按下所在的窗口;CapturePointer 改交本窗口;序列期间系统只把鼠标消息发给捕获窗口(Win32 保证
-// 接收方固定)。改交不合成事件: 原持有者静默让出(先清零按键, 它的 WM_CAPTURECHANGED 因此什么也不报)。
-
-// hwnd 是本进程的 momo 窗口时返回它的 WinWindow。
-WinWindow* WinWindow::FromHwnd(HWND hwnd) {
-  wchar_t name[32] = {};
-  if (hwnd == nullptr || ::GetClassNameW(hwnd, name, 32) == 0 || std::wcscmp(name, kWindowClass) != 0) {
-    return nullptr;
-  }
-  return reinterpret_cast<WinWindow*>(::GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-}
-
-StatusOr<bool> WinWindow::CapturePointer(int64_t sequence_id) {
-  HWND current = ::GetCapture();
-  if (current == hwnd_) {
-    return buttons_ != 0 && sequence_id_ == sequence_id;
-  }
-  WinWindow* previous = FromHwnd(current);
-  if (previous == nullptr || previous->buttons_ == 0 || previous->sequence_id_ != sequence_id) {
-    return false;  // 没有进行中的序列(抬起已由原窗口上报)或不是这个序列
-  }
-  const uint32_t buttons = previous->buttons_;
-  previous->buttons_ = 0;  // 静默让出
-  previous->sequence_id_ = 0;
-  sequence_id_ = sequence_id;
-  POINT client{};
-  ::GetCursorPos(&client);
-  ::ScreenToClient(hwnd_, &client);
-  buttons_ = buttons;
-  last_x_ = client.x;
-  last_y_ = client.y;
-  ::SetCapture(hwnd_);
-  return true;
-}
-
-void WinWindow::ReleasePointerCapture() {
-  if (::GetCapture() != hwnd_ || buttons_ == 0) {
-    return;  // 不是接收窗口(序列已改交别的窗口, 或没有序列)
-  }
-  buttons_ = 0;
-  ::ReleaseCapture();  // WM_CAPTURECHANGED: 按键已清零, OnCaptureLost 不再上报
-  DispatchPointer(MakePointer(platform::PointerPhase::kCancel, last_x_, last_y_));
-  sequence_id_ = 0;
-}
-
-// 屏幕框与定位以客户区(momo 视图)为准, 与 macOS 一致;物理像素按本窗口 DPI 换算为逻辑点。
+// 屏幕框与定位以客户区(momo 视图)为准, 与 macOS 一致;物理像素与全局逻辑点经 WinDisplays 换算。
 Rect WinWindow::screen_frame() const {
   RECT client{};
   ::GetClientRect(hwnd_, &client);
   POINT origin{0, 0};
   ::ClientToScreen(hwnd_, &origin);
-  const double dpr = device_pixel_ratio();
-  return {origin.x / dpr, origin.y / dpr, (client.right - client.left) / dpr,
-          (client.bottom - client.top) / dpr};
+  return displays_.layout().ToLogical(
+      Rect{static_cast<double>(origin.x), static_cast<double>(origin.y),
+           static_cast<double>(client.right - client.left), static_cast<double>(client.bottom - client.top)},
+      device_pixel_ratio());
 }
 
 Status WinWindow::SetPosition(Point top_left) {
@@ -556,10 +746,9 @@ Status WinWindow::SetPosition(Point top_left) {
   ::GetWindowRect(hwnd_, &window);
   POINT origin{0, 0};
   ::ClientToScreen(hwnd_, &origin);
-  const double dpr = device_pixel_ratio();
-  const LONG x = static_cast<LONG>(std::lround(top_left.x * dpr)) - (origin.x - window.left);
-  const LONG y = static_cast<LONG>(std::lround(top_left.y * dpr)) - (origin.y - window.top);
-  ::SetWindowPos(hwnd_, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+  const POINT target = displays_.ToPhysical(top_left);
+  ::SetWindowPos(hwnd_, nullptr, target.x - (origin.x - window.left), target.y - (origin.y - window.top), 0, 0,
+                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
   return Status::Ok();
 }
 
@@ -575,61 +764,195 @@ void WinWindow::NotifyFrameChanged() {
   delegate_->OnWindowFrameChanged(frame);
 }
 
-void WinWindow::OnCaptureLost() {
-  if (buttons_ == 0) {
-    return;
+Status WinWindow::StartWindowDrag(int64_t sequence_id) {
+  if (!dispatcher().IsMomoSequence(this, sequence_id)) {
+    return Status::Ok();  // 序列已结束(往返期间用户已放手)或已不归本窗口
   }
-  // 按住期间被系统夺走捕获(Alt+Tab、弹窗等): 以取消结束本次序列, 避免按钮状态卡住。
-  // (改交给本进程另一个 momo 窗口时, 原持有者已先清零按键, 不会走到这里。)
-  buttons_ = 0;
-  DispatchPointer(MakePointer(platform::PointerPhase::kCancel, last_x_, last_y_));
-  sequence_id_ = 0;
+  if (sequence_down_id_ != sequence_id ||
+      (sequence_down_message_ != WM_LBUTTONDOWN && sequence_down_message_ != WM_LBUTTONDBLCLK)) {
+    return InvalidArgumentError("startDrag: the sequence did not start with a left press in this window");
+  }
+  if (sequence_down_clicks_ == 2) {
+    // 双击标题栏: Windows 的惯例是最大化/还原(不可缩放的窗口什么也不做)。
+    if (resize_options_.resizable) {
+      ::PostMessageW(hwnd_, WM_SYSCOMMAND, ::IsZoomed(hwnd_) ? SC_RESTORE : SC_MAXIMIZE, 0);
+    }
+    return Status::Ok();
+  }
+  // 系统的移动循环(含 Aero Snap、跨屏): 它自己捕获鼠标并吞掉抬起, 返回时拖动已结束。
+  capturing_ = false;
+  if (::GetCapture() == hwnd_) {
+    ::ReleaseCapture();
+  }
+  POINT cursor{};
+  ::GetCursorPos(&cursor);
+  const std::weak_ptr<int> alive = alive_;
+  ::SendMessageW(hwnd_, WM_NCLBUTTONDOWN, HTCAPTION, PointToLParam(cursor));
+  if (alive.expired()) {
+    return Status::Ok();  // 移动循环期间执行的任务关闭了窗口(有序关闭等): 不再访问本对象
+  }
+  // 返回时按键已松开则在这里结束序列(否则由派发器的过期判定在下一条消息上结束)。
+  const int primary = ::GetSystemMetrics(SM_SWAPBUTTON) ? VK_RBUTTON : VK_LBUTTON;
+  if ((::GetAsyncKeyState(primary) & 0x8000) == 0) {
+    dispatcher().EndSequence(this, CursorScreen(), NowMicros());
+  }
+  SyncNativeCapture();
+  return Status::Ok();
 }
 
-void WinWindow::OnMouseWheel(UINT message, WPARAM wparam, LPARAM lparam) {
-  // 滚轮消息的坐标是屏幕坐标。
-  POINT point = {GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
-  ::ScreenToClient(hwnd_, &point);
-  const double notches = static_cast<double>(GET_WHEEL_DELTA_WPARAM(wparam)) / WHEEL_DELTA;
-  const double dpr = device_pixel_ratio();
-  platform::PointerData data = MakePointer(platform::PointerPhase::kScroll, point.x, point.y);
-  data.kind = platform::PointerDeviceKind::kMouse;  // 精确触控板也以 WM_MOUSEWHEEL 小增量上报, 无法区分
-  bool horizontal = message == WM_MOUSEHWHEEL;
-  double pixels = 0;
-  if (horizontal) {
-    UINT chars = 3;
-    ::SystemParametersInfoW(SPI_GETWHEELSCROLLCHARS, 0, &chars, 0);
-    // 正 delta = 向右倾 = 视口向右滚(正 x)。
-    pixels = notches * chars * kScrollLinePixels * dpr;
-  } else {
-    UINT lines = 3;
-    ::SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
-    const double per_notch = lines == WHEEL_PAGESCROLL ? physical_size().height
-                                                       : lines * kScrollLinePixels * dpr;
-    // 正 delta = 向前滚(远离用户)= 视口向上滚: 取负, 统一为"正 y = 向下滚"(与 mac / Web deltaY 一致)。
-    pixels = -notches * per_notch;
-    // Shift + 垂直滚轮 = 水平滚动(mac 由系统完成, 这里对齐其行为)。
-    if ((::GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-      horizontal = true;
+Status WinWindow::StartMoveLoop(Point grab_offset) {
+  dispatcher().StartMoveLoop(this, grab_offset);  // 不是进行中序列的接收方时什么也不做
+  return Status::Ok();
+}
+
+void WinWindow::EndMoveLoop() { dispatcher().EndMoveLoop(this); }
+
+StatusOr<bool> WinWindow::CapturePointer(int64_t sequence_id) {
+  const bool captured = dispatcher().Capture(this, sequence_id);
+  if (captured) {
+    SyncNativeCapture();  // 系统把之后的鼠标消息交给本窗口(按下所在的窗口随后关闭也不受影响)
+  }
+  return captured;
+}
+
+void WinWindow::ReleasePointerCapture() {
+  dispatcher().ReleaseCapture(this);
+  SyncNativeCapture();
+}
+
+// ---------------------------------------------------------------------------
+// 指针
+// 决定接收方的是 PointerDispatcher(embedder/common/pointer_dispatcher.h, 进程内一个, 由 WinMouseInput 持有):
+// 这里只把鼠标消息交给 WinMouseInput 翻译后转给它;它经本类(PointerWindow)把事件交给 momo 内容。
+
+PointerDispatcher& WinWindow::dispatcher() const { return mouse_.dispatcher(); }
+
+Point WinWindow::CursorScreen() const {
+  POINT p{};
+  ::GetCursorPos(&p);
+  return displays_.ToLogical(p);
+}
+
+void WinWindow::OnMouseMessage(UINT message, WPARAM wparam, LPARAM lparam) {
+  if (message == WM_MOUSEMOVE) {
+    // 持有捕获时不跟踪离开(指针在窗口外时会立刻收到 WM_MOUSELEAVE;序列期间派发器本来也不理会离开)。
+    if (!tracking_leave_ && !capturing_) {
+      TRACKMOUSEEVENT track{};
+      track.cbSize = sizeof(track);
+      track.dwFlags = TME_LEAVE;
+      track.hwndTrack = hwnd_;
+      tracking_leave_ = ::TrackMouseEvent(&track) != FALSE;
     }
+    // 系统会发出无位移的 WM_MOUSEMOVE(激活、SetCursor 之后等): 去重。
+    const POINT p{GET_X_LPARAM(lparam), GET_Y_LPARAM(lparam)};
+    if (p.x == last_move_.x && p.y == last_move_.y && wparam == last_move_buttons_) {
+      return;
+    }
+    last_move_ = p;
+    last_move_buttons_ = wparam;
+  } else if (message == WM_MOUSELEAVE) {
+    tracking_leave_ = false;
+    last_move_ = {INT32_MIN, INT32_MIN};
   }
-  if (horizontal) {
-    data.scroll_delta_x = pixels;
-  } else {
-    data.scroll_delta_y = pixels;
+  WinMouseMessage m;
+  m.message = message;
+  m.wparam = wparam;
+  // 消息产生时的屏幕位置(不经窗口当前位置换算: 拖动中窗口跟随指针移动时两者不同步)。
+  const DWORD pos = ::GetMessagePos();
+  m.screen = displays_.ToLogical(POINT{GET_X_LPARAM(pos), GET_Y_LPARAM(pos)});
+  m.timestamp_us = NowMicros();
+  m.extra_info = static_cast<uint32_t>(::GetMessageExtraInfo());
+  if (message == WM_MOUSEWHEEL || message == WM_MOUSEHWHEEL) {
+    UINT lines = 3;
+    UINT chars = 3;
+    ::SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    ::SystemParametersInfoW(SPI_GETWHEELSCROLLCHARS, 0, &chars, 0);
+    m.wheel_lines = lines;
+    m.wheel_chars = chars;
+    m.page_height = physical_size().height / device_pixel_ratio();
   }
-  if (data.scroll_delta_x == 0 && data.scroll_delta_y == 0) {
+  mouse_.Dispatch(m, this);
+  SyncNativeCapture();
+}
+
+void WinWindow::SyncNativeCapture() {
+  if (hwnd_ == nullptr) {
     return;
   }
-  DispatchPointer(data);
+  const bool want = dispatcher().has_sequence() && dispatcher().PointerOwner(this).has_value();
+  if (want) {
+    capturing_ = true;
+    tracking_leave_ = false;  // 捕获结束后重新跟踪离开
+    if (::GetCapture() != hwnd_) {
+      ::SetCapture(hwnd_);  // 拖出窗口后仍收到移动与抬起
+    }
+  } else if (capturing_) {
+    capturing_ = false;
+    if (::GetCapture() == hwnd_) {
+      ::ReleaseCapture();
+    }
+  }
 }
+
+std::optional<int64_t> WinWindow::HitTest(Point screen) const {
+  if (!::IsWindowVisible(hwnd_) || ::IsIconic(hwnd_)) {
+    return std::nullopt;
+  }
+  const POINT physical = displays_.ToPhysical(screen);
+  // 被别的窗口(本应用的或别的应用的)遮住的地方不属于本窗口。
+  HWND hit = ::WindowFromPoint(physical);
+  if (hit != hwnd_ && !::IsChild(hwnd_, hit)) {
+    return std::nullopt;
+  }
+  POINT client = physical;
+  ::ScreenToClient(hwnd_, &client);
+  const Size size = physical_size();
+  if (client.x < 0 || client.y < 0 || client.x >= size.width || client.y >= size.height) {
+    return std::nullopt;
+  }
+  // 缩放边框与控制按钮归系统, 不是 momo 内容。
+  const double dpr = device_pixel_ratio();
+  if (HitTestFrame(FrameState(), {client.x / dpr, client.y / dpr}) != WinFrameHit::kClient) {
+    return std::nullopt;
+  }
+  return 0;  // 没有平台视图: 内容区都是 momo
+}
+
+void WinWindow::SendToMomo(platform::PointerDataPacket packet, const PointerInput& input) {
+  // 屏幕坐标(逻辑点)→ 客户区物理像素;滚动位移 点 → 物理像素。
+  POINT origin{0, 0};
+  ::ClientToScreen(hwnd_, &origin);
+  const double scale = device_pixel_ratio();
+  const WinScreenLayout& layout = displays_.layout();
+  for (platform::PointerData& data : packet) {
+    const Point physical = layout.ToPhysical(Point{data.screen_x, data.screen_y});
+    data.physical_x = physical.x - origin.x;
+    data.physical_y = physical.y - origin.y;
+    data.scroll_delta_x *= scale;
+    data.scroll_delta_y *= scale;
+    if (data.phase == platform::PointerPhase::kDown) {
+      // 序列的按下(startDrag 据此开始系统拖动或识别双击)。
+      const auto* message = static_cast<const WinMouseMessage*>(input.native);
+      sequence_down_id_ = data.sequence_id;
+      sequence_down_message_ = message != nullptr ? message->message : 0;
+      sequence_down_clicks_ = message != nullptr ? message->click_count() : 0;
+    }
+  }
+  delegate_->OnPointerPacket(std::move(packet));
+}
+
+// Windows 宿主没有平台视图(capabilities 不含 kCapabilityPlatformViews), 派发器不会选中它们。
+void WinWindow::SendToPlatformView(int64_t, const PointerInput&, platform::PointerPhase) {}
+void WinWindow::SetHoveredPlatformView(int64_t, const PointerInput&) {}
+
+void WinWindow::MoveTo(Point top_left) { SetPosition(top_left).IgnoreError(); }
 
 // ---------------------------------------------------------------------------
 // 键盘
 
 void WinWindow::OnKey(UINT message, WPARAM wparam, LPARAM lparam) {
   const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-  UINT virtual_key = static_cast<UINT>(wparam);
+  const UINT virtual_key = static_cast<UINT>(wparam);
   if (virtual_key == VK_PACKET) {
     return;  // SendInput 注入的 Unicode 字符: 无物理键, 字符经 WM_CHAR 到达
   }
@@ -671,8 +994,7 @@ void WinWindow::OnKey(UINT message, WPARAM wparam, LPARAM lparam) {
     BYTE key_state[256] = {};
     if (::GetKeyboardState(key_state)) {
       bool dead_key = false;
-      const std::wstring characters =
-          TranslateKey(virtual_key, scan_code, key_state, layout, &dead_key);
+      const std::wstring characters = TranslateKey(virtual_key, scan_code, key_state, layout, &dead_key);
       if (!dead_key && AllPrintable(characters)) {
         data.character = WideToUtf8(characters);
       }
@@ -709,7 +1031,26 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     }
   }
   switch (message) {
-    // ---- 尺寸 / DPI ----
+    // ---- 尺寸 / DPI / 框架 ----
+    case WM_NCCALCSIZE:
+      return OnNcCalcSize(wparam, lparam);
+    case WM_NCHITTEST:
+      return OnNcHitTest(lparam);
+    case WM_NCACTIVATE:
+      if (title_bar_.hidden) {
+        // 没有非客户区可画: lParam = -1 让系统不重画框架(只更新激活状态)。
+        return ::DefWindowProcW(hwnd_, message, wparam, -1);
+      }
+      break;
+    case WM_NCMOUSEMOVE:
+    case WM_NCMOUSELEAVE:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+    case WM_NCLBUTTONUP:
+      if (OnCaptionButtonMessage(message, wparam)) {
+        return 0;
+      }
+      break;
     case WM_GETMINMAXINFO: {
       auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
       const SIZE min = WindowSizeForClient(min_size_.width, min_size_.height, dpi_);
@@ -718,42 +1059,63 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       return 0;
     }
     case WM_GETDPISCALEDSIZE: {
-      // 跨 DPI 拖动前询问新外框尺寸: 客户区按 DPI 比例精确缩放(默认的线性外框缩放有几像素误差)。
+      // 跨 DPI 拖动前询问新外框尺寸: 内容区按逻辑尺寸精确换算(默认的线性外框缩放有几像素误差)。
       const UINT new_dpi = static_cast<UINT>(wparam);
-      RECT client{};
-      ::GetClientRect(hwnd_, &client);
-      const double scale = static_cast<double>(new_dpi) / static_cast<double>(dpi_);
-      RECT rect = {0, 0, Round((client.right - client.left) * scale),
-                   Round((client.bottom - client.top) * scale)};
-      if (!::AdjustWindowRectExForDpi(&rect, style(), FALSE, ex_style(), new_dpi)) {
-        return FALSE;
-      }
-      auto* size = reinterpret_cast<SIZE*>(lparam);
-      size->cx = rect.right - rect.left;
-      size->cy = rect.bottom - rect.top;
+      const double dpr = device_pixel_ratio();
+      const Size size = physical_size();
+      const SIZE window = WindowSizeForClient(size.width / dpr, size.height / dpr, new_dpi);
+      auto* out = reinterpret_cast<SIZE*>(lparam);
+      *out = window;
       return TRUE;
     }
     case WM_DPICHANGED: {
       dpi_ = HIWORD(wparam);  // 先更新: SetWindowPos 触发的 WM_SIZE 按新 DPR 上报
+      displays_.Invalidate();
       const auto* suggested = reinterpret_cast<const RECT*>(lparam);
-      ::SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top,
-                     suggested->right - suggested->left, suggested->bottom - suggested->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
+      ::SetWindowPos(hwnd_, nullptr, suggested->left, suggested->top, suggested->right - suggested->left,
+                     suggested->bottom - suggested->top, SWP_NOZORDER | SWP_NOACTIVATE);
       NotifyMetricsChanged();
+      UpdateCaptionButtons();
+      NotifyControlsChanged();
       return 0;
     }
+    case WM_DISPLAYCHANGE:
+      displays_.Invalidate();
+      NotifyFrameChanged();
+      break;
+    case WM_ENTERSIZEMOVE:
+      in_size_move_ = true;
+      // 拖拽缩放的等帧以 1 ms 粒度轮询: 期间把系统定时器精度调到 1 ms(默认 ~15.6 ms 会让每次 WM_SIZE 多等几十毫秒)。
+      ::timeBeginPeriod(1);
+      return 0;
+    case WM_EXITSIZEMOVE:
+      if (in_size_move_) {
+        ::timeEndPeriod(1);
+      }
+      in_size_move_ = false;
+      NotifyMetricsChanged();
+      return 0;
     case WM_SIZE:
       minimized_ = wparam == SIZE_MINIMIZED;
       NotifyStateChanged();  // 最小化 / 最大化 / 还原
+      UpdateCaptionButtons();
       if (minimized_) {
         return 0;
       }
-      NotifyMetricsChanged();
+      if (in_size_move_) {
+        SynchronizeLiveResize();
+      } else {
+        NotifyMetricsChanged();
+      }
       NotifyFrameChanged();
+      NotifyControlsChanged();
       return 0;
     case WM_MOVE:
       NotifyFrameChanged();
       return 0;
+    case WM_WINDOWPOSCHANGED:
+      NotifyStateChanged();  // 显示/隐藏(别处调用 ShowWindow 也会经过这里)
+      break;                 // DefWindowProc 据此发 WM_SIZE / WM_MOVE
 
     // ---- 绘制 ----
     case WM_ERASEBKGND:
@@ -762,26 +1124,35 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       PAINTSTRUCT paint{};
       HDC dc = ::BeginPaint(hwnd_, &paint);
       if (dc != nullptr) {
-        if (surface_ != nullptr) {
-          surface_->Paint(dc);
+        if (d3d_surface_ != nullptr) {
+          d3d_surface_->Paint(dc);
+        } else if (software_surface_ != nullptr) {
+          software_surface_->Paint(dc);
         }
         ::EndPaint(hwnd_, &paint);
       }
       return 0;
     }
     case WinSoftwareSurface::kPresentMessage:
-      if (surface_ != nullptr) {
-        surface_->DisplayPending();
+      if (software_surface_ != nullptr) {
+        software_surface_->DisplayPending();
       }
       return 0;
 
-    // ---- 窗口生命周期 ----
+    // ---- 窗口与应用的生命周期 ----
     case WM_CLOSE:
       // embedder 总是拦截(返回 false), 询问 JS 后再异步销毁窗口;放行时只隐藏, HWND 由析构销毁。
       if (delegate_->OnCloseRequested()) {
         ::ShowWindow(hwnd_, SW_HIDE);
       }
       return 0;
+    case WM_ACTIVATE:
+      active_ = LOWORD(wparam) != WA_INACTIVE;
+      UpdateCaptionButtons();
+      break;
+    case WM_ACTIVATEAPP:
+      app_.OnActivateApp(wparam != FALSE);
+      break;
     case WM_SETFOCUS:
       if (text_input_ != nullptr) text_input_->OnFocusChanged(true);
       if (created_) delegate_->OnFocusChanged(true);
@@ -791,9 +1162,11 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       if (created_) delegate_->OnFocusChanged(false);
       return 0;
     case WM_SETTINGCHANGE:
-      if (lparam != 0 &&
-          std::wcscmp(reinterpret_cast<const wchar_t*>(lparam), L"ImmersiveColorSet") == 0) {
+      if (lparam != 0 && std::wcscmp(reinterpret_cast<const wchar_t*>(lparam), L"ImmersiveColorSet") == 0) {
         UpdateDarkMode();
+      }
+      if (wparam == SPI_SETWORKAREA) {
+        displays_.Invalidate();
       }
       break;
     case WM_SYSCOMMAND:
@@ -810,33 +1183,35 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
         ApplyCursor();
         return TRUE;
       }
-      break;  // 非客户区(边框缩放光标等)交给系统
+      break;  // 缩放边框、控制按钮等交给系统
 
     // ---- 指针 ----
     case WM_MOUSEMOVE:
-      OnMouseMove(lparam);
-      return 0;
     case WM_MOUSELEAVE:
-      OnMouseLeave();
-      return 0;
     case WM_LBUTTONDOWN:
     case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
     case WM_RBUTTONDOWN:
     case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
     case WM_MBUTTONDOWN:
     case WM_MBUTTONUP:
-      OnMouseButton(message, wparam, lparam);
+    case WM_MBUTTONDBLCLK:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+      OnMouseMessage(message, wparam, lparam);
       return 0;
     case WM_XBUTTONDOWN:
     case WM_XBUTTONUP:
-      OnMouseButton(message, wparam, lparam);
+    case WM_XBUTTONDBLCLK:
+      OnMouseMessage(message, wparam, lparam);
       return TRUE;  // 文档要求 XBUTTON 消息返回 TRUE
     case WM_CAPTURECHANGED:
-      OnCaptureLost();
-      return 0;
-    case WM_MOUSEWHEEL:
-    case WM_MOUSEHWHEEL:
-      OnMouseWheel(message, wparam, lparam);
+      // 捕获被别处拿走(系统菜单、别的应用、改交本应用的另一个窗口): 不在这里结束序列——按键若已松开,
+      // 派发器在下一条消息上按过期补报抬起(与 macOS 被嵌套事件循环吞掉抬起时相同)。
+      if (reinterpret_cast<HWND>(lparam) != hwnd_) {
+        capturing_ = false;
+      }
       return 0;
 
     // ---- 键盘 ----

@@ -131,8 +131,10 @@ void WindowManager::Close(ViewId view_id, bool report_all_closed) {
   if (focused_window_ == view_id) {
     focused_window_.reset();
   }
-  // 关闭按钮的回调可能仍在窗口自身的调用栈上: 延后到安全点销毁。
-  task_runner()->PostTask([controller = std::move(controller)]() mutable { controller.reset(); });
+  // 关闭按钮的回调可能仍在窗口自身的调用栈上: 延后到安全点销毁。用 DeleteLater 而不是普通任务: 普通任务也会在
+  // 嵌套循环里执行(拖拽缩放时等待新帧的 RunDueTasksNested、系统模态循环), 那时窗口的方法可能还在栈上;
+  // DeleteLater 推迟到栈上没有任务的最外层安全点。
+  controller.release()->DeleteLater();
   MOMO_LOG(INFO) << "Window closed (view " << view_id << ").";
   // 最后一个窗口: 延后通知——当前可能在宿主通道处理器的调用栈里;期间又打开了窗口就不通知。
   if (windows_.empty() && report_all_closed) {

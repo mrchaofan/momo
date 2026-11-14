@@ -166,7 +166,12 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 ### 4.6 Windows 代码
 
-`embedder/windows/` 已写完但**从未在 Windows 上编译过**。修改 `embedder/common/` 的接口（`PlatformWindow`、`WindowDelegate`、`PlatformIntegration`）或 `engine/platform/` 契约时，要手动同步 Windows 实现，并在改动说明里写明"未编译验证"。Windows 目前只声明了 `position`、`pointerCapture` 两项可选窗口能力，其余（隐藏标题栏、拖动区域、移动循环、置顶、平台视图…）对 JS 回复 `unimplemented`。
+`embedder/windows/` 与 macOS 同构（`WinMouseInput`/`PointerDispatcher`、`WinApp`/`WinAppDelegate`、D3D12 surface），但**从未在 Windows 上运行过**。在 macOS 上能做的验证：
+
+- 纯逻辑（鼠标消息翻译 + 派发器、多 DPI 屏幕坐标、窗口框架命中、键码映射）在 `momo_embedder_windows_portable_unittests` 里，随 `ctest` 在 macOS 上运行。新加的 Windows 逻辑尽量写成不依赖 `<windows.h>` 的纯 C++ 放进这个库。
+- 依赖 Win32 的文件用 zig 自带的 mingw-w64 头文件交叉编译（只编译不链接）：`pip install --target <dir> ziglang`，然后对每个文件执行 `<dir>/ziglang/zig c++ -target x86_64-windows-gnu -std=c++20 -c -o /dev/null -fno-exceptions -fno-rtti -Wall -Wextra -Wno-unused-parameter -Werror -DUNICODE -D_UNICODE -DNOMINMAX -DWIN32_LEAN_AND_MEAN -DSK_DIRECT3D -I. -Iextensions/sdk/include -isystem third_party/prebuilt/skia -isystem third_party/prebuilt/node/include/node <file>`。mingw 与 MSVC 的头文件有差异，通过不代表 MSVC 能编译。
+
+修改 `embedder/common/` 的接口（`PlatformWindow`、`WindowDelegate`、`PlatformIntegration`）或 `engine/platform/` 契约时，要同步 Windows 实现，并在改动说明里写明"未在 Windows 上运行验证"。Windows 不声明的可选窗口能力：平台视图、非激活窗口（对 JS 回复 `unimplemented`）；应用级只有 `activate`（没有隐藏）。
 
 ## 5. 常见改动的步骤
 
@@ -277,7 +282,7 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 按优先级排列，供接手后挑选：
 
 1. **CI**：目前只有本地构建。建议先在 macOS arm64 上跑 `ctest` 和 `npm test`，再加 TSan 任务。
-2. **Windows**：平台代码从未编译过，ANGLE GPU 后端未实现，V8 也没有 Windows 预编译包。
+2. **Windows**：平台层、D3D12 后端、`node_bindings_win.cc`、libnode 的 Windows 构建脚本都已写好，但从未在 Windows 上编译运行。第一步是在 Windows 上跑 `ctest`（含 `momo_embedder_windows_unittests`）并手动验证窗口、拖动、隐藏标题栏、多 DPI、IME；之后补平台视图（子 HWND + 覆盖层合成）。
 3. **真机验证**：沙箱跳过的 9 项测试，以及 Metal 回退、IME 候选窗位置、多显示器切换，需要在真机上定期手动验证。
 4. **raster cache**：设计中有，但没有实现，每帧完整重放所有 DisplayList。
 5. **`PlatformIntegration::displays()` 返回的信息过多**：目前只用到主显示器的刷新率，`DisplayInfo` 的其余字段没有用处。可以收窄为 `primary_refresh_rate()`。这要同时改 Windows 实现和 mock，所以暂未处理。

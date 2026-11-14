@@ -60,6 +60,7 @@ if(MOMO_BUILD_TESTS AND MOMO_HAVE_V8)
     target_compile_definitions(momo_extension_examples_unittests PRIVATE
       MOMO_EXT_WEBVIEW_LIB="$<TARGET_FILE:ext_webview>")
   endif()
+  momo_target_use_v8_runtime(momo_extension_examples_unittests)
   gtest_discover_tests(momo_extension_examples_unittests)
 endif()
 

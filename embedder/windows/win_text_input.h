@@ -2,8 +2,6 @@
 
 // WinTextInput: TextInputConnection 的 IMM32 实现(docs/03 §3, embedder/common/text_input.h)。
 // 仅被 embedder/windows 的 .cc 包含。
-// 注意: 本文件未在 Windows 上编译验证(作者环境为 macOS, 无 Windows SDK)。
-//
 // 分工: WinWindow 的 WndProc 把 IME 消息、WM_CHAR、WM_KEYDOWN 转给本对象;本对象把输入法动作翻译为
 // TextInputEvent 经 WindowDelegate::OnTextInput 上报(只在 Show 之后, 与 mac 一致)。
 //   - Show / Hide: ImmAssociateContextEx(hwnd, NULL, IACE_DEFAULT) 恢复默认输入上下文 / (NULL, 0) 解除关联
