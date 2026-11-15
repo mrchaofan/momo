@@ -204,8 +204,8 @@ Status Application::LaunchEngine() {
   shell_ = std::move(shell).value();
   window_manager_->AttachEngine(*shell_, *window_channel_, *platform_channels_);
 
-  // --dev: bundle 变化即 hot restart(docs/04 §8, 先做秒级 hot restart, 不保留 JS 状态)。
-  if (options_.config.dev_mode && !settings.bundle_path.empty() &&
+  // --experimental-hot-restart: bundle 变化即 hot restart(docs/04 §8, 不保留 JS 状态)。实验性, 默认关闭。
+  if (options_.config.dev_mode && options_.config.hot_restart && !settings.bundle_path.empty() &&
       options_.hot_restart_poll > TimeDelta::zero()) {
     std::error_code ec;
     watched_bundle_ = settings.bundle_path;

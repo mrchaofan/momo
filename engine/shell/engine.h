@@ -74,7 +74,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   void SetAppSuspended(bool suspended);
   // 宿主(扩展帧回调/纹理新帧)请求出一帧。
   void ScheduleFrameFromHost() { animator_.RequestFrame(); }
-  // 由宿主请求重新加载 bundle(--dev hot restart): 销毁 JS 运行时并重新执行 bundle。
+  // 由宿主请求重新加载 bundle(hot restart, 实验性): 销毁 JS 运行时并重新执行 bundle。
   // runtime_destroyed(可空)在旧运行时销毁之后、新运行时创建之前在 ui 线程上调用: Shell 在其中停住 ui 线程,
   // 向扩展派发生命周期事件。bundle 不可用或有错时退回占位驱动并返回错误。
   Status HotRestart(const std::function<void()>& runtime_destroyed = nullptr);

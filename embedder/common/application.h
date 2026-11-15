@@ -68,7 +68,7 @@ class Application final : public Object, private WindowManager::Observer, privat
     TimeDelta close_timeout = std::chrono::seconds(5);
     // 强制退出的实现(测试可替换);默认 std::_Exit。
     std::function<void(int exit_code)> force_exit;
-    // --dev 时轮询 bundle 修改时间的间隔(变化即 hot restart);<= 0 关闭。
+    // 启用 hot restart(config.hot_restart, 实验性)时轮询 bundle 修改时间的间隔;<= 0 关闭。
     TimeDelta hot_restart_poll = std::chrono::milliseconds(500);
   };
 
@@ -121,7 +121,7 @@ class Application final : public Object, private WindowManager::Observer, privat
   void NotifyShutdownStep(ShutdownStep step);
   // 解析 bundle/资源 → 创建 Shell(同步等待 JS 运行时与 raster 就绪)→ 注册宿主通道 → 绑定窗口。
   Status LaunchEngine();
-  // --dev: 定时检查 bundle 修改时间, 变化时关闭旧 JS 打开的窗口(按配置保证启动窗口存在)并 hot restart。
+  // hot restart(实验性): 定时检查 bundle 修改时间, 变化时关闭旧 JS 打开的窗口(按配置保证启动窗口存在)并 hot restart。
   void PollBundleForChanges();
 
   // ---- 退出流程(Quit) ----

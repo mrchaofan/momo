@@ -131,7 +131,7 @@ M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS
 
 ## 8. 热重载(开发体验,M4+)
 
-已实现 hot restart: `--dev` 下 embedder 每 500ms 检查 bundle 修改时间, 变化时 `Shell::RequestHotRestart` →
+已实现 hot restart(**实验性, 默认关闭**, 以 `--experimental-hot-restart` 开启): embedder 每 500ms 检查 bundle 修改时间, 变化时 `Shell::RequestHotRestart` →
 ui 线程销毁 JS 运行时(整个 Node 环境)并新建、重新执行 bundle(新 bundle 出错时退回占位驱动, 修复后可再次重启)。
 
 监听 bundle 文件变化 → 重建 Context(保留 Isolate)→ 重新执行 bundle → 框架层从根重建树。状态保持(类似 Flutter hot reload)不做首期承诺,先做秒级 hot restart。
