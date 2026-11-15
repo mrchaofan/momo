@@ -16,6 +16,7 @@ TEST(AppConfigTest, Defaults) {
   EXPECT_FALSE(config->bundle_path.has_value());
   EXPECT_FALSE(config->assets_dir.has_value());
   EXPECT_FALSE(config->dev_mode);
+  EXPECT_FALSE(config->hot_restart);
   EXPECT_EQ(config->window.title, "Momo");
   EXPECT_EQ(config->window.size, (Size{1024, 768}));
   EXPECT_TRUE(config->startup_window);
@@ -28,9 +29,17 @@ TEST(AppConfigTest, ParsesAllFlags) {
   EXPECT_EQ(config->bundle_path->string(), "/tmp/app/bundle.js");
   EXPECT_EQ(config->assets_dir->string(), "/tmp/app/assets");
   EXPECT_TRUE(config->dev_mode);
+  EXPECT_FALSE(config->hot_restart) << "--dev alone does not enable the experimental hot restart";
   EXPECT_EQ(config->window.title, "你好 Momo");
   EXPECT_EQ(config->window.size, (Size{800, 600}));
   EXPECT_FALSE(config->startup_window);
+}
+
+TEST(AppConfigTest, HotRestartIsOptInAndImpliesDev) {
+  auto config = Parse({"--experimental-hot-restart"});
+  ASSERT_TRUE(config.ok());
+  EXPECT_TRUE(config->hot_restart);
+  EXPECT_TRUE(config->dev_mode);
 }
 
 TEST(AppConfigTest, IgnoresSystemAndUnknownArgs) {

@@ -132,7 +132,7 @@ typedef struct MomoPlatformViewFactory {
 // ---------- 生命周期事件(宿主 → 扩展) ----------
 //
 // on_attach / on_detach 界定扩展自身的存续;这里的事件告诉扩展宿主内部发生了什么。最重要的一类是 JS 运行时
-// 的更替: 一个进程里 JS 运行时可以先后有多个(--dev 热重启时销毁旧的、新建一个), 而扩展只 attach 一次。
+// 的更替: 一个进程里 JS 运行时可以先后有多个(热重启时销毁旧的、新建一个), 而扩展只 attach 一次。
 // 扩展里凡是"属于某个 JS 运行时"的状态(JS 传来的句柄、按 id 登记的对象、等待 JS 应答的请求)都应当在
 // kMomoLifecycleRuntimeStopped 时清掉, 否则会泄漏, 或被下一个运行时里恰好相同的 id 误用。
 //
@@ -159,7 +159,7 @@ typedef enum MomoLifecycleEvent {
 
 typedef enum MomoLifecycleReason {
   kMomoLifecycleReasonLaunch = 0,      // 应用启动
-  kMomoLifecycleReasonHotRestart = 1,  // --dev 热重启
+  kMomoLifecycleReasonHotRestart = 1,  // 热重启(实验性, --experimental-hot-restart)
   kMomoLifecycleReasonShutdown = 2,    // 引擎关闭
 } MomoLifecycleReason;
 

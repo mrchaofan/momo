@@ -56,7 +56,7 @@ class WindowManager final : public Object,
 
   // 退出流程: 逐个询问窗口(closeRequested), 允许的关闭。done(all_closed) 在全部回复后于 platform 线程回调。
   void RequestCloseAll(MoveOnlyFunction<void(bool all_closed)> done);
-  // --dev 热重启: 关闭旧 JS 打开的窗口;keep_startup_window 时保证启动窗口存在(之前被关闭则重新打开)。
+  // 热重启(实验性): 关闭旧 JS 打开的窗口;keep_startup_window 时保证启动窗口存在(之前被关闭则重新打开)。
   void ResetForHotRestart(bool keep_startup_window);
 
   size_t count() const { return windows_.size(); }

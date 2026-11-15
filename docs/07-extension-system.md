@@ -105,7 +105,7 @@ Shell 启动 → ExtensionHost 读 extensions.manifest
  → 扩展注册模块/通道; ui 线程建 JS 绑定
  → 生命周期事件 RuntimeStarting(#1, Launch) → 创建 JS 运行时, 执行 bundle
  … 运行期 …
- → --dev 热重启(可多次): 平台视图全部 dispose → 旧运行时销毁, ui 线程停住
+ → 热重启(实验性, --experimental-hot-restart;可多次): 平台视图全部 dispose → 旧运行时销毁, ui 线程停住
      → RuntimeStopped(#n, HotRestart) → RuntimeStarting(#n+1, HotRestart) → 放行 ui 线程, 新运行时执行 bundle
  → 引擎关闭: 平台视图 dispose → JS 运行时销毁 → RuntimeStopped(#n, Shutdown) → on_detach
    → 排空并停止扩展 worker pool → 拒绝该扩展此后的一切 API 调用

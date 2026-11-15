@@ -11,7 +11,7 @@ struct Settings {
   std::filesystem::path assets_dir;
   std::filesystem::path extensions_dir;
   bool enable_inspector = false;
-  bool dev_mode = false;           // --dev: 开发模式(hot restart、momo:services.isDev)
+  bool dev_mode = false;           // --dev: 开发模式(momo:services.isDev)
   int inspector_port = 9229;
   bool inspector_wait = false;     // 执行 bundle 前等待调试器连接
   // V8 code cache 目录(冷启动优化;空 = 不缓存)。由 embedder 设为用户缓存目录。

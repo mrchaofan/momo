@@ -150,7 +150,7 @@ class CounterPageState extends State<CounterPage> {
 runApp(new MaterialApp({ title: "MyApp", home: new CounterPage() }));
 ```
 
-### 开发循环：构建 bundle + 热重启
+### 开发循环：构建 bundle + 运行
 
 把 TS 打成单文件 ESM bundle（只保留 `momo:*` / `ext:*` 外部导入，引擎会以内置模块提供），再用 `--dev` 启动运行时：
 
@@ -162,7 +162,9 @@ node framework/scripts/build_example.mjs my-app/src/main.ts my-app/dist/main.js
 out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=my-app/dist/main.js
 ```
 
-`--dev` 下运行时每 500ms 检查一次 bundle 文件，**重新构建后窗口会自动 hot restart**（重建 JS 运行时、从根重新构建界面，不保留 JS 状态）。新 bundle 有错误时会退回占位画面，修好后再次构建即可恢复。
+重新构建后重启运行时即可看到改动。
+
+**热重启（实验性，默认关闭）**：加上 `--experimental-hot-restart` 后，运行时每 500ms 检查一次 bundle 文件，重新构建后窗口自动 hot restart（重建 JS 运行时、从根重新构建界面，不保留 JS 状态）。新 bundle 有错误或暂时不存在时会退回占位画面，修好后再次构建即可恢复。这个功能还在打磨，行为可能变化。
 
 ### 写给 Flutter 开发者
 
@@ -429,7 +431,8 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | `--assets=<dir>` | 资源目录，默认 `<Resources>/assets` |
 | `--title=<text>` | 初始窗口标题 |
 | `--width=<px>` / `--height=<px>` | 初始窗口尺寸（逻辑像素） |
-| `--dev` | 开发模式：bundle 修改后 hot restart、启用 Inspector、bundle 缺失也能启动 |
+| `--dev` | 开发模式：启用 Inspector、bundle 缺失也能启动 |
+| `--experimental-hot-restart` | 实验性，默认关闭（隐含 `--dev`）：bundle 修改后 hot restart |
 | `--inspect-port=<n>` | Inspector 端口（默认 9229，`-1` 关闭） |
 | `--inspect-brk` | 执行 bundle 前等待调试器连接 |
 

@@ -56,7 +56,7 @@ cd framework && npm install && npm test
 out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev
 ```
 
-会运行默认的 `hello_frame` 动画。再按 README 构建并运行 `examples/counter`，在终端里看日志。修改 bundle 后窗口会自动 hot restart。
+会运行默认的 `hello_frame` 动画。再按 README 构建并运行 `examples/counter`，在终端里看日志。加上 `--experimental-hot-restart`（实验性，默认关闭）后，修改 bundle 窗口会自动 hot restart。
 
 ## 2. 阅读路线
 
