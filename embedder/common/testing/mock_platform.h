@@ -40,7 +40,7 @@ class MockTextInput final : public TextInputConnection {
 
 class MockWindow final : public PlatformWindow {
  public:
-  MockWindow(const WindowSpec& spec, WindowDelegate* delegate,
+  MockWindow(const WindowOptions& spec, WindowDelegate* delegate,
              std::function<void()> on_destroy)
       : spec_(spec), delegate_(delegate), on_destroy_(std::move(on_destroy)) {
     frame_.width = spec.size.width;
@@ -143,7 +143,7 @@ class MockWindow final : public PlatformWindow {
   }
 
   WindowDelegate* delegate() const { return delegate_; }
-  const WindowSpec& spec() const { return spec_; }
+  const WindowOptions& spec() const { return spec_; }
   bool shown() const { return shown_; }
   void set_on_destroyed(std::function<void()> fn) { on_destroy_ = std::move(fn); }
   SystemCursor cursor() const { return cursor_; }
@@ -157,7 +157,7 @@ class MockWindow final : public PlatformWindow {
   const std::optional<Point>& move_loop() const { return move_loop_; }
 
  private:
-  WindowSpec spec_;
+  WindowOptions spec_;
   WindowDelegate* delegate_;
   std::function<void()> on_destroy_;
   MockSurface surface_;
@@ -218,6 +218,8 @@ struct MockPlatformState {
   std::vector<MockWindow*> windows;  // 全部存活的窗口(含主窗口)
   int windows_created = 0;
   int windows_destroyed = 0;
+  int vsync_sources_created = 0;
+  const MockWindow* vsync_window = nullptr;  // 帧时钟跟随的窗口(SetVsyncWindow 的最近一次取值)
   std::function<void()> on_window_destroyed;
   bool fail_create_window = false;
 };
@@ -228,7 +230,7 @@ class MockPlatformIntegration final : public PlatformIntegration {
       : state_(std::move(state)) {}
 
   StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(
-      const WindowSpec& spec, WindowDelegate* delegate) override {
+      const WindowOptions& spec, WindowDelegate* delegate) override {
     if (state_->fail_create_window) {
       return UnavailableError("mock: window creation failed");
     }
@@ -249,9 +251,12 @@ class MockPlatformIntegration final : public PlatformIntegration {
     return std::unique_ptr<PlatformWindow>(std::move(window));
   }
 
-  StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource(
-      const PlatformWindow&) override {
+  StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource() override {
+    state_->vsync_sources_created++;
     return UnimplementedError("mock");
+  }
+  void SetVsyncWindow(const PlatformWindow* window) override {
+    state_->vsync_window = static_cast<const MockWindow*>(window);
   }
   MockServices& services() override { return services_; }
   MockApp& app() override { return app_; }

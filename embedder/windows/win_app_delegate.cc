@@ -211,4 +211,24 @@ std::filesystem::path WinAppDelegate::ExecutablePath() {
   return std::filesystem::path(buffer);
 }
 
+std::filesystem::path WinAppDelegate::UserCacheDir(const std::wstring& app_id) {
+  if (app_id.empty()) {
+    return {};
+  }
+  std::wstring base(MAX_PATH, L'\0');
+  for (;;) {
+    // 返回写入的字符数(不含结尾的 NUL);缓冲区不够时返回所需的大小(含 NUL);变量不存在时返回 0。
+    const DWORD len = ::GetEnvironmentVariableW(L"LOCALAPPDATA", base.data(), static_cast<DWORD>(base.size()));
+    if (len == 0) {
+      return {};
+    }
+    if (len < base.size()) {
+      base.resize(len);
+      break;
+    }
+    base.resize(len);
+  }
+  return std::filesystem::path(base) / app_id;
+}
+
 }  // namespace momo::embedder

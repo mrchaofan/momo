@@ -36,16 +36,19 @@
   <rect x="380" y="73" width="130" height="44" rx="5" class="pf"/>
   <text x="388" y="91" class="n">③ Launch()</text><text x="388" y="108" class="d">建窗口并 Show</text>
   <rect x="520" y="73" width="170" height="44" rx="5" class="pf"/>
-  <text x="528" y="91" class="n">④ Shell::Create</text><text x="528" y="108" class="d">投递两侧初始化 · Wait() 汇合</text>
+  <text x="528" y="91" class="n">④ Shell::Create</text><text x="528" y="108" class="d">投递两侧构造 · 不等待</text>
   <rect x="700" y="73" width="140" height="44" rx="5" class="pf"/>
-  <text x="708" y="91" class="n">⑤ AttachEngine</text><text x="708" y="108" class="d">AttachView(vsync)</text>
+  <text x="708" y="91" class="n">⑤ 通道 · 绑定窗口</text><text x="708" y="108" class="d">SetVsyncSource · AttachView</text>
   <rect x="850" y="73" width="122" height="44" rx="5" class="pf"/>
-  <text x="858" y="91" class="n">⑥ Run()</text><text x="858" y="108" class="d">[NSApp run]</text>
+  <text x="858" y="91" class="n">⑥ Shell::Run</text><text x="858" y="108" class="d">随后 [NSApp run]</text>
 
   <rect x="520" y="137" width="150" height="44" rx="5" class="ui"/>
-  <text x="528" y="155" class="n">Engine::Create</text><text x="528" y="172" class="d">V8 → 绑定 → 执行 bundle</text>
+  <text x="528" y="155" class="n">new Engine</text><text x="528" y="172" class="d">（尚无 JS 运行时）</text>
   <rect x="700" y="137" width="120" height="44" rx="5" class="ui"/>
   <text x="708" y="155" class="n">SetVsyncWaiter</text><text x="708" y="172" class="d">定时器 → 平台 vsync</text>
+
+  <rect x="850" y="137" width="122" height="44" rx="5" class="ui"/>
+  <text x="858" y="155" class="n">StartRuntime</text><text x="858" y="172" class="d">V8 → 执行 bundle</text>
 
   <rect x="520" y="201" width="150" height="44" rx="5" class="rs"/>
   <text x="528" y="219" class="n">new Rasterizer</text><text x="528" y="236" class="d">（尚无 surface）</text>
@@ -58,8 +61,9 @@
     <line x1="682" y1="223" x2="672" y2="223" class="arr" marker-end="url(#a)"/>
     <line x1="760" y1="117" x2="760" y2="135" class="arr" marker-end="url(#a)"/>
     <line x1="832" y1="117" x2="832" y2="199" class="arr" marker-end="url(#a)"/>
+    <line x1="911" y1="117" x2="911" y2="135" class="arr" marker-end="url(#a)"/>
   </g>
-  <text x="20" y="272" class="d">首帧：bundle 中的 runApp() 已调用 scheduleFrame；JS 早于 surface 交出的 LayerTree 由 Rasterizer::Setup 中的 DrawLastLayerTree 补画，替换闪屏底色。</text>
+  <text x="20" y="272" class="d">首帧：窗口先绑定，bundle 中的 runApp() 调用 scheduleFrame，第一帧替换闪屏底色；bundle 的执行结果回到 platform 后才进入 Running（失败则有序退出）。</text>
 
   <!-- ================= shutdown ================= -->
   <text x="20" y="310" class="sec">关闭（顺序错了就会在线程销毁时崩溃）</text>
@@ -106,6 +110,6 @@
     <path d="M700,371 L700,389" class="sync" marker-end="url(#r)"/>
     <path d="M782,371 L782,452" class="sync" marker-end="url(#r)"/>
   </g>
-  <text x="20" y="526" class="d">红色虚线 = PostTaskAndWait 同步汇合（只在启动/关闭出现）。⑥ ThreadHost::Join 按 ui → raster → io 顺序 join。</text>
+  <text x="20" y="526" class="d">红色虚线 = PostTaskAndWait 同步汇合（只在关闭/拆除时出现，启动不等待）。⑥ ThreadHost::Join 按 ui → raster → io 顺序 join。</text>
   <text x="20" y="544" class="d">⑦ EventLoop::Terminate：当前任务返回后的安全点排空、析构 DeleteLater 对象，再 [NSApp stop:]。JS 超时不回复关闭请求时强制 _Exit(1)。</text>
 </svg>

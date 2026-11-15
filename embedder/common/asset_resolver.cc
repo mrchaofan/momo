@@ -15,8 +15,8 @@ std::filesystem::path MakeAbsolute(const std::filesystem::path& path) {
 
 }  // namespace
 
-AssetResolver::AssetResolver(std::filesystem::path resources_dir)
-    : resources_dir_(std::move(resources_dir)) {}
+AssetResolver::AssetResolver(std::filesystem::path resources_dir, std::filesystem::path cache_dir)
+    : resources_dir_(std::move(resources_dir)), cache_dir_(std::move(cache_dir)) {}
 
 StatusOr<ResolvedAssets> AssetResolver::Resolve(const AppConfig& config) const {
   ResolvedAssets out;
@@ -36,6 +36,9 @@ StatusOr<ResolvedAssets> AssetResolver::Resolve(const AppConfig& config) const {
   }
 
   out.extensions_dir = MakeAbsolute(resources_dir_ / kExtensionsDirName);
+  if (!cache_dir_.empty()) {
+    out.code_cache_dir = MakeAbsolute(cache_dir_ / kCodeCacheDirName);
+  }
   return out;
 }
 

@@ -43,7 +43,6 @@ class UiBindingsTest : public ::testing::Test {
     auto runtime = runtime::JsRuntime::Create({});
     ASSERT_TRUE(runtime.ok()) << runtime.status();
     runtime_ = std::move(runtime).value();
-    host_.ui_runner = loop_.task_runner();
     host_.io_runner = loop_.task_runner();  // 测试中 io 与 ui 同线程, 由 RunUntilIdle 驱动
     host_.hub = hub_;
     host_.textures = textures_;

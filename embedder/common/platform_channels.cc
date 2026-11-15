@@ -2,32 +2,16 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "engine/common/standard_codec.h"
 
 namespace momo::embedder {
 
-using engine::DecodeMethodCall;
 using engine::EncodableMap;
 using engine::EncodableValue;
-using engine::EncodeErrorEnvelope;
-using engine::EncodeMethodCall;
-using engine::EncodeSuccessEnvelope;
-using engine::MessageBytes;
-using engine::MessageReply;
-using engine::MethodCall;
 
 namespace {
-
-constexpr const char* kChannels[] = {"momo/clipboard", "momo/url", "momo/textinput"};
-
-void ReplyTo(MessageReply& reply, StatusOr<EncodableValue> result) {
-  if (result.ok()) {
-    reply.Send(EncodeSuccessEnvelope(*result));
-  } else {
-    reply.Send(EncodeErrorEnvelope("error", result.status().message()));
-  }
-}
 
 Rect RectArg(const EncodableValue& args) {
   Rect r;
@@ -61,81 +45,52 @@ TextEditingState EditingStateArg(const EncodableValue& args) {
 PlatformChannels::PlatformChannels(std::shared_ptr<engine::MessageChannelHub> hub,
                                    std::shared_ptr<TaskRunner> platform_runner,
                                    PlatformServices* services, TextInputProvider text_input)
-    : Object(platform_runner),
-      hub_(std::move(hub)),
-      services_(services),
+    : services_(services),
       text_input_(std::move(text_input)),
-      weak_this_(this) {
-  using Fn = std::function<StatusOr<EncodableValue>(PlatformChannels&, const MethodCall&)>;
-  auto add = [this, &platform_runner](const char* channel, Fn fn) {
-    WeakPtr<PlatformChannels> weak = weak_this_;
-    hub_->SetNativeHandler(channel, platform_runner,
-                           [weak, fn = std::move(fn)](MessageBytes message, MessageReply reply) {
-                             StatusOr<MethodCall> call = DecodeMethodCall(message);
-                             if (!call.ok()) {
-                               ReplyTo(reply, call.status());
-                               return;
-                             }
-                             PlatformChannels* self = weak.get();
-                             if (self == nullptr) {
-                               ReplyTo(reply, UnavailableError("the host is shutting down"));
-                               return;
-                             }
-                             ReplyTo(reply, fn(*self, *call));
-                           });
+      clipboard_(hub, platform_runner, "momo/clipboard"),
+      url_(hub, platform_runner, "momo/url"),
+      text_input_channel_(hub, platform_runner, "momo/textinput") {
+  // 平台服务: 没有 services 时回复 Unavailable。
+  using ServiceFn = std::function<StatusOr<EncodableValue>(PlatformServices&, const EncodableValue&)>;
+  auto service = [this](ServiceFn fn) -> HostChannel::Handler {
+    return [this, fn = std::move(fn)](const EncodableValue& args) -> StatusOr<EncodableValue> {
+      if (services_ == nullptr) {
+        return UnavailableError("no platform services");
+      }
+      return fn(*services_, args);
+    };
   };
-
-  add("momo/clipboard", [](PlatformChannels& self, const MethodCall& call) -> StatusOr<EncodableValue> {
-    if (self.services_ == nullptr) {
-      return UnavailableError("no platform services");
-    }
-    if (call.method == "getText") {
-      MOMO_ASSIGN_OR_RETURN(std::string text, self.services_->GetClipboardText());
-      return EncodableValue(std::move(text));
-    }
-    if (call.method == "setText") {
-      MOMO_RETURN_IF_ERROR(self.services_->SetClipboardText(call.args.AsString().value_or("")));
-      return EncodableValue();
-    }
-    return UnimplementedError("momo/clipboard: unknown method " + call.method);
-  });
-
-  add("momo/url", [](PlatformChannels& self, const MethodCall& call) -> StatusOr<EncodableValue> {
-    if (self.services_ == nullptr) {
-      return UnavailableError("no platform services");
-    }
-    if (call.method == "open") {
-      MOMO_RETURN_IF_ERROR(self.services_->OpenUrl(call.args.AsString().value_or("")));
-      return EncodableValue();
-    }
-    return UnimplementedError("momo/url: unknown method " + call.method);
-  });
-
-  add("momo/textinput", [](PlatformChannels& self, const MethodCall& call) -> StatusOr<EncodableValue> {
-    TextInputConnection* input = self.text_input_ ? self.text_input_() : nullptr;
-    if (input == nullptr) {
-      return EncodableValue();  // 没有获得焦点的窗口: 静默忽略
-    }
-    if (call.method == "show") {
-      input->Show();
-    } else if (call.method == "hide") {
-      input->Hide();
-    } else if (call.method == "setCaretRect") {
-      input->SetCaretRect(RectArg(call.args));
-    } else if (call.method == "setEditingState") {
-      input->SetEditingState(EditingStateArg(call.args));
-    } else {
-      return UnimplementedError("momo/textinput: unknown method " + call.method);
-    }
+  clipboard_.Register("getText", service([](PlatformServices& s, const EncodableValue&) -> StatusOr<EncodableValue> {
+    MOMO_ASSIGN_OR_RETURN(std::string text, s.GetClipboardText());
+    return EncodableValue(std::move(text));
+  }));
+  clipboard_.Register("setText", service([](PlatformServices& s, const EncodableValue& a) -> StatusOr<EncodableValue> {
+    MOMO_RETURN_IF_ERROR(s.SetClipboardText(a.AsString().value_or("")));
     return EncodableValue();
-  });
-}
+  }));
+  url_.Register("open", service([](PlatformServices& s, const EncodableValue& a) -> StatusOr<EncodableValue> {
+    MOMO_RETURN_IF_ERROR(s.OpenUrl(a.AsString().value_or("")));
+    return EncodableValue();
+  }));
 
-PlatformChannels::~PlatformChannels() {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  for (const char* channel : kChannels) {
-    hub_->SetNativeHandler(channel, nullptr, nullptr);
-  }
+  // 输入法: 交给获得焦点的窗口;没有时静默忽略。
+  using InputFn = std::function<void(TextInputConnection&, const EncodableValue&)>;
+  auto input = [this](InputFn fn) -> HostChannel::Handler {
+    return [this, fn = std::move(fn)](const EncodableValue& args) -> StatusOr<EncodableValue> {
+      if (TextInputConnection* connection = text_input_ ? text_input_() : nullptr) {
+        fn(*connection, args);
+      }
+      return EncodableValue();
+    };
+  };
+  text_input_channel_.Register("show", input([](TextInputConnection& c, const EncodableValue&) { c.Show(); }));
+  text_input_channel_.Register("hide", input([](TextInputConnection& c, const EncodableValue&) { c.Hide(); }));
+  text_input_channel_.Register("setCaretRect", input([](TextInputConnection& c, const EncodableValue& a) {
+    c.SetCaretRect(RectArg(a));
+  }));
+  text_input_channel_.Register("setEditingState", input([](TextInputConnection& c, const EncodableValue& a) {
+    c.SetEditingState(EditingStateArg(a));
+  }));
 }
 
 void PlatformChannels::SendTextInput(const TextInputEvent& event) {
@@ -164,7 +119,7 @@ void PlatformChannels::SendTextInput(const TextInputEvent& event) {
     args.emplace_back("replaceStart", event.replace_start);
     args.emplace_back("replaceEnd", event.replace_end);
   }
-  hub_->SendToJs("momo/textinput", EncodeMethodCall({method, EncodableValue(std::move(args))}));
+  text_input_channel_.Notify(std::move(method), EncodableValue(std::move(args)));
 }
 
 }  // namespace momo::embedder

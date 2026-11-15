@@ -91,7 +91,6 @@ TEST_F(ExampleExtensionTest, TextureExtensionPushesFramesViaFrameCallbacks) {
   )JS", "app.js").ok());
   const int64_t id = std::stoll(Eval("textureId"));
   ASSERT_NE(textures_->Get(id), nullptr);
-  loop_.RunUntilIdle();  // request_frame 被投递到 platform runner 上执行
   EXPECT_GE(frame_requests_, 1) << "registering a frame callback requests frames";
   EXPECT_TRUE(host_->has_frame_callbacks());
   for (int i = 0; i < 200 && textures_->Get(id)->latest() == nullptr; ++i) {

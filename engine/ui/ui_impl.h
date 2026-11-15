@@ -41,7 +41,7 @@ struct ViewBinding {
 
 struct UiBindings::Impl final : public Object {
   Impl(runtime::JsRuntimeImpl* runtime, WindowClient* client, const AppHost& host,
-       const Settings& settings);
+       const Settings& settings, uint64_t runtime_generation);
   ~Impl() override;
 
   runtime::JsRuntimeImpl* const runtime;
@@ -102,8 +102,8 @@ struct UiBindings::Impl final : public Object {
 
  private:
   std::unique_ptr<text::FontCollection> fonts;
-  // Promise id 也是扩展 promise token(跨线程往返)。起点取自单调时钟, 使 hot restart 前后两个
-  // 运行时的 id 不重叠, 旧运行时的迟到结算不会命中新运行时的 promise。
+  // Promise id 也是扩展 promise token(跨线程往返)。高 16 位是运行时代数, 低 48 位是本运行时内的
+  // 序号(从 1 起, 0 不是合法 token): 先后两个运行时的 id 不重叠, 旧运行时的迟到结算不会命中新运行时的 promise。
   uint64_t next_request_;
   std::map<uint64_t, v8::Global<v8::Promise::Resolver>> pending_;
   const WeakPtr<Impl> weak_this_;

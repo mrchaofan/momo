@@ -1,4 +1,4 @@
-// macOS 入口: 只做翻译(参数、资源目录、NSApplication 委托), 启动顺序全部在 embedder/common。
+// macOS 入口: 只做翻译(参数、资源目录、缓存目录、NSApplication 委托), 启动顺序全部在 embedder/common。
 
 #import <Cocoa/Cocoa.h>
 
@@ -28,6 +28,13 @@ int main(int argc, const char* argv[]) {
     momo::embedder::Application::Options options;
     options.config = std::move(config).value();
     options.resources_dir = NSBundle.mainBundle.resourcePath.fileSystemRepresentation;
+    // 本应用的缓存目录: ~/Library/Caches/<bundle identifier>(不在 .app 包里运行时没有 bundle id, 用进程名)。
+    NSString* caches =
+        NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    NSString* app_id = NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName;
+    if (caches != nil && app_id.length > 0) {
+      options.cache_dir = [caches stringByAppendingPathComponent:app_id].fileSystemRepresentation;
+    }
 
     auto app = momo::embedder::Application::Create(std::move(options), std::move(platform));
     if (!app.ok()) {

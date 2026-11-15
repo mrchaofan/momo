@@ -535,17 +535,17 @@ void TitleBarDoubleClick(NSWindow* window) {
 
 namespace momo::embedder::macos {
 
-MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate, MacMouseInput& mouse)
+MacWindow::MacWindow(const WindowOptions& options, WindowDelegate* delegate, MacMouseInput& mouse)
     : delegate_(delegate), mouse_(mouse) {
   NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable;
-  resize_options_.resizable = spec.resizable;
-  if (spec.resizable) {
+  resize_options_.resizable = options.resizable;
+  if (options.resizable) {
     style |= NSWindowStyleMaskResizable;
   }
-  const NSRect frame = NSMakeRect(0, 0, spec.size.width, spec.size.height);
+  const NSRect frame = NSMakeRect(0, 0, options.size.width, options.size.height);
   NSWindow<MomoNativeWindow>* window = nil;
-  if (spec.non_activating) {
+  if (options.non_activating) {
     // 面板: 不激活应用即可成为 key(NonactivatingPanel 只对 NSPanel 有效);应用失活时不隐藏;
     // 层级由 SetAlwaysOnTop 决定(不默认浮动)。
     MomoPanel* panel = [[MomoPanel alloc] initWithContentRect:frame
@@ -562,16 +562,16 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate, MacMouseI
                                              backing:NSBackingStoreBuffered
                                                defer:NO];
   }
-  non_activating_ = spec.non_activating;
+  non_activating_ = options.non_activating;
   window_ = window;
   window_.releasedWhenClosed = NO;  // 生命周期由本对象(ARC)管理
-  window_.title = ToNSString(spec.title);
-  window_.contentMinSize = NSMakeSize(spec.min_size.width, spec.min_size.height);
-  window_.backgroundColor = ToNSColor(spec.background_argb);
+  window_.title = ToNSString(options.title);
+  window_.contentMinSize = NSMakeSize(options.min_size.width, options.min_size.height);
+  window_.backgroundColor = ToNSColor(options.background_argb);
 
   view_ = [[MomoContentView alloc] initWithFrame:frame];
   view_.wantsLayer = YES;
-  view_.layer.backgroundColor = ToNSColor(spec.background_argb).CGColor;
+  view_.layer.backgroundColor = ToNSColor(options.background_argb).CGColor;
   // 软件路径: 内容(IOSurface)铺满视图;尺寸与 backing 像素一致时为 1:1, 拖拽缩放期间先拉伸, 下一帧即修正。
   view_.layer.contentsGravity = kCAGravityResize;
   view_.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
@@ -623,13 +623,11 @@ MacWindow::MacWindow(const WindowSpec& spec, WindowDelegate* delegate, MacMouseI
 
   observer_ = [[MomoWindowObserver alloc] initWithOwner:this];
   window_.delegate = observer_;
-  if (spec.position) {
-    SetPosition(*spec.position).IgnoreError();
+  if (options.position) {
+    SetPosition(*options.position).IgnoreError();
   } else {
     [window_ center];
   }
-  last_metrics_ = metrics();
-  last_state_ = state();  // 尚未显示
 }
 
 MacWindow::~MacWindow() {
@@ -671,14 +669,7 @@ WindowStateFlags MacWindow::state() const {
   return s;
 }
 
-void MacWindow::NotifyStateChanged() {
-  const WindowStateFlags s = state();
-  if (s == last_state_) {
-    return;
-  }
-  last_state_ = s;
-  delegate_->OnWindowStateChanged(s);
-}
+void MacWindow::NotifyStateChanged() { delegate_->OnWindowStateChanged(state()); }
 
 Status MacWindow::Hide() {
   [window_ orderOut:nil];
@@ -810,14 +801,7 @@ std::optional<Rect> MacWindow::window_controls_rect() const {
   return Rect{0, NSHeight(view_.bounds) - NSMaxY(bounds), NSMaxX(bounds) + margin, NSHeight(bounds)};
 }
 
-void MacWindow::NotifyControlsChanged() {
-  const std::optional<Rect> controls = window_controls_rect();
-  if (controls == last_controls_) {
-    return;
-  }
-  last_controls_ = controls;
-  delegate_->OnWindowControlsChanged(controls);
-}
+void MacWindow::NotifyControlsChanged() { delegate_->OnWindowControlsChanged(window_controls_rect()); }
 
 void MacWindow::LayoutTrafficLights() {
   const double traffic_center_y = title_bar_.height / 2;
@@ -861,14 +845,7 @@ Status MacWindow::SetPosition(Point top_left) {
   return Status::Ok();
 }
 
-void MacWindow::NotifyFrameChanged() {
-  const Rect frame = screen_frame();
-  if (frame == last_frame_) {
-    return;
-  }
-  last_frame_ = frame;
-  delegate_->OnWindowFrameChanged(frame);
-}
+void MacWindow::NotifyFrameChanged() { delegate_->OnWindowFrameChanged(screen_frame()); }
 
 Status MacWindow::StartWindowDrag(int64_t sequence_id) {
   if (!dispatcher().IsMomoSequence(this, sequence_id)) {
@@ -1131,7 +1108,7 @@ void MacWindow::SynchronizeLiveResize() {
     return;
   }
   resize_waiting_ = true;
-  // 先把新尺寸交给引擎(windowDidResize 随后的通知会被去重), 再等它画出这个尺寸的帧。
+  // 先把新尺寸交给引擎(windowDidResize 随后的重复通知由 WindowController 去重), 再等它画出这个尺寸的帧。
   NotifyMetricsChanged();
   EventLoop* loop = EventLoop::Current();
   const bool got_frame = metal_surface_->WaitForFrame(
@@ -1146,13 +1123,6 @@ void MacWindow::SynchronizeLiveResize() {
   resize_waiting_ = false;
 }
 
-void MacWindow::NotifyMetricsChanged() {
-  const platform::ViewportMetrics current = metrics();
-  if (current == last_metrics_) {
-    return;
-  }
-  last_metrics_ = current;
-  delegate_->OnMetricsChanged(current);
-}
+void MacWindow::NotifyMetricsChanged() { delegate_->OnMetricsChanged(metrics()); }
 
 }  // namespace momo::embedder::macos

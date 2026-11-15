@@ -61,10 +61,6 @@ class AppChannel final {
   void AskBeforeQuit(MoveOnlyFunction<void(bool allow)> reply);
   void AskWillQuit(MoveOnlyFunction<void(bool allow)> reply);
 
-  StatusOr<engine::EncodableValue> HandleCall(const engine::MethodCall& call) {
-    return channel_.Dispatch(call);
-  }
-
  private:
   Host* const host_;
   HostChannel channel_;

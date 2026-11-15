@@ -63,14 +63,15 @@ class ExtensionHostTest : public ::testing::Test {
 
   void CreateHost() {
     ExtensionHost::Environment env;
-    env.runners = {"test", loop_.task_runner(), loop_.task_runner(), loop_.task_runner(),
+    env.runners = {loop_.task_runner(), loop_.task_runner(), loop_.task_runner(),
                    loop_.task_runner()};
     env.hub = hub_;
     env.textures = textures_;
     env.extensions_dir = dir_;
-    env.request_frame = [this] { frame_requests_++; };
     env.platform_views = views_;
+    env.js_glue = ui::GetExtensionJsGlue();
     host_ = std::make_unique<ExtensionHost>(std::move(env));
+    host_->SetFrameRequester([this] { frame_requests_++; });  // 引擎(ui 线程)的帧请求端
   }
 
   // 安装 JS 运行时(ext:* 模块在此注册)。
@@ -79,7 +80,6 @@ class ExtensionHostTest : public ::testing::Test {
     ASSERT_TRUE(runtime.ok());
     runtime_ = std::move(runtime).value();
     ui::AppHost app;
-    app.ui_runner = loop_.task_runner();
     app.io_runner = loop_.task_runner();
     app.hub = hub_;
     app.extensions = host_.get();

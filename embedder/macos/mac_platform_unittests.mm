@@ -144,7 +144,7 @@ class MacPointerSequenceTest : public ::testing::Test {
   }
   // 屏幕上互不重叠的窗口: AppKit 只为屏幕上的窗口投递鼠标事件, 命中也只认最上层的窗口。
   std::unique_ptr<MacWindow> Window(PointerRecordingDelegate* delegate) {
-    momo::embedder::WindowSpec spec;
+    momo::embedder::WindowOptions spec;
     spec.size = {200, 100};
     auto window = std::make_unique<MacWindow>(spec, delegate, *mouse_);
     static int count = 0;
@@ -191,7 +191,7 @@ class MacPointerSequenceTest : public ::testing::Test {
 TEST_F(MacPointerSequenceTest, WindowStateChangesAreReported) {
   if (NSScreen.mainScreen == nil) GTEST_SKIP() << "No display";
   PointerRecordingDelegate delegate;
-  momo::embedder::WindowSpec spec;
+  momo::embedder::WindowOptions spec;
   spec.size = {200, 100};
   MacWindow window(spec, &delegate, *mouse_);
   EXPECT_FALSE(window.state().visible) << "not shown yet";
@@ -448,7 +448,7 @@ TEST(MacTextInputTest, EditingStateUsesUtf16Indices) {
 
 TEST(MacVsyncDisplayLinkTest, FiresOnceAndStopsWhenIdle) {
   momo::testing::ScopedTestEventLoop loop;
-  StatusOr<ObjectPtr<platform::VsyncSource>> source = MacVsyncDisplayLink::Create(nil);
+  StatusOr<ObjectPtr<MacVsyncDisplayLink>> source = MacVsyncDisplayLink::Create();
   if (!source.ok()) {
     GTEST_SKIP() << "No display link: " << source.status();
   }
@@ -495,7 +495,7 @@ TEST(MacVsyncDisplayLinkTest, FiresOnceAndStopsWhenIdle) {
 
 TEST(MacVsyncDisplayLinkTest, NoCallbackAfterDestruction) {
   momo::testing::ScopedTestEventLoop loop;
-  StatusOr<ObjectPtr<platform::VsyncSource>> source = MacVsyncDisplayLink::Create(nil);
+  StatusOr<ObjectPtr<MacVsyncDisplayLink>> source = MacVsyncDisplayLink::Create();
   if (!source.ok()) {
     GTEST_SKIP() << "No display link: " << source.status();
   }
@@ -512,6 +512,47 @@ TEST(MacVsyncDisplayLinkTest, NoCallbackAfterDestruction) {
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   loop.RunUntilIdle();   // 析构前已投递的 tick 必须作废
   EXPECT_FALSE(late.load());
+}
+
+// 应用只有一个 display link: 跟随的窗口可以更换, 窗口销毁后来源照常工作(只弱引用窗口)。
+TEST(MacVsyncDisplayLinkTest, FollowsWindowsWithoutDependingOnThem) {
+  [NSApplication sharedApplication];
+  momo::testing::ScopedTestEventLoop loop;
+  StatusOr<ObjectPtr<MacVsyncDisplayLink>> source = MacVsyncDisplayLink::Create();
+  if (!source.ok()) {
+    GTEST_SKIP() << "No display link: " << source.status();
+  }
+  @autoreleasepool {
+    NSWindow* a = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 120, 80)
+                                              styleMask:NSWindowStyleMaskTitled
+                                                backing:NSBackingStoreBuffered
+                                                  defer:YES];
+    NSWindow* b = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 120, 80)
+                                              styleMask:NSWindowStyleMaskTitled
+                                                backing:NSBackingStoreBuffered
+                                                  defer:YES];
+    a.releasedWhenClosed = NO;
+    b.releasedWhenClosed = NO;
+    (*source)->SetWindow(a);
+    (*source)->SetWindow(a);  // 重复设置: 空操作
+    (*source)->SetWindow(b);  // 换窗口: 不再观察 a
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowDidChangeScreenNotification object:a];
+    [[NSNotificationCenter defaultCenter] postNotificationName:NSWindowDidChangeScreenNotification object:b];
+    [a close];
+    [b close];
+  }
+  // 跟随的窗口已销毁: 请求照常得到回调。
+  std::atomic<int> fired{0};
+  (*source)->RequestFrameCallback([&](TimePoint, TimePoint) { fired++; });
+  const auto deadline = Clock::now() + std::chrono::seconds(2);
+  while (fired.load() == 0 && Clock::now() < deadline) {
+    loop.RunUntilIdle();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  EXPECT_EQ(fired.load(), 1);
+  (*source)->SetWindow(nil);
+  source->reset();
+  loop.RunUntilIdle();
 }
 
 // 模态循环里退出: 上次运行在启动阶段崩溃后, AppKit 这次启动会弹出模态的"重新打开窗口"提示;此时应用

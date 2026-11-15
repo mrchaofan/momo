@@ -24,8 +24,6 @@ struct MomoEngine {
   std::string id;
 };
 
-// MomoJsBuilder 由 V8 胶水定义(engine/ui/extension_bindings.cc);本文件只转发。
-
 namespace momo::engine {
 
 namespace {
@@ -61,6 +59,7 @@ struct ExtensionHost::Core {
   };
   std::map<int64_t, TextureSource> texture_sources;
   PromiseSink promise_sink;                  // ui 线程使用
+  std::function<void()> request_frame;       // ui 线程使用
   // 生命周期监听器: id 递增, 即注册顺序。
   struct LifecycleListener {
     MomoLifecycleFn fn;
@@ -69,7 +68,6 @@ struct ExtensionHost::Core {
   };
   std::map<uint64_t, LifecycleListener> lifecycle_listeners;
   uint64_t next_lifecycle_listener = 1;
-  uint64_t runtime_generation = 0;
   struct Attached {
     std::string id;
     MomoExtension extension;
@@ -130,27 +128,6 @@ Core* Live(MomoEngineRef engine) {
   return engine->core.get();
 }
 
-// ---- 未安装 V8 胶水时的 MomoCallApi 桩 ----
-size_t StubArgCount(MomoCallInfoRef) { return 0; }
-MomoStatus StubArgDouble(MomoCallInfoRef, size_t, double*) { return kMomoErrInternal; }
-MomoStatus StubArgBool(MomoCallInfoRef, size_t, bool*) { return kMomoErrInternal; }
-MomoStatus StubArgString(MomoCallInfoRef, size_t, char*, size_t, size_t*) { return kMomoErrInternal; }
-MomoStatus StubArgBytes(MomoCallInfoRef, size_t, const uint8_t**, size_t*) { return kMomoErrInternal; }
-void StubReturnDouble(MomoCallInfoRef, double) {}
-void StubReturnBool(MomoCallInfoRef, bool) {}
-void StubReturnString(MomoCallInfoRef, const char*, size_t) {}
-void StubReturnBytes(MomoCallInfoRef, const uint8_t*, size_t) {}
-void StubReturnPromise(MomoCallInfoRef, uint64_t* token) { *token = 0; }
-void StubThrow(MomoCallInfoRef, const char*) {}
-void StubReturnNull(MomoCallInfoRef) {}
-
-const MomoCallApi kStubCallApi = {
-    sizeof(MomoCallApi), StubArgCount,     StubArgDouble,    StubArgBool,
-    StubArgString,       StubArgBytes,     StubReturnDouble, StubReturnBool,
-    StubReturnString,    StubReturnBytes,  StubReturnPromise, StubThrow,
-    StubReturnNull,
-};
-
 // ---- MomoHostApi 实现 ----
 
 MomoStatus RegisterModule(MomoEngineRef engine, const char* specifier, MomoModuleSetupFn setup,
@@ -170,7 +147,7 @@ MomoStatus RegisterModule(MomoEngineRef engine, const char* specifier, MomoModul
       return kMomoErrInvalidArgs;  // 重复注册
     }
   }
-  core->modules.push_back({spec, setup, user_data, engine, engine->id});
+  core->modules.push_back({spec, setup, user_data, engine->id});
   return kMomoOk;
 }
 
@@ -313,13 +290,15 @@ MomoStatus AddFrameCallback(MomoEngineRef engine, MomoWorkFn fn, void* user_data
   if (core->env.runners.ui == nullptr || !core->env.runners.ui->RunsTasksOnCurrentThread()) {
     return kMomoErrWrongThread;
   }
+  std::function<void()> request_frame;
   {
     MutexLock lock(core->mutex);
     *out_id = core->next_frame_callback++;
     core->frame_callbacks[*out_id] = {fn, user_data, engine->id};
+    request_frame = core->request_frame;
   }
-  if (core->env.request_frame && core->env.runners.platform) {
-    core->env.runners.platform->PostTask(core->env.request_frame);
+  if (request_frame) {
+    request_frame();  // 已在 ui 线程: 直接请求一帧
   }
   return kMomoOk;
 }
@@ -493,9 +472,6 @@ MomoStatus LifecycleRemoveListener(MomoEngineRef engine, uint64_t id) {
   core->lifecycle_listeners.erase(it);
   return kMomoOk;
 }
-MomoStatus BuilderAddFunctionUnavailable(MomoJsBuilderRef, const char*, MomoNativeFn, void*) {
-  return kMomoErrInternal;  // 无 JS 运行时的构建
-}
 
 // ---- 动态库加载 ----
 
@@ -559,12 +535,16 @@ StatusOr<std::vector<ExtensionManifestEntry>> ParseExtensionManifest(std::string
 }
 
 ExtensionHost::ExtensionHost(Environment env) : core_(std::make_shared<Core>(std::move(env))) {
+  const ExtensionJsGlue& glue = core_->env.js_glue;
+  MOMO_CHECK(glue.call_api != nullptr && glue.add_function != nullptr)
+      << "ExtensionHost requires the JS glue (ui::GetExtensionJsGlue())";
+  // 函数表在这里一次填好, 之后不再改动。
   MomoHostApi& api = core_->api;
   api.struct_size = sizeof(MomoHostApi);
   api.api_version = MOMO_EXT_API_VERSION;
   api.register_module = &RegisterModule;
-  api.builder_add_function = &BuilderAddFunctionUnavailable;  // V8 胶水安装时替换
-  api.call = &kStubCallApi;
+  api.builder_add_function = glue.add_function;
+  api.call = glue.call_api;
   api.promise_resolve_bytes = &PromiseResolveBytes;
   api.promise_reject = &PromiseReject;
   api.channel_set_handler = &ChannelSetHandler;
@@ -591,14 +571,6 @@ ExtensionHost::ExtensionHost(Environment env) : core_(std::make_shared<Core>(std
 ExtensionHost::~ExtensionHost() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   DetachAll();
-}
-
-const MomoHostApi* ExtensionHost::host_api() const { return &core_->api; }
-
-void ExtensionHost::SetJsGlue(const MomoCallApi* call_api, AddFunctionFn add_function) {
-  core_->api.call = call_api != nullptr ? call_api : &kStubCallApi;
-  core_->api.builder_add_function =
-      add_function != nullptr ? add_function : &BuilderAddFunctionUnavailable;
 }
 
 Status ExtensionHost::LoadFromManifest() {
@@ -727,6 +699,7 @@ void ExtensionHost::DetachAll() {
     core_->frame_callbacks.clear();
     core_->modules.clear();
     core_->promise_sink = nullptr;
+    core_->request_frame = nullptr;
   }
   for (const std::string& channel : channels) {
     core_->env.hub->SetNativeHandler(channel, nullptr, nullptr);
@@ -737,22 +710,20 @@ void ExtensionHost::DetachAll() {
   }
 }
 
-void ExtensionHost::NotifyLifecycle(MomoLifecycleEvent event, MomoLifecycleReason reason) {
+void ExtensionHost::NotifyLifecycle(MomoLifecycleEvent event, MomoLifecycleReason reason,
+                                    uint64_t runtime_generation) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   MomoLifecycleInfo info{};
   info.struct_size = sizeof(MomoLifecycleInfo);
   info.event = static_cast<uint32_t>(event);
   info.reason = static_cast<uint32_t>(reason);
+  info.runtime_generation = runtime_generation;
   std::vector<uint64_t> ids;
   {
     MutexLock lock(core_->mutex);
     if (!core_->alive) {
       return;
     }
-    if (event == kMomoLifecycleRuntimeStarting) {
-      ++core_->runtime_generation;
-    }
-    info.runtime_generation = core_->runtime_generation;
     for (const auto& [id, listener] : core_->lifecycle_listeners) ids.push_back(id);
   }
   // 建立类事件按注册顺序, 拆除类事件逆序(后注册的子系统先拆)。
@@ -805,6 +776,11 @@ bool ExtensionHost::RunFrameCallbacks() {
 bool ExtensionHost::has_frame_callbacks() const {
   MutexLock lock(core_->mutex);
   return core_->alive && !core_->frame_callbacks.empty();
+}
+
+void ExtensionHost::SetFrameRequester(std::function<void()> request_frame) {
+  MutexLock lock(core_->mutex);
+  core_->request_frame = std::move(request_frame);
 }
 
 void ExtensionHost::SetPromiseSink(PromiseSink sink) {

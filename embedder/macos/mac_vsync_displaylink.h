@@ -12,8 +12,9 @@
 //     platform 线程(OnTick)。它从不调用 callback, 也不碰其他成员。
 //   - 析构: 先在锁内置 destroyed, 再 CVDisplayLinkStop(从非回调线程调用时会等待在途回调结束);
 //     已投递但未执行的 OnTick 因 WeakPtr 失效而作废——析构返回后不会再回调。
-//   - 不依赖窗口存活: 只弱引用 NSWindow 并监听其 NSWindowDidChangeScreenNotification(观察者在析构时
-//     移除), 窗口跨屏时 CVDisplayLinkSetCurrentCGDisplay 切换到对应显示器。
+//   - 整个应用一个(帧时钟是应用级的)。跟随哪块显示器由 SetWindow 指定: 只弱引用 NSWindow 并监听其
+//     NSWindowDidChangeScreenNotification(观察者在换窗口与析构时移除), 窗口跨屏时
+//     CVDisplayLinkSetCurrentCGDisplay 切换到对应显示器;没有窗口时用主显示器。不依赖窗口存活。
 
 #include <CoreVideo/CVDisplayLink.h>
 
@@ -31,15 +32,18 @@ namespace momo::embedder::macos {
 
 class MacVsyncDisplayLink final : public platform::VsyncSource {
  public:
-  // window 可为 nil(使用主显示器)。须在 platform 线程(有当前 EventLoop)调用。
-  static StatusOr<ObjectPtr<platform::VsyncSource>> Create(NSWindow* window);
+  // 初始跟随主显示器。须在 platform 线程(有当前 EventLoop)调用。
+  static StatusOr<ObjectPtr<MacVsyncDisplayLink>> Create();
 
   ~MacVsyncDisplayLink() override;
 
   void RequestFrameCallback(Callback callback) override;
 
+  // 改为跟随 window 所在的显示器(nil = 主显示器)。同一个窗口重复设置是空操作。
+  void SetWindow(NSWindow* window);
+
   // 供 MakeObject 使用;请用 Create。
-  MacVsyncDisplayLink(CVDisplayLinkRef link, NSWindow* window);
+  explicit MacVsyncDisplayLink(CVDisplayLinkRef link);
 
  private:
   struct Shared;
@@ -47,6 +51,7 @@ class MacVsyncDisplayLink final : public platform::VsyncSource {
   // platform 线程: 处理 CVDisplayLink 投递来的 tick。有请求则调用, 否则停止 display link。
   void OnTick();
   void UpdateDisplay();
+  void StopObservingWindow();
 
   CVDisplayLinkRef link_;
   std::unique_ptr<Shared> shared_;  // 与 CVDisplayLink 回调线程共享(回调 context)

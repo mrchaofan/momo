@@ -1,5 +1,6 @@
 // ext:* 模块的 V8 胶水(docs/07 §2-4): 把扩展经 C ABI 注册的原生函数暴露为 JS synthetic module,
-// 实现 MomoCallApi(参数读取/返回值/抛错/Promise)与 builder_add_function。
+// 实现 MomoCallApi(参数读取/返回值/抛错/Promise)与 builder_add_function(经 GetExtensionJsGlue 在链接期
+// 交给 ExtensionHost)。
 // 模块形状(extensions/sdk/types/ext.d.ts): export const native = { fn1, fn2, ... };另以函数名直接导出。
 
 #include <cstring>
@@ -13,6 +14,7 @@
 #include "engine/runtime/js_args.h"
 #include "engine/runtime/js_runtime_impl.h"
 #include "engine/runtime/js_tags.h"
+#include "engine/ui/app_driver.h"
 #include "engine/ui/ui_classes.h"
 #include "engine/ui/ui_impl.h"
 
@@ -152,13 +154,19 @@ void InvokeExtFunction(const Args& a) {
 
 }  // namespace
 
+// 链接期提供给 ExtensionHost(engine/extension/js_glue.h): 函数表与具体的运行时无关——每次调用经
+// MomoCallInfo 找到当时的 isolate 与绑定。
+const ExtensionJsGlue& GetExtensionJsGlue() {
+  static const ExtensionJsGlue glue{&kCallApi, &AddFunction};
+  return glue;
+}
+
 // 安装全部扩展模块(UiBindings::Install 调用, ui 线程)。
 void InstallExtensionModules(UiBindings::Impl& impl) {
   ExtensionHost* host = impl.host.extensions;
   if (host == nullptr) {
     return;
   }
-  host->SetJsGlue(&kCallApi, &AddFunction);
   host->SetPromiseSink([weak = impl.weak()](uint64_t token, std::optional<std::vector<uint8_t>> bytes,
                                             const std::string& error) {
     UiBindings::Impl* self = weak.get();

@@ -18,7 +18,6 @@ TaskRunners ThreadHost::MakeTaskRunners(std::shared_ptr<TaskRunner> platform) co
   MOMO_CHECK(platform != nullptr) << "ThreadHost requires a platform task runner";
   MOMO_CHECK(!joined_) << "MakeTaskRunners after Join";
   TaskRunners runners;
-  runners.label = label_;
   runners.platform = std::move(platform);
   runners.ui = ui_.GetTaskRunner();
   runners.raster = raster_.GetTaskRunner();

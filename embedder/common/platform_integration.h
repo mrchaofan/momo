@@ -20,11 +20,16 @@ namespace momo::embedder {
 class PlatformIntegration {
  public:
   virtual ~PlatformIntegration() = default;
-  // delegate 必须比返回的窗口活得久。
-  virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec& spec,
+  // delegate 必须比返回的窗口活得久。窗口创建后不显示(options.show 由调用方执行)。
+  virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowOptions& options,
                                                                  WindowDelegate* delegate) = 0;
-  // 返回的 platform::VsyncSource 归属 platform 线程(momo::Object), 释放即 DeleteLater。
-  virtual StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource(const PlatformWindow& window) = 0;
+  // 应用的帧时钟来源: 整个应用只创建一个(所有窗口共用一个 Animator), 与窗口无关。返回的
+  // platform::VsyncSource 归属 platform 线程(momo::Object), 释放即 DeleteLater。
+  virtual StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource() = 0;
+  // 帧时钟跟随 window 所在的显示器(窗口跨屏时自动切换);nullptr = 主显示器。作用于 CreateVsyncSource
+  // 返回的那个来源(已释放或尚未创建时什么也不做)。来源不依赖窗口存活。节拍与显示器无关的平台
+  // (Windows: DWM 的合成节奏)不必实现。
+  virtual void SetVsyncWindow(const PlatformWindow* window) { (void)window; }
   virtual PlatformServices& services() = 0;
   // 应用级能力(隐藏/显示/激活)。
   virtual PlatformApp& app() = 0;

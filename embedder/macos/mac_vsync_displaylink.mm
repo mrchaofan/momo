@@ -69,22 +69,31 @@ struct MacVsyncDisplayLink::Shared {
   }
 };
 
-StatusOr<ObjectPtr<platform::VsyncSource>> MacVsyncDisplayLink::Create(NSWindow* window) {
+StatusOr<ObjectPtr<MacVsyncDisplayLink>> MacVsyncDisplayLink::Create() {
   CVDisplayLinkRef link = nullptr;
   if (CVDisplayLinkCreateWithActiveCGDisplays(&link) != kCVReturnSuccess || link == nullptr) {
     return UnavailableError("CVDisplayLinkCreateWithActiveCGDisplays failed");
   }
-  ObjectPtr<MacVsyncDisplayLink> source = MakeObject<MacVsyncDisplayLink>(link, window);
-  return ObjectPtr<platform::VsyncSource>(source.release());
+  return MakeObject<MacVsyncDisplayLink>(link);
 }
 
-MacVsyncDisplayLink::MacVsyncDisplayLink(CVDisplayLinkRef link, NSWindow* window)
-    : link_(link), shared_(std::make_unique<Shared>()), window_(window) {
+MacVsyncDisplayLink::MacVsyncDisplayLink(CVDisplayLinkRef link)
+    : link_(link), shared_(std::make_unique<Shared>()) {
   shared_->owner = WeakPtr<MacVsyncDisplayLink>(this);
   CVDisplayLinkSetOutputCallback(link_, &Shared::OnDisplayLink, shared_.get());
   UpdateDisplay();
+}
+
+void MacVsyncDisplayLink::SetWindow(NSWindow* window) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  NSWindow* current = window_;
+  if (current == window && (window == nil || screen_observer_ != nil)) {
+    return;
+  }
+  StopObservingWindow();
+  window_ = window;
   if (window != nil) {
-    // 观察者块在主线程(= platform 线程)同步执行;析构时移除, 因此捕获 this 安全。
+    // 观察者块在主线程(= platform 线程)同步执行;换窗口与析构时移除, 因此捕获 this 安全。
     MacVsyncDisplayLink* self = this;
     screen_observer_ = [[NSNotificationCenter defaultCenter]
         addObserverForName:NSWindowDidChangeScreenNotification
@@ -94,14 +103,19 @@ MacVsyncDisplayLink::MacVsyncDisplayLink(CVDisplayLinkRef link, NSWindow* window
                   self->UpdateDisplay();
                 }];
   }
+  UpdateDisplay();
 }
 
-MacVsyncDisplayLink::~MacVsyncDisplayLink() {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
+void MacVsyncDisplayLink::StopObservingWindow() {
   if (screen_observer_ != nil) {
     [[NSNotificationCenter defaultCenter] removeObserver:screen_observer_];
     screen_observer_ = nil;
   }
+}
+
+MacVsyncDisplayLink::~MacVsyncDisplayLink() {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  StopObservingWindow();
   {
     MutexLock scope(shared_->lock);
     shared_->destroyed = true;  // 之后的 tick 什么也不做
