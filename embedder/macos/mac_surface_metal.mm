@@ -38,8 +38,10 @@ struct MacMetalSurface::MainThreadPresents {
                    std::function<void()> present) {
     self->pending.fetch_add(1);
     self->queue.Push({size, std::move(present)});
+    // block 对引用形参按引用捕获: 拷贝一份 shared_ptr, 否则调用方的那份先销毁时这里悬空。
+    const std::shared_ptr<MainThreadPresents> keep = self;
     dispatch_async(dispatch_get_main_queue(), ^{
-      self->Drain(nullptr);
+      keep->Drain(nullptr);
     });
   }
 
