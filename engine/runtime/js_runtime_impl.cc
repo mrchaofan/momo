@@ -301,21 +301,31 @@ Status JsRuntimeImpl::RunModule(const std::string& url, const std::string* sourc
                         : v8::Local<v8::Value>(v8::Undefined(isolate_)),
       V8String(isolate_, base_dir.string())};
   v8::Local<v8::Value> result;
+  v8::Local<v8::Value> promise_value;
+  v8::Local<v8::Value> state_value;
   if (!import_fn.As<v8::Function>()->Call(context, host, 3, args).ToLocal(&result) ||
-      !result->IsPromise()) {
+      !result->IsArray() ||
+      !result.As<v8::Array>()->Get(context, 0).ToLocal(&promise_value) || !promise_value->IsPromise() ||
+      !result.As<v8::Array>()->Get(context, 1).ToLocal(&state_value) || !state_value->IsObject()) {
     return try_catch.HasCaught() ? ExceptionToStatus(try_catch, what)
-                                 : InternalError(what + ": importModule did not return a Promise");
+                                 : InternalError(what + ": importModule did not return [Promise, state]");
   }
-  v8::Local<v8::Promise> promise = result.As<v8::Promise>();
+  v8::Local<v8::Promise> promise = promise_value.As<v8::Promise>();
+  v8::Local<v8::Object> state = state_value.As<v8::Object>();
+  auto started = [&] {
+    v8::Local<v8::Value> flag;
+    return state->Get(context, V8String(isolate_, "started")).ToLocal(&flag) && flag->IsTrue();
+  };
 
-  // 入口经 uv_run 推进(同 Electron NodeBindings::JoinAppCode): 加载模块图(文件读取在 uv 线程池完成)、
-  // 顶层 await 的 Node IO 都在这里完成。保活句柄不计入存活: uv 无事可做时停止泵送——剩下的求值
-  // (如顶层 await 等待 momo 的平台通道)继续异步进行, 失败时作为未处理的拒绝记录。
+  // 模块图的加载经 uv_run 推进(同 Electron NodeBindings::JoinAppCode;文件读取在 uv 线程池完成), 到入口
+  // 开始求值为止。入口的同步部分随即执行完;它若停在顶层 await, 不等待(与 Electron 的入口一致): 这里
+  // 泵送的只有 uv, 本线程的引擎任务(平台通道应答、帧)不会执行, 等下去会卡住启动。余下的求值在正常的
+  // 事件循环里继续, 之后的失败由 bootstrap 记录。保活句柄不计入存活: uv 无事可做时同样停止泵送。
   uv_loop_t* loop = bindings_->loop();
   bindings_->SetKeepAlive(false);
   while (true) {
     DrainMicrotasks();
-    if (promise->State() != v8::Promise::kPending || !uv_loop_alive(loop)) {
+    if (promise->State() != v8::Promise::kPending || started() || !uv_loop_alive(loop)) {
       break;
     }
     uv_run(loop, UV_RUN_ONCE);
@@ -326,7 +336,9 @@ Status JsRuntimeImpl::RunModule(const std::string& url, const std::string* sourc
     return PromiseToStatus(promise, what);
   }
   if (promise->State() == v8::Promise::kPending) {
-    MOMO_LOG(VERBOSE) << url << ": top-level await still pending; evaluation continues asynchronously.";
+    (void)state->Set(context, V8String(isolate_, "detached"), v8::True(isolate_));
+    MOMO_LOG(INFO) << url << ": the entry module is suspended at a top-level await; startup does not "
+                             "wait for it (evaluation continues asynchronously).";
   }
   if (code_cache_) {
     v8::Local<v8::Value> flush;

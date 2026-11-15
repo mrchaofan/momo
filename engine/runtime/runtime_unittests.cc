@@ -220,18 +220,46 @@ TEST_F(JsRuntimeTest, CallsDrainNextTicksAndMicrotasksBeforeReturning) {
   EXPECT_STREQ(*text, "call,tick,promise");
 }
 
-// 顶层 await 等待 Node IO: 入口经 uv_run 泵送, 返回时求值已完成。
-TEST_F(JsRuntimeTest, EntryTopLevelAwaitIsPumpedThroughUv) {
+// 入口不等待顶层 await(同 Electron): 同步部分执行完即返回, 余下的求值在事件循环里继续。
+TEST_F(JsRuntimeTest, EntryDoesNotWaitForTopLevelAwait) {
   ASSERT_TRUE(runtime_
                   ->RunModuleSource("import { setTimeout as sleep } from 'node:timers/promises';\n"
+                                    "globalThis.started = true;\n"
                                     "await sleep(20);\n"
                                     "globalThis.done = 'yes';",
                                     "tla.mjs")
                   .ok());
-  EXPECT_EQ(Eval("String(globalThis.done)"), "yes");
+  EXPECT_EQ(Eval("String(globalThis.started)"), "true");
+  EXPECT_EQ(Eval("String(globalThis.done)"), "undefined") << "the entry was awaited";
+  EXPECT_TRUE(RunUntil([&] { return Eval("String(globalThis.done)") == "yes"; }));
 }
 
-// 顶层 await 等待 uv 之外的事(这里是永不 resolve 的 Promise): uv 无事可做时停止泵送, 不卡住启动。
+// 顶层 await 等待本线程的引擎任务(平台通道应答就是这样到达的), 同时还有未到期的 uv 定时器: 入口必须
+// 立即返回。等到 uv 无事可做才返回的话, 这段时间引擎任务无法执行, 启动会卡住(有 setInterval 时永远卡住)。
+TEST_F(JsRuntimeTest, EntryWaitingOnEngineWorkReturnsWhileUvIsBusy) {
+  const auto begin = std::chrono::steady_clock::now();
+  ASSERT_TRUE(runtime_
+                  ->RunModuleSource("globalThis.resolved = false;\n"
+                                    "globalThis.timer = setInterval(() => {}, 1000);\n"
+                                    "await new Promise((resolve) => { globalThis.reply = resolve; });\n"
+                                    "globalThis.resolved = true;\n"
+                                    "clearInterval(globalThis.timer);",
+                                    "channel.mjs")
+                  .ok());
+  EXPECT_LT(std::chrono::steady_clock::now() - begin, std::chrono::milliseconds(800));
+  EXPECT_EQ(Eval("String(resolved)"), "false");
+  // 应答到达(引擎任务调用 JS)后, 余下的求值继续。
+  EXPECT_EQ(Eval("reply(); 'sent'"), "sent");
+  EXPECT_TRUE(RunUntil([&] { return Eval("String(resolved)") == "true"; }));
+}
+
+// 入口同步部分的错误仍然作为启动失败返回;加载失败同样如此。
+TEST_F(JsRuntimeTest, EntrySynchronousErrorsFailTheRun) {
+  EXPECT_FALSE(runtime_->RunModuleSource("throw new Error('boom at top level');", "throw_sync.mjs").ok());
+  EXPECT_FALSE(runtime_->RunModuleSource("import './does_not_exist.mjs';", "missing_import.mjs").ok());
+}
+
+// 顶层 await 等待永不 resolve 的 Promise, uv 也无事可做: 不卡住启动。
 TEST_F(JsRuntimeTest, EntryWaitingOnNonUvWorkDoesNotBlock) {
   ASSERT_TRUE(runtime_->RunModuleSource("globalThis.started = true; await new Promise(() => {});",
                                         "pending.mjs")

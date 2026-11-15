@@ -39,8 +39,9 @@ class JsRuntime final : public Object {
   static StatusOr<std::unique_ptr<JsRuntime>> Create(const Options& options);
   ~JsRuntime() override;
 
-  // 加载并执行 ESM 主模块(含其静态依赖), 期间泵送 uv 循环直到求值完成(或 uv 无事可做, 此时顶层 await
-  // 继续异步进行)。语法错误、解析失败、顶层抛出/拒绝都返回错误(消息含 JS 栈)。
+  // 加载并执行 ESM 主模块(含其静态依赖): 泵送 uv 循环到模块图加载完, 再执行入口的同步部分。不等待顶层
+  // await(同 Electron): 入口停在那里时立即返回, 余下的求值异步继续, 其后的错误只记录日志。
+  // 语法错误、解析失败、同步部分的抛出都返回错误(消息含 JS 栈)。
   Status RunMainModule(const std::filesystem::path& path);
   // 以 source 作为 ESM 模块执行;相对导入基于 base_dir。测试与 --dev 片段用。
   Status RunModuleSource(std::string_view source, std::string_view url,
