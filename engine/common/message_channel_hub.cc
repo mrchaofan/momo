@@ -63,19 +63,29 @@ void MessageChannelHub::SendToNative(const std::string& channel, MessageBytes me
                                      std::shared_ptr<TaskRunner> reply_runner,
                                      MessageReply::Callback reply) {
   Handler handler;
+  uint64_t generation = 0;
   {
     MutexLock lock(mutex_);
     auto it = handlers_.find(channel);
     if (it != handlers_.end()) {
       handler = it->second;
     }
+    generation = js_generation_;
   }
   MessageReply reply_handle(std::move(reply_runner), std::move(reply));
   if (!handler.fn) {
     return;  // reply_handle 析构 → 回复 nullopt
   }
-  handler.runner->PostTask([fn = std::move(handler.fn), message = std::move(message),
-                            reply = std::move(reply_handle)]() mutable {
+  // 执行时(handler 的线程)核对代数: 发出这条消息的 JS 运行时在投递之后已销毁(热重启、关闭)则不再送达——
+  // 否则旧运行时的消息会在 handler 已经为新运行时清理过状态之后到来。回复句柄随任务析构, 回复 nullopt。
+  handler.runner->PostTask([self = shared_from_this(), generation, fn = std::move(handler.fn),
+                            message = std::move(message), reply = std::move(reply_handle)]() mutable {
+    {
+      MutexLock lock(self->mutex_);
+      if (generation != self->js_generation_) {
+        return;
+      }
+    }
     fn(std::move(message), std::move(reply));
   });
 }

@@ -12,6 +12,8 @@
 // 发送方收到空回复(nullopt)。回复总是投递到发送方指定的 reply_runner 上执行(即使已在该线程;
 // 为空则丢弃回复)。
 // 无 handler 的通道立即回复 nullopt。
+// 代际: JS 端点每次安装/移除记为换了一代 JS 运行时。两个方向的消息都带着发出时的代数, 送达时若已换代
+// 就丢弃(回复 nullopt): 旧运行时发出的消息到不了 native handler, 发给旧运行时的消息到不了新运行时。
 // 线程约定: 所有方法线程安全(内部小临界区), 回调不在锁内执行。
 // 生命周期: 必须以 std::make_shared 创建(Shell 创建并共享给 Engine/扩展宿主);投递中的任务持有强引用。
 // Shell 关闭时移除 JS 端点与全部 native handler, 之后的消息直接回复 nullopt。
@@ -85,7 +87,7 @@ class MessageChannelHub : public std::enable_shared_from_this<MessageChannelHub>
   std::map<std::string, Handler> handlers_;
   std::shared_ptr<TaskRunner> js_runner_;
   JsEndpoint js_endpoint_;
-  uint64_t js_generation_ = 0;
+  uint64_t js_generation_ = 0;  // JS 运行时的代数(端点每次安装/移除加一)
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(MessageChannelHub);
 };

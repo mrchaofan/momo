@@ -143,7 +143,8 @@ typedef struct MomoPlatformViewFactory {
 //   4) kMomoLifecycleRuntimeStarting(按注册顺序;关闭时没有这一步, 随后是 on_detach);
 //   5) 新运行时创建、执行 bundle。
 // 因此监听器执行期间没有任何 JS 在运行, 也不会有 JS 函数/帧回调与之并发;新运行时发来的消息一定晚于
-// Starting。旧运行时在销毁前已发出、尚在途中的通道消息仍可能在 Stopped 之后送达(其应答被丢弃)。
+// Starting。通道消息带有代际标识: 旧运行时在销毁前已发出、尚在途中的消息不会再送达 handler, Stopped 之后
+// 收到的通道消息一定来自新运行时;发给旧运行时的消息也不会送到新运行时。
 // 监听器里不得阻塞等待 ui 线程(它正停着, 会死锁);耗时的清理请投递到自己的线程。
 //
 // 兼容性: 事件与原因的取值只增不改。扩展必须忽略不认识的 event(直接返回);MomoLifecycleInfo 只在末尾
