@@ -154,7 +154,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 ### 4.4 依赖方向
 
 - engine **不得** include `embedder/` 下的任何文件。engine 需要平台能力时，在 `engine/platform/` 声明纯接口，由 embedder 实现（依赖倒置）。
-- **engine 只认识视图**（画面、尺寸、输入、焦点、捕获）。窗口的外观与行为（标题、位置、标题栏、拖动、关闭询问）、剪贴板、打开 URL、输入法属于宿主：embedder 在 `Shell::Create` 的 `on_created` 里往 `hub()` 注册通道处理器（`window_channel.h`、`platform_channels.h`），JS 与宿主直接往返。不要为这类需求往 `Shell::Delegate`、`Engine::Delegate`、`WindowClient` 加方法。
+- **engine 只认识视图**（画面、尺寸、输入、焦点、捕获）。窗口的外观与行为（标题、位置、标题栏、拖动、关闭询问）、剪贴板、打开 URL、输入法属于宿主：embedder 在 `Shell::Create` 之后、`Shell::Run`（启动 JS 运行时）之前往 `hub()` 注册通道处理器（`window_channel.h`、`platform_channels.h`），JS 与宿主直接往返。不要为这类需求往 `Shell::Delegate`、`WindowClient` 加方法。
 - `v8.h` 只能出现在 `engine/runtime/`、`engine/ui/` 的**实现文件**里；Skia 头只能出现在 `engine/graphics/`、`text/`、`assets/` 的实现文件里。其他模块只看到不含 V8/Skia 类型的接口。
 - 平台实现库 `momo_embedder_macos` 只链接 `momo_engine_platform`（接口）和系统 SDK。
 
@@ -188,7 +188,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 1. `embedder/common/platform_services.h`：加纯虚方法（返回 `Status`）。
 2. `embedder/macos/mac_platform_integration.mm` 的 `MacServices` 实现它；同步 `embedder/windows/win_services.cc` 和 `embedder/common/testing/mock_platform.h`。
-3. `embedder/common/platform_channels.cc`：注册通道 `momo/notification`，handler 跑在 platform 线程，调用 `services_`。
+3. `embedder/common/platform_channels.cc`：加一个 `HostChannel`（`momo/notification`）并 `Register` 方法，handler 跑在 platform 线程，调用 `services_`。
 4. 框架 `services/` 加一个基于 `MethodChannel` 的 JS 封装，并从 `services/index.ts` 导出。
 5. 测试：`embedder/common/*_unittests.cc`（mock 平台）+ `services_test.ts`。
 
@@ -256,7 +256,7 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 - **`nextDrawable` 可能返回 nil**：此时直接丢帧，不能阻塞等待。
 - **AppKit 的键盘怪癖**：按住 Command 时 `-[NSApplication sendEvent:]` 会吞掉 `keyUp`。`MomoContentView` 用本地事件监视器补发（Flutter macOS 也是这么做），并在 `keyUp:` 里按事件对象去重。`flagsChanged` 事件不能访问 `characters`（会抛 ObjC 异常），修饰键只看 `modifierFlags`。
 - **hot restart 不保留 JS 状态**，并且会销毁整个 JS 运行时。所以绑定层中所有异步回调都要用 `WeakPtr<Impl>` 判活（见 `ui_impl.h`）。
-- **框架里没有 DOM/Node API**：没有 `setTimeout`，要用 `SchedulerBinding.instance.scheduleDelayed`。
+- **框架代码不直接用 DOM/Node API**：延迟任务用 `SchedulerBinding.instance.scheduleDelayed`（内部由 `setTimeout` 驱动、等待期间不出帧，测试里换成假时钟），不要直接调 `setTimeout`。
 
 ## 9. 文档维护约定
 

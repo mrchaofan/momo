@@ -5,8 +5,9 @@
 // surface、尺寸、输入与焦点;帧时钟、JS 状态、平台视图表与纹理表在视图之间共享。
 // 引擎只认识视图本身(尺寸、输入、画面);窗口的外观与行为(标题、位置、标题栏…)属于宿主,
 // 经宿主注册的 momo/window 通道与 JS 交互, 不经过引擎。
-// 视图 0(kImplicitViewId)是宿主启动时创建的窗口(隐式视图, 同 Flutter 的 implicit view): 它在 JS bundle
-// 执行前就已存在, 供 runApp 直接渲染;除此之外与其他视图没有区别, 同样可以被关闭。
+// 视图 0(kImplicitViewId)是宿主启动时创建的窗口(隐式视图, 同 Flutter 的 implicit view): 宿主在启动
+// JS 运行时(Shell::Run)之前就绑定了它, 所以它在 JS bundle 执行前已存在, 供 runApp 直接渲染;除此之外与
+// 其他视图没有区别, 同样可以被关闭。引擎自己不预置任何视图。
 
 #include <cstdint>
 

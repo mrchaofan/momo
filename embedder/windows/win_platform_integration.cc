@@ -42,21 +42,21 @@ class WinPlatformIntegration final : public PlatformIntegration {
     }
   }
 
-  StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec& spec,
+  StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowOptions& options,
                                                          WindowDelegate* delegate) override {
     if (delegate == nullptr) {
       return InvalidArgumentError("CreateWindow requires a delegate");
     }
     StatusOr<std::unique_ptr<WinWindow>> window =
-        WinWindow::Create(spec, delegate, WinWindow::Context{mouse_input_, displays_, app_});
+        WinWindow::Create(options, delegate, WinWindow::Context{mouse_input_, displays_, app_});
     if (!window.ok()) {
       return window.status();
     }
     return std::unique_ptr<PlatformWindow>(std::move(window).value());
   }
 
-  StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource(const PlatformWindow&) override {
-    // DwmFlush 是全局的: 不需要(也不持有)窗口。
+  StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource() override {
+    // DwmFlush 是全局的: 不需要(也不持有)窗口, 所以也不实现 SetVsyncWindow。
     return WinVsyncDwm::Create();
   }
 

@@ -119,7 +119,8 @@ view.render(scene: Scene): void
 M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS 声明见
 `framework/packages/momo/src/ui/momo-ui.d.ts`。消息通道实现: `engine/common/message_channel_hub.h`(回复总是投递,
 不在 JS 调用栈内同步重入)、`engine/common/standard_codec.h`、JS 端 `momo:services`(`engine/ui/services_bindings.cc`)。
-内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/extensions、momo/platform_views。
+内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/extensions(JS 查询扩展加载错误: `getErrors`)、momo/platform_views。
+消息带着发出时的 JS 运行时代数, 换代后不再送达;代数由引擎在运行时启动/停止时显式设置(`SetJsGeneration`)。
 
 ## 7. 调试与诊断
 
@@ -132,6 +133,7 @@ M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS
 ## 8. 热重载(开发体验,M4+)
 
 已实现 hot restart(**实验性, 默认关闭**, 以 `--experimental-hot-restart` 开启): embedder 每 500ms 检查 bundle 修改时间, 变化时 `Shell::RequestHotRestart` →
-ui 线程销毁 JS 运行时(整个 Node 环境)并新建、重新执行 bundle(新 bundle 出错时退回占位驱动, 修复后可再次重启)。
+ui 线程销毁 JS 运行时(整个 Node 环境, `Engine::StopRuntime`), 再走与首次启动相同的链路(`Engine::StartRuntime`)新建并重新执行 bundle
+(新 bundle 出错时退回占位驱动, 全部视图照常出帧, 修复后可再次重启)。
 
 监听 bundle 文件变化 → 重建 Context(保留 Isolate)→ 重新执行 bundle → 框架层从根重建树。状态保持(类似 Flutter hot reload)不做首期承诺,先做秒级 hot restart。

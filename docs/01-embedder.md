@@ -13,7 +13,7 @@ embedder/
 │   ├── app_config.h/.cc        # 启动配置(bundle 路径、窗口参数、命令行解析)
 │   ├── asset_resolver.h/.cc    # 定位 JS bundle 与资源(app 包内 / 开发模式本地目录)
 │   ├── platform_integration.h  # embedder 的平台抽象: 工厂 + 原生循环(docs/03)
-│   ├── platform_window.h       # PlatformWindow / WindowDelegate / WindowSpec
+│   ├── platform_window.h       # PlatformWindow / WindowDelegate
 │   ├── display.h               # DisplayInfo
 │   ├── engine_platform.h       # 命名空间别名 platform:: = momo::engine::platform
 │   └── testing/mock_platform.h # 单测用 mock PlatformIntegration(无 OS API)
@@ -38,13 +38,15 @@ embedder/
    a. 平台集成由入口创建并注入(mac: CreateMacPlatformIntegration();win: CreateWinPlatformIntegration())
    b. 创建 OS 主线程的 `EventLoop`(`base::NativeMessagePump` 包装 `platform.native_loop()`)并绑定当前线程(Application 自身是归属它的 `momo::Object`);ui/raster/io 由 Application 持有的 `engine::ThreadHost` 创建;四者组成 TaskRunners
 4. Application::Launch(): 创建启动窗口(隐式视图 0)的 PlatformWindow + RenderSurface 并 Show(此时只有原生空窗口,显示闪屏底色)
-5. AssetResolver 解析 bundle → Shell::Create() → WindowController::AttachEngine()(Application::LaunchEngine)
-   a. engine::Shell::Create(TaskRunners, Settings, on_created);主显示器刷新率作为 vsync 回退定时器频率。on_created 在 JS bundle
-      执行前回调: 注册宿主通道(WindowChannel: momo/window、momo/app;PlatformChannels: momo/clipboard、momo/url、momo/textinput)
-   a'. AttachWindow: platform.CreateVsyncSource(window)(不支持时为空 → 定时器回退)随 Shell::AttachView 移交 Shell
-   b. ui 线程: 创建 JsRuntime(V8 Isolate/Context) → 安装 momo:* 绑定
-   c. ExtensionHost 扫描并加载声明的原生扩展(见 docs/07)
-   d. 加载并执行 JS bundle → 框架调用 runApp()
+5. AssetResolver 解析 bundle → Shell::Create() → 注册通道、绑定窗口 → Shell::Run()(Application::LaunchEngine;Launch 到此返回,
+   状态仍是 Launching, 主线程进入事件循环)
+   a. engine::Shell::Create(TaskRunners, Settings, on_exit_requested): 只组装引擎(不创建 JS 运行时、不等待其他线程);
+      ExtensionHost 扫描并加载声明的原生扩展(见 docs/07);主显示器刷新率作为 vsync 回退定时器频率
+   b. 注册宿主通道(AppChannel: momo/app;WindowChannel: momo/window;PlatformChannels: momo/clipboard、momo/url、momo/textinput)
+   c. WindowManager::AttachEngine: platform.CreateVsyncSource()(应用只有一个;不支持时为空 → 定时器回退)经 Shell::SetVsyncSource 移交 Shell,
+      再逐个窗口 Shell::AttachView;帧时钟跟随 id 最小的窗口所在的显示器(platform.SetVsyncWindow)
+   d. Shell::Run(异步)。ui 线程: 创建 JsRuntime(V8 Isolate/Context) → 安装 momo:* 绑定 → 加载并执行 JS bundle → 框架调用 runApp()
+   e. 结果回到 platform 线程(Application::OnRuntimeStarted): 成功 → Running;bundle 加载/执行失败 → 有序退出, 退出码 1
 6. 首帧: JS 提交第一个 Scene → raster 线程绘制 → present → 替换闪屏
 7. Application::Run(): 运行 platform EventLoop(其 pump 即原生消息循环:Win32 GetMessage 泵 / NSApplication run),Terminate 后在安全点清理 DeleteLater 对象再返回
 ```
@@ -73,11 +75,11 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 
 ### 引擎装配(Application::LaunchEngine)
 
-Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果 + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_created, on_exit_requested)`(on_created 里注册宿主通道;on_exit_requested 接 `process.exit`);`WindowManager::AttachEngine` 为每个窗口 `CreateVsyncSource`(不支持则为空, Shell 回退定时器)后 `WindowController::AttachEngine`。关闭时先 `WindowManager::DetachEngine`(raster 停用 surface), 再移除宿主通道, 再 `Shell::Shutdown`。
+Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果(bundle、资源、扩展目录, 以及入口给出的缓存目录下的 V8 code cache 目录) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。关闭时先 `WindowManager::DetachEngine`(raster 停用 surface), 再移除宿主通道, 再 `Shell::Shutdown`。
 
 ### WindowController(common)
 
-把 `PlatformWindow` 的视图相关回调(尺寸/DPI 变化、输入事件、焦点)转发给 `engine::Shell` 对应的视图;窗口级事件(关闭请求、状态、焦点、IME、屏幕框、窗口控制按钮占用区域、首帧)经 `WindowController::Client` 接口交给 WindowManager, 由它经宿主通道通知 JS;反向只承接引擎对视图的请求(指针捕获转交、平台视图挂载/聚焦、原生句柄)。窗口外观与行为(标题、光标、位置、标题栏…)的请求不经过这里: `momo/window` 通道直接调用 `PlatformWindow`。输入事件在 platform 线程收到后打包为 `PointerDataPacket`/`KeyData` 投递至 ui 线程。引擎附着前收到的 metrics/焦点会被缓存,附着时补发。原生关闭请求**总是先拦截**(`OnCloseRequested` 返回 false),交给 `WindowManager::RequestCloseWindow` 异步询问 JS。
+把 `PlatformWindow` 的视图相关回调(尺寸/DPI 变化、输入事件、焦点)转发给 `engine::Shell` 对应的视图;纯通知类的窗口事件(状态、焦点、屏幕框、窗口控制按钮占用区域、首帧)直接经注入的 `WindowChannel` 通知 JS, 需要 WindowManager 做决定的(关闭请求、焦点归属、IME 路由)经 `WindowController::Client` 接口交给它;平台窗口每次上报当前的原始值, 去重(与上次相同则不转发)只在这里做;反向只承接引擎对视图的请求(指针捕获转交、平台视图挂载/聚焦、原生句柄)。窗口外观与行为(标题、光标、位置、标题栏…)的请求不经过这里: `momo/window` 通道直接调用 `PlatformWindow`。输入事件在 platform 线程收到后打包为 `PointerDataPacket`/`KeyData` 投递至 ui 线程。引擎附着前收到的 metrics/焦点会被缓存,附着时补发。原生关闭请求**总是先拦截**(`OnCloseRequested` 返回 false),交给 `WindowManager::RequestCloseWindow` 异步询问 JS。
 
 ## 4. 生命周期与关闭顺序
 
@@ -100,7 +102,7 @@ Quit(JS 可取消) / Exit(code) → Application::Terminate
 
 ### 命令行(`AppConfig::Parse`)
 
-`--bundle=<path>`、`--assets=<dir>`、`--title=<text>`、`--width=<px>`、`--height=<px>`、`--dev`。未知参数与系统参数(`-psn_*`、`-NS*`)忽略。资源根目录由入口提供:Mac `NSBundle.mainBundle.resourcePath`,Win exe 所在目录;默认布局 `<resources>/{bundle.js, assets/, extensions/}`(docs/09 §4)。
+`--bundle=<path>`、`--assets=<dir>`、`--title=<text>`、`--width=<px>`、`--height=<px>`、`--dev`。未知参数与系统参数(`-psn_*`、`-NS*`)忽略。资源根目录由入口提供:Mac `NSBundle.mainBundle.resourcePath`,Win exe 所在目录;默认布局 `<resources>/{bundle.js, assets/, extensions/}`(docs/09 §4)。应用的缓存目录(V8 code cache 在其 `v8/` 下)同样由入口提供, 每个应用一个:Mac `~/Library/Caches/<bundle identifier>`,Win `%LOCALAPPDATA%\<exe 名>`(与单实例的 app id 相同)。
 
 ## 6. 测试策略
 

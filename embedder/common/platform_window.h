@@ -24,18 +24,6 @@
 
 namespace momo::embedder {
 
-struct WindowSpec {
-  std::string title = "Momo";
-  Size size{1024, 768};      // 逻辑像素
-  Size min_size{200, 150};   // 逻辑像素
-  bool resizable = true;
-  uint32_t background_argb = 0xFFFFFFFF;  // 首帧前的闪屏底色
-  // 内容区左上角的屏幕位置(逻辑点, 主屏左上原点);为空则居中。
-  std::optional<Point> position;
-  // 辅助窗口: 可接收键盘, 不成为应用的主窗口, 聚焦不激活应用(WindowOptions::non_activating)。
-  bool non_activating = false;
-};
-
 // 窗口的可选能力(momo/window capabilities)。不支持的能力对应的方法返回 Unimplemented,
 // JS 可以先查询再决定界面(如不支持隐藏标题栏时保留系统标题栏)。
 enum WindowCapability : uint32_t {
@@ -52,6 +40,8 @@ enum WindowCapability : uint32_t {
   kCapabilityMinMax = 1u << 10,          // Minimize / Maximize / Restore
 };
 
+// 尺寸、状态、屏幕框、控制按钮这四类"可能变了"的回调, 平台窗口每次都上报当前的原始值(可以重复);
+// 去重只在接收方(WindowController)做一次。
 class WindowDelegate {
  public:
   virtual void OnMetricsChanged(const platform::ViewportMetrics& metrics) = 0;

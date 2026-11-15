@@ -41,17 +41,17 @@ common, platform → base
 | `ThreadHost` | 宿主线程 | 创建/join ui、raster、io 三个具名线程并产出 TaskRunners;由宿主(embedder/测试)持有,见 docs/08 §2 |
 | `Animator` | ui | 帧调度:请求 VSync → 驱动 AppDriver 出帧;一帧收集各视图的 LayerTree 成一个 `FrameItem` 入 Pipeline;背压;由 Engine 持有 |
 | `Rasterizer` | raster | 接收 FrameItem → 按 `LayerTree::view_id` 画到对应视图的 surface(`RenderBackend::Draw`)→ present;每个视图一份后端与最近一帧 |
-| `Engine`(内部类) | ui | ui 线程侧的根:持有各视图的 ViewportMetrics/焦点、Animator 与 `ui::AppDriver`(JS 驱动或占位驱动, 由 ui 模块的构建配置决定, 见 `engine/ui/app_driver.h`) |
+| `Engine`(内部类) | ui | ui 线程侧的根:持有各视图的 ViewportMetrics/焦点、Animator 与 `ui::AppDriver`(JS 驱动或占位驱动, 由 ui 模块的构建配置决定, 见 `engine/ui/app_driver.h`);`StartRuntime(generation)` / `StopRuntime()` 创建与销毁 JS 运行时, 没有运行时的时候不出帧 |
 
-`Shell::Create()` 流程:在 platform 线程构造 → 向 raster 线程投递 Rasterizer 初始化 → 向 ui 线程投递 Engine 初始化(Animator 用定时器 vsync, 再建 AppDriver/V8 并执行 bundle)→ 两者就绪后返回 embedder。`AttachView(view_id, delegate, surface, vsync)` 由 Shell 在 platform 线程持有窗口 delegate 与 VsyncSource,ui 侧 Animator 改用 `PlatformVsyncWaiter`;`DetachView(view_id)`/`Shutdown` 先在 platform 线程释放 VsyncSource(帧时钟改用其他视图的来源或定时器),最后 raster 同步解绑 surface。
+启动分两阶段。`Shell::Create()`:在 platform 线程构造 → 向 raster 线程投递 Rasterizer 初始化 → 加载 manifest 声明的扩展 → 向 ui 线程投递 Engine 的构造(Animator 用定时器 vsync, **没有 JS 运行时**)→ 不等待, 立即返回 embedder。宿主随后在 `hub()` 上注册通道处理器、`extensions().AddExtension` 添加进程内扩展、`AttachView` 绑定已有窗口, 再调用 `Shell::Run(done)`:向扩展派发 RuntimeStarting → ui 线程 `Engine::StartRuntime`(建 AppDriver/V8 并执行 bundle, 再把已有视图的状态交给它)→ 结果经 `done` 回到 platform 线程。platform 线程从不等待 bundle 执行。hot restart(`RequestHotRestart`)= 停止运行时(`Engine::StopRuntime` → 销毁平台视图 → RuntimeStopped, 同步)+ 同一条启动链路;`Shutdown` 的第一步也是这次停止。"第几代运行时"只有 Shell 的一个计数, 扩展事件、消息通道的代际(`MessageChannelHub::SetJsGeneration`)与 Promise token 都取自它。帧时钟是应用级的:宿主以 `SetVsyncSource(source)` 给出唯一的 VsyncSource(Shell 在 platform 线程持有, ui 侧 Animator 改用 `PlatformVsyncWaiter`;没有则用定时器), 与视图的绑定无关。`AttachView(view_id, delegate, surface)` 由 Shell 在 platform 线程持有窗口 delegate;`DetachView(view_id)` 由 raster 同步解绑 surface;`Shutdown` 释放 VsyncSource。
 
 ### 多视图(多窗口)
 
-一个 Shell(一个 JS 运行时)驱动多个视图,每个视图对应宿主的一个原生窗口(`engine/platform/view.h`:`ViewId`;视图 0 = 隐式视图, 即宿主启动时创建、bundle 执行前就存在的窗口, 与其他视图一样可被移除)。
+一个 Shell(一个 JS 运行时)驱动多个视图,每个视图对应宿主的一个原生窗口(`engine/platform/view.h`:`ViewId`;视图 0 = 隐式视图, 即宿主启动时创建、在 `Shell::Run` 之前绑定(因此 bundle 执行前就存在)的窗口, 与其他视图一样可被移除;引擎自己不预置视图)。
 
-- **共享**:JS 状态、帧时钟(一个 Animator;VsyncSource 优先用视图 0 的)、平台视图表、纹理表、扩展。指针序列的接收方(捕获)由宿主与框架决定, 引擎按视图原样转发输入(ARCHITECTURE §3.10)。
+- **共享**:JS 状态、帧时钟(一个 Animator、一个 VsyncSource;跟随哪块显示器由宿主决定)、平台视图表、纹理表、扩展。指针序列的接收方(捕获)由宿主与框架决定, 引擎按视图原样转发输入(ARCHITECTURE §3.10)。
 - **按视图**:surface 与 GPU 后端、ViewportMetrics、焦点、指针/键盘事件、合成状态。
-- **引擎不管窗口**:窗口的创建与关闭、标题、光标、位置、标题栏都属于宿主(embedder 的 `momo/window` 通道, docs/03 §5)。宿主建好窗口后以自己分配的 id `AttachView`(JS 收到 `onViewsChanged`), 关闭时 `DetachView`。引擎的接口(`Shell::Delegate`、`Engine::Delegate`、`ui::WindowClient`)里只有视图本身的事。
+- **引擎不管窗口**:窗口的创建与关闭、标题、光标、位置、标题栏都属于宿主(embedder 的 `momo/window` 通道, docs/03 §5)。宿主建好窗口后以自己分配的 id `AttachView`(JS 收到 `onViewsChanged`), 关闭时 `DetachView`。引擎的接口(`Shell::Delegate`、`ui::WindowClient`)里只有视图本身的事。
 - **帧路径**:一次 `onDrawFrame` 中各视图各自 `view.render(scene)`(每视图每帧至多一次),Animator 把它们打包成一个 `FrameItem`,raster 按 view_id 分别光栅化与呈现。
 - **输入法**:由宿主的 `momo/textinput` 交给当前获得焦点的窗口。热重启时宿主关闭视图 0 之外的窗口(视图 0 已关闭则重新打开)。
 - 扩展 `get_window_handle(view_id)` 对所有视图有效。
@@ -100,7 +100,7 @@ common, platform → base
 
 ## 7. extension/ — 扩展宿主(详见 docs/07)
 
-`ExtensionHost`(`extension_host.cc`:manifest 解析、加载 .dll/.dylib、版本握手、生命周期,并实现 C ABI 函数表 `MomoHostApi` 中不涉及 JS 的部分)。扩展注册的 `ext:*` 模块与函数由 `ui/extension_bindings.cc` 在 JS 运行时创建时安装(实现 `MomoCallApi`)。
+`ExtensionHost`(`extension_host.cc`:manifest 解析、加载 .dll/.dylib、版本握手、生命周期,并实现 C ABI 函数表 `MomoHostApi` 中不涉及 JS 的部分)。JS 部分(`MomoCallApi` 与 `builder_add_function`)由 ui 模块在链接期提供(`ui::GetExtensionJsGlue`:有 V8 时是 `ui/extension_bindings.cc`, 否则是 `ui/app_driver_no_js.cc` 里返回错误的实现), ExtensionHost 构造时一次填进函数表, 此后函数表不可变。扩展注册的 `ext:*` 模块与函数由 `ui/extension_bindings.cc` 在 JS 运行时创建时安装。帧请求(扩展帧回调、纹理新帧)直接在 ui 线程交给 Engine, 不经 platform 线程。
 
 ## 8. 错误处理与所有权
 

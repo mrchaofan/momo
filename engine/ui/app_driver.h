@@ -16,6 +16,7 @@
 #include "base/time.h"
 #include "engine/common/message_channel_hub.h"
 #include "engine/common/settings.h"
+#include "engine/extension/js_glue.h"
 #include "engine/graphics/layer_tree.h"
 #include "engine/platform/input_types.h"
 #include "engine/platform/view.h"
@@ -65,14 +66,13 @@ class AppDriver {
   virtual bool OnKeyData(ViewId, const platform::KeyData&) { return false; }
   virtual void OnFocusChanged(ViewId, bool) {}
   virtual void OnVisibilityChanged(ViewId, bool) {}
-  // 视图加入/移除(视图 0 在驱动创建前就存在, 不会通知加入)。
+  // 视图加入/移除(驱动创建前已绑定的视图由驱动在创建时从 client.views() 读取, 不会通知加入)。
   virtual void OnViewAdded(ViewId) {}
   virtual void OnViewRemoved(ViewId) {}
 };
 
 // 驱动可用的引擎设施(ui 线程创建驱动时传入;指针成员非拥有, 须比驱动活得久)。
 struct AppHost {
-  std::shared_ptr<TaskRunner> ui_runner;
   std::shared_ptr<TaskRunner> io_runner;      // 资源读取/图片解码
   std::shared_ptr<MessageChannelHub> hub;     // momo:services
   ExtensionHost* extensions = nullptr;        // 扩展宿主(ext:* 模块、帧回调;可空)
@@ -102,9 +102,14 @@ class PlaceholderDriver final : public AppDriver {
   WindowClient& client_;
 };
 
+// 以下两个函数的实现由链接决定: 有 V8 为 js_app_driver.cc / extension_bindings.cc, 否则为 app_driver_no_js.cc。
+
 // 按 settings 创建驱动(bundle 为空时为占位驱动)。bundle 加载/执行失败返回错误(消息含 JS 栈)。
-// 实现由链接决定: 有 V8 为 js_app_driver.cc, 否则为 shell/app_driver_no_js.cc。
-StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings,
-                                                     WindowClient& client, const AppHost& host);
+// runtime_generation: 这个 JS 运行时的代数(首个为 1;Engine::StartRuntime 传入)。
+StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings, WindowClient& client,
+                                                     const AppHost& host, uint64_t runtime_generation);
+
+// 扩展 C ABI 的 JS 部分(MomoCallApi 与 builder_add_function), 供 ExtensionHost 构造时填入函数表。
+const ExtensionJsGlue& GetExtensionJsGlue();
 
 }  // namespace momo::engine::ui

@@ -60,7 +60,7 @@ class TaskRunner {
 - **归属(affinity)**:构造时绑定当前线程的 EventLoop(或显式指定 runner)。对象的方法只在归属线程调用;其他线程经 `PostToObject(WeakPtr<T>, fn)` 投递过去,在归属线程判活后再调用(`WeakPtr` 是项目内唯一的弱引用)。析构必须在归属线程。
 - **`DeleteLater()`**:任意线程调用、幂等;对象在归属线程 EventLoop 的下一个安全点析构(§2),循环结束时必定清理。因此对象可以在自己的回调栈里被"删除",调用方之后仍可安全访问它直到返回事件循环。
 - **所有权 `ObjectPtr<T>`**:独占(`unique_ptr` + 删除器),释放时不立即 delete 而是 `DeleteLater`;**不使用 shared_ptr 表达跨线程生命周期**。`MakeObject<T>(...)` 创建。归属线程上需要立即析构时可直接用 `std::unique_ptr`/`delete`。已被 `ObjectPtr` 持有的对象不得再手动 `DeleteLater`。
-- **典型用例**:`platform::VsyncSource` 归属 platform 线程,由 `Shell` 以 `ObjectPtr` 持有;ui 线程的 `PlatformVsyncWaiter` 只持 `WeakPtr`,每次请求投递到 platform 线程判活后调用。解绑 = 释放 `ObjectPtr`(DeleteLater),ui 侧无需同步汇合。
+- **典型用例**:`platform::VsyncSource`(整个应用一个)归属 platform 线程,由 `Shell` 以 `ObjectPtr` 持有;ui 线程的 `PlatformVsyncWaiter` 只持 `WeakPtr`,每次请求投递到 platform 线程判活后调用。替换或关闭 = 释放 `ObjectPtr`(DeleteLater),ui 侧无需同步汇合。
 
 
 | 对象 | 归属线程 | 跨线程方式 |
@@ -73,7 +73,7 @@ class TaskRunner {
 | DisplayList/LayerTree/SkImage(已解码) | 不可变,shared_ptr | ui 产生 → raster 消费;最后引用可能在任一线程,GPU-backed 资源析构内部转投 raster |
 | MessageChannelHub | 任意线程调用 | 内部加锁;JS handler 回调固定 ui 线程 |
 
-同步原语:框架内部避免锁共享状态,优先"消息传递 + 不可变数据";必要处使用 `std::mutex` + 小临界区。提供 `WaitableEvent` 仅用于启动/关闭的有限几次汇合(如 Shell::Create 等待 ui/raster 就绪),帧路径上**零阻塞等待**(唯一例外:Windows resize 同步,docs/05 §5)。
+同步原语:框架内部避免锁共享状态,优先"消息传递 + 不可变数据";必要处使用 `std::mutex` + 小临界区。提供 `WaitableEvent` 仅用于关闭与拆除时的有限几次汇合(`Shell::Shutdown`、`DetachView`、hot restart 停止旧运行时;`Shell::Create` 与 `Shell::Run` 都不等待其他线程, platform 线程不会等 bundle 执行),帧路径上**零阻塞等待**(唯一例外:Windows resize 同步,docs/05 §5)。
 
 ## 4. 帧管线背压
 
@@ -81,7 +81,7 @@ class TaskRunner {
 
 ## 5. 关闭时序
 
-严格逆序关停(docs/01 §4)。实现要点:每个 `EventLoop` 支持 `Terminate()`(§2 结束语义:排空已到期任务、丢弃其余、清理全部 DeleteLater 对象);platform EventLoop 由 `Application::Terminate` 请求结束,在当前任务返回后的安全点完成清理再退出原生循环(未进入消息循环时由 `~Application` 以 `RunUntilIdle` 收尾);`Shell::Shutdown()` 在 platform 线程同步完成 ui → raster 两侧的销毁;线程由宿主持有的 `ThreadHost` 拥有,在窗口销毁之后由 `ThreadHost::Join()` 按 ui → raster → io 顺序 join;扩展 on_detach 在 join 之前完成,确保没有扩展回调悬挂在队列里。
+严格逆序关停(docs/01 §4)。实现要点:每个 `EventLoop` 支持 `Terminate()`(§2 结束语义:排空已到期任务、丢弃其余、清理全部 DeleteLater 对象);platform EventLoop 由 `Application::Terminate` 请求结束,在当前任务返回后的安全点完成清理再退出原生循环(未进入消息循环时由 `~Application` 以 `RunUntilIdle` 收尾);`Shell::Shutdown()` 在 platform 线程同步完成 JS 运行时停止 → ui(Engine)→ 扩展 on_detach → raster 的销毁;线程由宿主持有的 `ThreadHost` 拥有,在窗口销毁之后由 `ThreadHost::Join()` 按 ui → raster → io 顺序 join;扩展 on_detach 在 join 之前完成,确保没有扩展回调悬挂在队列里。
 
 ## 6. 调试支持
 

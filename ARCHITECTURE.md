@@ -193,7 +193,7 @@ GCD 主队列由主 CFRunLoop 在 common modes 下服务，所以窗口拖拽缩
 | `Thread` | `base/thread.h` | 具名线程，自带 EventLoop；默认 8 MiB 栈（macOS 次线程默认 512 KiB，容不下 V8 的栈上限） |
 | `Pipeline<T>` | `base/pipeline.h` | 固定深度生产/消费管道，实现帧背压（§4.3） |
 | `PostTaskAndWait` / `PostTaskAndReplyWithResult` | `base/task_util.h` | 启动/关闭汇合点；"在 A 线程做事、回 B 线程汇报" |
-| `WaitableEvent` | `base/waitable_event.h` | `Shell::Create` 等待 ui、raster 两侧初始化 |
+| `WaitableEvent` | `base/waitable_event.h` | 关闭与拆除时的同步汇合（`PostTaskAndWait` 的实现；启动路径不等待） |
 | `WorkerPool` | `base/worker_pool.h` | CPU 密集的一次性任务（扩展可用） |
 | `Status` / `StatusOr<T>` | `base/status.h` | 全项目禁用异常，可失败操作返回 `StatusOr` |
 
@@ -247,7 +247,7 @@ int main(argc, argv) {
 
   app = Application::Create({config, resources_dir = NSBundle.mainBundle.resourcePath}, platform);
   delegate.application = app;
-  exit_code = app->Launch().ok() ? app->Run() : 1;      // Run() 内部就是 [NSApp run]
+  exit_code = app->Launch().ok() ? app->Run() : 1;      // Launch 不等 bundle 执行；Run() 内部就是 [NSApp run]
   return exit_code;                                      // 正常从 main 返回，不让 AppKit 直接 exit()
 }
 ```
@@ -267,29 +267,35 @@ Application::Launch() {
   // 启动窗口(隐式视图 0;--no-startup-window 时不建)。WindowController 的事件交给 WindowManager:
   // 关闭按钮 → RequestCloseWindow(0)、状态(最小化/隐藏)→ 视图可见性、焦点/IME/屏幕框 → 宿主通道。
   if (config.startup_window) window_manager_->OpenStartupWindow();  // MacWindow:此时只有闪屏底色, 先显示
-  LaunchEngine();
+  LaunchEngine();                   // 返回时仍是 kLaunching: 主线程回到事件循环, 不等 bundle 执行
+}
+
+Application::OnRuntimeStarted(status) {   // Shell::Run 的结果, platform 线程
+  if (!status.ok()) return Terminate(1);  // bundle 加载/执行失败: 有序退出
   TransitionTo(kRunning);
+  if (hot_restart) 每 500ms 轮询 bundle 修改时间 → WindowManager::ResetForHotRestart → shell_->RequestHotRestart();
 }
 
 Application::LaunchEngine() {
   settings = { bundle/assets/extensions 路径 ← AssetResolver,
-               dev_mode, inspector, implicit_view = config.startup_window,
-               code_cache_dir = ~/Library/Caches/dev.momo.app/v8（非 --dev）,
+               dev_mode, inspector,
+               code_cache_dir = <入口给出的应用缓存目录>/v8（非 --dev）,
                refresh_rate = 主显示器刷新率（vsync 回退定时器用） };
-  // on_created 在 JS bundle 执行前回调: 宿主通道先就位(bundle 顶层代码就可能设置标题、打开窗口、退出)
+  // 第一阶段: 只组装引擎(没有 JS 运行时, 不等待其他线程)
   shell_ = Shell::Create(task_runners_, settings,
-      on_created = [](Shell& s) {
-        app_channel_       = AppChannel(s.hub(), platform runner, host = this);                // momo/app
-        window_channel_    = WindowChannel(s.hub(), platform runner, host = window_manager_);  // momo/window
-        platform_channels_ = PlatformChannels(s.hub(), ..., focused_text_input = WindowManager::FocusedTextInput);
-      },
       on_exit_requested = [](int code) { Exit(code); });   // JS process.exit(code), 见 §3.8
-  window_manager_->AttachEngine(*shell_, ...);  // 每个窗口: CreateVsyncSource + Shell::AttachView + 补发 metrics/焦点/可见性
-  if (dev_mode) 每 500ms 轮询 bundle 修改时间 → WindowManager::ResetForHotRestart → shell_->RequestHotRestart();
+  // 宿主通道与窗口先就位(bundle 顶层代码就可能设置标题、打开窗口、退出;启动窗口在顶层即是视图 0)
+  app_channel_       = AppChannel(shell_->hub(), platform runner, host = this);                // momo/app
+  window_channel_    = WindowChannel(shell_->hub(), platform runner, host = window_manager_);  // momo/window
+  platform_channels_ = PlatformChannels(shell_->hub(), ..., focused_text_input = WindowManager::FocusedTextInput);
+  window_manager_->AttachEngine(*shell_, ...);  // 应用唯一的 VsyncSource: CreateVsyncSource → Shell::SetVsyncSource;
+                                                // 每个窗口: Shell::AttachView + 补发 metrics/焦点/可见性
+  // 第二阶段: 异步启动 JS 运行时(ui 线程执行 bundle), 结果回到 platform 线程
+  shell_->Run([](Status s) { OnRuntimeStarted(s); });
 }
 ```
 
-"合适的时机创建 JS 环境"在实现中的含义：窗口先 `Show()`（用户立刻看到原生窗口和闪屏底色），然后才创建 Shell；V8 初始化与 bundle 执行在 ui 线程进行，Rasterizer 初始化在 raster 线程**并行**进行。
+"合适的时机创建 JS 环境"在实现中的含义：窗口先 `Show()`（用户立刻看到原生窗口和闪屏底色），然后才创建 Shell；V8 初始化与 bundle 执行在 ui 线程进行，Rasterizer 初始化在 raster 线程**并行**进行，主线程不等它们——`Launch()` 返回后就进入消息循环（窗口可响应，`--inspect-brk` 等待调试器时也不卡主线程）。
 
 资源默认布局（`AssetResolver`）：`<Momo.app>/Contents/Resources/{bundle.js, assets/, extensions/}`。`--bundle=` / `--assets=` 可覆盖；`--dev` 下 bundle 缺失只告警，以占位驱动启动。
 
@@ -342,7 +348,7 @@ void MacWindow::SendToPlatformView(int64_t view, const PointerInput& in, Pointer
 
 窗口侧的变化由 `MomoWindowObserver`（`NSWindowDelegate`）上报：`windowDidResize` / `windowDidChangeBackingProperties` / `windowDidChangeScreen` → `OnMetricsChanged`；`windowDidBecomeKey` / `ResignKey` → 焦点；显示/隐藏、最小化、缩放、全屏 → `OnWindowStateChanged`；`windowShouldClose` → `OnCloseRequested`。
 
-`WindowController` 是很薄的一层：把视图相关的事件（尺寸、输入、焦点、可见性）转发给 Shell；在引擎附着前缓存 metrics、焦点和可见性，附着时补发；窗口级事件（关闭请求、状态、焦点、IME、屏幕框、窗口控制按钮占用区域、首帧）经 `WindowController::Client` 接口交给 `WindowManager`，由它经宿主通道通知 JS；**总是拦截**原生关闭请求（返回 false），交给 `WindowManager::RequestCloseWindow` 异步询问 JS（§3.10）。
+`WindowController` 是很薄的一层：把视图相关的事件（尺寸、输入、焦点、可见性）转发给 Shell；在引擎附着前缓存 metrics、焦点和可见性，附着时补发；纯通知类的窗口事件（状态、焦点、屏幕框、窗口控制按钮占用区域、首帧）直接经注入的 `WindowChannel` 通知 JS，需要 `WindowManager` 做决定的（关闭请求、焦点归属、IME 路由）经 `WindowController::Client` 接口交给它；平台窗口上报的是原始值，“与上次相同则不转发”的去重只在这里做一次；**总是拦截**原生关闭请求（返回 false），交给 `WindowManager::RequestCloseWindow` 异步询问 JS（§3.10）。
 
 ### 3.5 渲染表面
 
@@ -433,7 +439,7 @@ void OnTick() {
 }
 ```
 
-窗口移到另一块屏幕（`NSWindowDidChangeScreenNotification`）时，`UpdateDisplay()` 切换 link 绑定的显示器。`MacVsyncDisplayLink` 是 platform 线程归属的 `Object`，由 `Shell` 以 `ObjectPtr` 持有，ui 线程只拿 `WeakPtr`（§4.3）。析构时先在锁内置 `destroyed`，再 `CVDisplayLinkStop`（它会等待在途回调返回）；已投递未执行的 `OnTick` 因 `WeakPtr` 失效而作废，所以析构后不会再有回调。Windows 的 `WinVsyncDwm` 用同样的模型（`DwmFlush` 线程只投递）。
+整个应用只有一个 `MacVsyncDisplayLink`（所有窗口共用一个 Animator）。它跟随 id 最小的窗口所在的显示器（视图 0 优先；`WindowManager` 在窗口打开/关闭时经 `PlatformIntegration::SetVsyncWindow` 重新指定，没有窗口时用主显示器）；这个窗口移到另一块屏幕（`NSWindowDidChangeScreenNotification`）时，`UpdateDisplay()` 切换 link 绑定的显示器。`MacVsyncDisplayLink` 是 platform 线程归属的 `Object`，由 `Shell` 以 `ObjectPtr` 持有，ui 线程只拿 `WeakPtr`（§4.3）。析构时先在锁内置 `destroyed`，再 `CVDisplayLinkStop`（它会等待在途回调返回）；已投递未执行的 `OnTick` 因 `WeakPtr` 失效而作废，所以析构后不会再有回调。Windows 的 `WinVsyncDwm` 用同样的模型（`DwmFlush` 线程只投递）。
 
 ### 3.7 IME
 
@@ -478,8 +484,8 @@ void Application::Exit(int code) { PostTask([] { Terminate(code); }); }   // 可
 
 void Application::Terminate(int code) {                  // 幂等
   TransitionTo(kTerminating);                            // 会把 terminating 状态发给 JS
-  window_manager_->DetachEngine();      // 0) 每个窗口 Shell::DetachView：ui 切回定时器；VsyncSource DeleteLater；
-                                        //    raster 同步 RemoveView，不再碰 surface
+  window_manager_->DetachEngine();      // 0) 每个窗口 Shell::DetachView：raster 同步 RemoveView，不再碰 surface
+                                        //    （VsyncSource 归 Shell，在 Shell::Shutdown 里 DeleteLater）
   app_channel_.reset(); window_channel_.reset(); platform_channels_.reset();   // 移除宿主通道处理器
   shell_->Shutdown();                   // 1) ui 同步：销毁 Engine（JS 运行时、Animator）
                                         //    扩展 on_detach（platform）
@@ -496,13 +502,13 @@ void Application::Terminate(int code) {                  // 幂等
 
 ### 3.9 开发模式
 
-- bundle：`--bundle=<path>` 给了就用它，否则用应用包内的默认 bundle（`<resources>/bundle.js`）。不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。`--experimental-hot-restart`（实验性，默认关闭，隐含 `--dev`）：每 500ms 检查 bundle 修改时间，变化即 hot restart（ui 线程销毁 JS 运行时、重新执行 bundle；新 bundle 出错时退回占位驱动，修好后可再次重启）。不保留 JS 状态。
+- bundle：`--bundle=<path>` 给了就用它，否则用应用包内的默认 bundle（`<resources>/bundle.js`）。不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。`--experimental-hot-restart`（实验性，默认关闭，隐含 `--dev`）：每 500ms 检查 bundle 修改时间，变化即 hot restart（ui 线程销毁 JS 运行时，再走与首次启动相同的链路重新执行 bundle；新 bundle 出错时退回占位驱动，修好后可再次重启）。不保留 JS 状态。
 - `--dev` 同时启用 Node 的 inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。
-- 非 `--dev` 时启用 V8 code cache（`~/Library/Caches/dev.momo.app/v8`）。
+- 非 `--dev` 时启用 V8 code cache。缓存目录由平台入口给出（`Application::Options::cache_dir`，每个应用一个：macOS `~/Library/Caches/<bundle identifier>`，Windows `%LOCALAPPDATA%\<exe 名>`），code cache 在它的 `v8/` 下；`embedder/common` 不碰平台 API。
 
 ### 3.10 宿主通道：窗口管理与平台服务
 
-应用生命周期、窗口的外观与行为、剪贴板、打开 URL、输入法属于宿主，不经过 engine。`Application` 在 `Shell::Create` 的 `on_created` 回调里（JS bundle 执行**之前**）往 `shell.hub()` 注册通道处理器，JS 与宿主直接往返；处理器跑在 platform 线程。每个宿主通道是一个 `HostChannel`（`embedder/common/host_channel.h`）：方法以注册表分发，新增接口 = `Register` 一行；宿主 → JS 的通知与询问（回复 bool）也在这里。框架侧每个通道对应一个对象：`momo/app` ↔ `app`，`momo/window` ↔ 每个窗口一个 `Widget`。
+应用生命周期、窗口的外观与行为、剪贴板、打开 URL、输入法属于宿主，不经过 engine。`Application` 在 `Shell::Create` 之后、`Shell::Run` 之前（JS bundle 执行**之前**）往 `shell.hub()` 注册通道处理器，JS 与宿主直接往返；处理器跑在 platform 线程。每个宿主通道是一个 `HostChannel`（`embedder/common/host_channel.h`）：方法以注册表分发，新增接口 = `Register` 一行；宿主 → JS 的通知与询问（回复 bool）也在这里。框架侧每个通道对应一个对象：`momo/app` ↔ `app`，`momo/window` ↔ 每个窗口一个 `Widget`。
 
 | 通道 | 实现 | 内容 |
 |---|---|---|
@@ -574,27 +580,47 @@ void Application::Terminate(int code) {                  // 幂等
 
 ```cpp
 // 伪代码（engine/shell/shell.cc）
-StatusOr<unique_ptr<Shell>> Shell::Create(runners, settings, on_created) {
+StatusOr<unique_ptr<Shell>> Shell::Create(runners, settings, on_exit_requested) {
   shell = new Shell(...);                         // 创建 MessageChannelHub、TextureRegistry
-  // raster 与 ui 并行初始化，platform 线程汇合等待
-  runners.raster->PostTask([&] { shell->rasterizer_ = make_unique<Rasterizer>(); raster_ready.Signal(); });
-  shell->RegisterPlatformViewChannel();           // momo/platform_views(平台视图表归引擎)
+  // raster 与 ui 各自在自己的线程上构造，platform 线程不等待
+  runners.raster->PostTask([=] { shell->rasterizer_ = make_unique<Rasterizer>(); });
+  shell->RegisterEngineChannels();                // momo/platform_views(平台视图表归引擎)、momo/extensions(getErrors)
   shell->extensions_ = ExtensionHost(env);        // 读 extensions.manifest，dlopen，on_attach（platform 线程）
   shell->extensions_->LoadFromManifest();
-  on_created(*shell);                             // 宿主注册自己的通道(窗口、平台服务), 先于 bundle
-  runners.ui->PostTask([&] {
-    // 先用定时器 vsync；Engine::Create 内部创建 V8、安装绑定、执行 bundle
-    shell->engine_ = Engine::Create(settings, *shell, TimerVsyncWaiter(refresh_rate), host);
-    ui_ready.Signal();
+  runners.ui->PostTask([=] {
+    // 先用定时器 vsync；此时没有 JS 运行时(不出帧)
+    shell->engine_ = make_unique<Engine>(settings, on_draw, TimerVsyncWaiter(refresh_rate), host);
   });
-  raster_ready.Wait(); ui_ready.Wait();
-  for (err : extensions_->errors()) hub_->SendToJs("momo/extensions", err);   // bundle 已执行，handler 已注册
   return shell;
 }
 
-void Shell::AttachView(view_id, Delegate* d, RenderSurface* surface, ObjectPtr<VsyncSource> vsync) {
-  delegates_[view_id] = d; vsync_sources_[view_id] = std::move(vsync);   // platform 线程持有
-  UpdateVsyncSource();                                              // 帧时钟优先用视图 0 的, 其次任一视图
+// 首次启动与 hot restart 共用的一条链路。runtime_generation_ 是"第几代运行时"唯一的计数。
+void Shell::Run(done)               { StartRuntime(Launch, done); }
+void Shell::RequestHotRestart(done) { StopRuntime(HotRestart); StartRuntime(HotRestart, done); }
+
+void Shell::StartRuntime(reason, done) {
+  generation = ++runtime_generation_;
+  extensions_->NotifyLifecycle(RuntimeStarting, reason, generation);
+  runners.ui->PostTask([=] {
+    // hub 换代 → 创建 V8、安装绑定、执行 bundle → 把已绑定视图的尺寸/焦点/可见性交给它；失败退回占位驱动
+    status = engine_->StartRuntime(generation);
+    PostToObject(weak_shell, [=] { done(status); });     // 结果回到 platform 线程
+  });
+}
+
+void Shell::StopRuntime(reason) {   // 同步；Shutdown 的第一步也是它
+  PostTaskAndWait(ui, [&] { engine_->StopRuntime(); });  // 销毁运行时, hub 代数归零(在途消息作废)
+  DisposeAllPlatformViews();                             // JS 已不在: 移出窗口, 交给扩展释放
+  extensions_->NotifyLifecycle(RuntimeStopped, reason, runtime_generation_);
+}
+
+void Shell::SetVsyncSource(ObjectPtr<VsyncSource> source) {         // 帧时钟是应用级的: 一个来源, 与视图无关
+  vsync_source_ = std::move(source);                                // platform 线程持有;旧的 DeleteLater
+  PostToEngine([weak](Engine& e) { e.SetVsyncWaiter(MakeVsyncWaiter(weak)); });   // 空 = 定时器
+}
+
+void Shell::AttachView(view_id, Delegate* d, RenderSurface* surface) {
+  delegates_[view_id] = d;                                          // platform 线程持有
   PostToEngine([view_id](Engine& e) { e.AddView(view_id); });       // JS: viewports 增加, onViewportsChanged
   runners.raster->PostTask([=] { rasterizer_->Setup(view_id, surface); });
 }
@@ -610,7 +636,7 @@ void Shell::OnPlatformViewCreated(id, native) { for (d : delegates_) d->OnPlatfo
 
 | 归属线程 | Shell 持有的子系统 |
 |---|---|
-| platform | 各视图的 `Delegate`、`ObjectPtr<VsyncSource>`、`ExtensionHost`、平台视图表 |
+| platform | 各视图的 `Delegate`、应用唯一的 `ObjectPtr<VsyncSource>`、`ExtensionHost`、平台视图表 |
 | ui | `Engine`（`Animator` + `AppDriver`） |
 | raster | `Rasterizer` |
 | 任意线程 | `MessageChannelHub`、`TextureRegistry`（内部加锁） |
@@ -666,8 +692,8 @@ void Animator::Render(unique_ptr<LayerTree> tree) {
 
 | 实现 | 何时使用 | 机制 |
 |---|---|---|
-| `TimerVsyncWaiter` | 未绑定窗口、平台不支持、解绑后 | ui 线程按主显示器刷新率对齐的延迟任务 |
-| `PlatformVsyncWaiter` | `AttachView` 之后 | 只持 `WeakPtr<VsyncSource>`；请求经 `PostToObject` 到 platform 线程判活后调用；VsyncSource 在 platform 线程回调它，它再 `PostToObject` 回 ui 线程（自己的调用方线程） |
+| `TimerVsyncWaiter` | 宿主没有给出 VsyncSource（平台不支持、headless、测试） | ui 线程按主显示器刷新率对齐的延迟任务 |
+| `PlatformVsyncWaiter` | `SetVsyncSource` 之后 | 只持 `WeakPtr<VsyncSource>`；请求经 `PostToObject` 到 platform 线程判活后调用；VsyncSource 在 platform 线程回调它，它再 `PostToObject` 回 ui 线程（自己的调用方线程） |
 
 因为 ui 侧只持弱引用，解绑时 `Shell` 直接释放 `ObjectPtr`（DeleteLater）即可，ui 与 platform 之间不需要同步汇合；在途的请求判活失败后自然作废。
 
@@ -816,7 +842,7 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 | 通道 | 方向 | 注册者 | 用途 |
 |---|---|---|---|
 | `momo/platform_views` | 双向 | engine | 平台视图的创建、销毁、聚焦 |
-| `momo/extensions` | native → JS | engine | 扩展加载错误 |
+| `momo/extensions` | JS → native | engine | 查询扩展加载错误（`getErrors` → `string[]`） |
 | `momo/app` | 双向 | 宿主 | 应用生命周期与退出（§3.8、§3.10） |
 | `momo/window` | 双向 | 宿主 | 窗口（§3.10） |
 | `momo/app` | native → JS | 宿主 | 退出应用的询问 |
@@ -837,10 +863,11 @@ Shell::Create → ExtensionHost 读 <Resources>/extensions/extensions.manifest
        register_module("ext:x", setup)   → JS 运行时创建时在 ui 线程注册为 Node 的 linked binding
        channel_set_handler("x/y", runner, fn)
   … 运行期：post_task(platform/ui/io/worker_pool)、promise_resolve、texture_update_pixels、get_window_handle …
+  → Shell::Run / hot restart / Shutdown：JS 运行时的更替经生命周期事件告知扩展（RuntimeStarting / RuntimeStopped）
   → Shell::Shutdown：JS 运行时销毁后 on_detach，排空扩展的 worker，拒绝之后的一切调用（动态库不卸载）
 ```
 
-单个扩展加载失败只禁用它自己，错误经 `momo/extensions` 通道报给 JS。纹理注入（`TextureLayer`）是扩展"借助引擎绘制"的方式：扩展在自己的线程生成像素，引擎合成时取最新帧；v1 只支持 CPU 像素帧。
+单个扩展加载失败只禁用它自己，错误记在宿主里，JS 经 `momo/extensions` 通道的 `getErrors` 查询。`MomoHostApi` 函数表在 `on_attach` 之前一次填好、之后不变（JS 相关的部分由 ui 模块在链接期提供）。纹理注入（`TextureLayer`）是扩展"借助引擎绘制"的方式：扩展在自己的线程生成像素，引擎合成时取最新帧；v1 只支持 CPU 像素帧。
 
 回调线程：宿主只在扩展注册回调的线程上调用它（或注册时以 `MomoTaskRunner` 显式指定的线程）。因此 `add_frame_callback` 只能在 ui 线程注册；用 acquire/release 方式的纹理，`texture_mark_frame_available` 必须在注册线程上调用，否则返回 `kMomoErrWrongThread`。JS 相关回调（模块 setup、JS 函数）属于 JS 运行时，固定在 ui 线程。
 

@@ -29,7 +29,7 @@ namespace momo::embedder {
 struct AppConfig {
   std::optional<std::filesystem::path> bundle_path;
   std::optional<std::filesystem::path> assets_dir;
-  WindowSpec window;
+  WindowOptions window;
   // 启动时创建并显示隐式视图 0 的窗口(JS bundle 执行前即可见, runApp 渲染到这里)。
   bool startup_window = true;
   bool dev_mode = false;

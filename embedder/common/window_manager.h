@@ -3,6 +3,8 @@
 // WindowManager: 宿主的窗口注册表(docs/01 §3)。拥有全部 WindowController(视图 id → 窗口), 负责窗口的创建、
 // 绑定引擎、关闭询问、焦点与输入法路由。它不决定应用是否退出: 最后一个窗口关闭只通知 Observer
 // (Application 据此发 momo/app windowAllClosed, 由 JS 决定)。
+// 帧时钟: 应用只有一个 VsyncSource(AttachEngine 时创建, 交给 Shell 持有);它跟随 id 最小的窗口所在的
+// 显示器(视图 0 优先), 窗口打开/关闭时重新选择。
 //
 // 所有窗口对等: 启动窗口是隐式视图 0(JS bundle 执行前即存在, runApp 直接渲染), 其他窗口由 JS 经
 // momo/window create 打开;任何窗口都可以关闭。
@@ -39,15 +41,16 @@ class WindowManager final : public Object,
     ~Observer() = default;
   };
 
-  // platform 与 observer 必须比本对象活得久。startup_spec: 启动窗口的规格, 也是其他窗口的默认值(闪屏底色等)。
-  WindowManager(PlatformIntegration& platform, WindowSpec startup_spec, Observer& observer);
+  // platform 与 observer 必须比本对象活得久。startup_options: 启动窗口的参数, 也是其他窗口的默认值
+  // (标题、闪屏底色)。
+  WindowManager(PlatformIntegration& platform, WindowOptions startup_options, Observer& observer);
   ~WindowManager() override;  // DestroyAll()
 
-  // 创建并显示启动窗口(隐式视图 0)。引擎就绪后由 AttachEngine 绑定。
+  // 创建并显示启动窗口(隐式视图 0)。引擎创建后由 AttachEngine 绑定(早于 JS bundle 执行)。
   Status OpenStartupWindow();
 
-  // 引擎就绪: 绑定已打开的全部窗口, 之后新开的窗口创建即绑定。通道用于把窗口事件交给 JS。
-  // 三者都必须在 DetachEngine 之前保持有效。
+  // 引擎已创建(JS 运行时尚未启动): 创建应用的 VsyncSource 交给 Shell, 绑定已打开的全部窗口, 之后新开的
+  // 窗口创建即绑定。通道用于把窗口事件交给 JS。三者都必须在 DetachEngine 之前保持有效。
   void AttachEngine(engine::Shell& shell, WindowChannel& window_channel, PlatformChannels& platform_channels);
   // 全部窗口解绑引擎(raster 不再使用其 surface), 并断开通道。
   void DetachEngine();
@@ -76,25 +79,20 @@ class WindowManager final : public Object,
   PlatformWindow* FindWindow(engine::platform::ViewId view_id) override;
 
  private:
-  StatusOr<std::unique_ptr<WindowController>> NewWindow(engine::platform::ViewId view_id,
-                                                        const WindowSpec& spec);
-  // 登记窗口;show 时显示;引擎已就绪则绑定。
-  void Open(std::unique_ptr<WindowController> controller, bool show);
-  void Attach(WindowController& controller);
+  // 创建窗口并登记;options.show 时显示;引擎已就绪则绑定。
+  Status Open(engine::platform::ViewId view_id, const WindowOptions& options);
+  // 帧时钟跟随的窗口: id 最小者(视图 0 优先);没有窗口时为主显示器。
+  void UpdateVsyncWindow();
   // report_all_closed: 关闭最后一个窗口时通知 Observer(热重启时不通知)。
   void Close(engine::platform::ViewId view_id, bool report_all_closed);
 
   // WindowController::Client
   void OnWindowCloseRequested(engine::platform::ViewId view) override;
-  void OnWindowStateChanged(engine::platform::ViewId view, const WindowStateFlags& state) override;
   void OnWindowFocusChanged(engine::platform::ViewId view, bool focused) override;
   void OnWindowTextInput(engine::platform::ViewId view, const TextInputEvent& event) override;
-  void OnWindowFrameChanged(engine::platform::ViewId view, const Rect& screen_frame) override;
-  void OnWindowControlsChanged(engine::platform::ViewId view, const std::optional<Rect>& controls) override;
-  void OnWindowFirstFrame(engine::platform::ViewId view) override;
 
   PlatformIntegration& platform_;
-  const WindowSpec startup_spec_;
+  const WindowOptions startup_options_;
   Observer& observer_;
 
   engine::Shell* shell_ = nullptr;

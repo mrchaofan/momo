@@ -176,20 +176,20 @@ LPARAM PointToLParam(POINT p) {
 // ---------------------------------------------------------------------------
 // 创建与销毁
 
-StatusOr<std::unique_ptr<WinWindow>> WinWindow::Create(const WindowSpec& spec, WindowDelegate* delegate,
+StatusOr<std::unique_ptr<WinWindow>> WinWindow::Create(const WindowOptions& options, WindowDelegate* delegate,
                                                        const Context& context) {
-  std::unique_ptr<WinWindow> window(new WinWindow(spec, delegate, context));
-  MOMO_RETURN_IF_ERROR(window->Initialize(spec));
+  std::unique_ptr<WinWindow> window(new WinWindow(options, delegate, context));
+  MOMO_RETURN_IF_ERROR(window->Initialize(options));
   return StatusOr<std::unique_ptr<WinWindow>>(std::move(window));
 }
 
-WinWindow::WinWindow(const WindowSpec& spec, WindowDelegate* delegate, const Context& context)
+WinWindow::WinWindow(const WindowOptions& options, WindowDelegate* delegate, const Context& context)
     : delegate_(delegate),
       mouse_(context.mouse),
       displays_(context.displays),
       app_(context.app),
-      min_size_(spec.min_size) {
-  resize_options_.resizable = spec.resizable;
+      min_size_(options.min_size) {
+  resize_options_.resizable = options.resizable;
 }
 
 WinWindow::~WinWindow() {
@@ -269,7 +269,7 @@ SIZE WinWindow::WindowSizeForClient(double logical_width, double logical_height,
   return {rect.right - rect.left, rect.bottom - rect.top};
 }
 
-Status WinWindow::Initialize(const WindowSpec& spec) {
+Status WinWindow::Initialize(const WindowOptions& options) {
   HINSTANCE instance = ::GetModuleHandleW(nullptr);
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -289,21 +289,21 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
   }
 
   // 先按系统 DPI 估算尺寸创建(不可见), 再按窗口实际所在显示器的 DPI 精确设置并定位。
-  const std::wstring title = Utf8ToWide(spec.title);
-  SIZE size = WindowSizeForClient(spec.size.width, spec.size.height, ::GetDpiForSystem());
+  const std::wstring title = Utf8ToWide(options.title);
+  SIZE size = WindowSizeForClient(options.size.width, options.size.height, ::GetDpiForSystem());
   ::CreateWindowExW(ex_style(), kWindowClass, title.c_str(), style(), CW_USEDEFAULT, CW_USEDEFAULT, size.cx,
                     size.cy, nullptr, nullptr, instance, this);
   if (hwnd_ == nullptr) {  // WM_NCCREATE 中已赋值
     return InternalError("CreateWindowExW failed: " + std::to_string(::GetLastError()));
   }
   dpi_ = ::GetDpiForWindow(hwnd_);
-  size = WindowSizeForClient(spec.size.width, spec.size.height, dpi_);
+  size = WindowSizeForClient(options.size.width, options.size.height, dpi_);
   HMONITOR monitor = ::MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
   MONITORINFO info{};
   info.cbSize = sizeof(info);
-  if (spec.position) {
+  if (options.position) {
     ::SetWindowPos(hwnd_, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-    SetPosition(*spec.position).IgnoreError();
+    SetPosition(*options.position).IgnoreError();
   } else if (::GetMonitorInfoW(monitor, &info)) {
     const RECT& work = info.rcWork;
     const LONG x = work.left + std::max<LONG>(0, (work.right - work.left - size.cx) / 2);
@@ -314,12 +314,10 @@ Status WinWindow::Initialize(const WindowSpec& spec) {
   }
   dpi_ = ::GetDpiForWindow(hwnd_);
 
-  CreateSurface(spec.background_argb);
+  CreateSurface(options.background_argb);
   text_input_ = std::make_unique<WinTextInput>(hwnd_, delegate_);
   cursor_ = ::LoadCursorW(nullptr, IDC_ARROW);
   UpdateDarkMode();
-  last_metrics_ = metrics();
-  last_state_ = state();  // 尚未显示
   created_ = true;
   return Status::Ok();
 }
@@ -369,10 +367,7 @@ WindowStateFlags WinWindow::state() const {
 
 void WinWindow::NotifyStateChanged() {
   if (!created_) return;
-  const WindowStateFlags s = state();
-  if (s == last_state_) return;
-  last_state_ = s;
-  delegate_->OnWindowStateChanged(s);
+  delegate_->OnWindowStateChanged(state());
 }
 
 uint32_t WinWindow::capabilities() const {
@@ -448,10 +443,9 @@ void WinWindow::NotifyMetricsChanged() {
     return;
   }
   const platform::ViewportMetrics current = metrics();
-  if (current == last_metrics_ || current.physical_size.IsEmpty()) {
+  if (current.physical_size.IsEmpty()) {
     return;
   }
-  last_metrics_ = current;
   delegate_->OnMetricsChanged(current);
 }
 
@@ -578,7 +572,7 @@ Status WinWindow::SetTitleBar(const TitleBarOptions& options) {
 
 std::optional<Rect> WinWindow::window_controls_rect() const {
   if (::IsIconic(hwnd_)) {
-    return last_controls_;  // 最小化时客户区为空: 保持最近的值
+    return restored_controls_;  // 最小化时客户区为空: 保持最近的值
   }
   return WindowControlsRect(FrameState());
 }
@@ -586,10 +580,7 @@ std::optional<Rect> WinWindow::window_controls_rect() const {
 void WinWindow::NotifyControlsChanged() {
   if (!created_) return;
   const std::optional<Rect> controls = window_controls_rect();
-  if (controls == last_controls_) {
-    return;
-  }
-  last_controls_ = controls;
+  restored_controls_ = controls;  // 最小化时 window_controls_rect() 返回的就是它, 值不变
   delegate_->OnWindowControlsChanged(controls);
 }
 
@@ -755,12 +746,7 @@ void WinWindow::NotifyFrameChanged() {
   if (!created_) {
     return;
   }
-  const Rect frame = screen_frame();
-  if (frame == last_frame_) {
-    return;
-  }
-  last_frame_ = frame;
-  delegate_->OnWindowFrameChanged(frame);
+  delegate_->OnWindowFrameChanged(screen_frame());
 }
 
 Status WinWindow::StartWindowDrag(int64_t sequence_id) {

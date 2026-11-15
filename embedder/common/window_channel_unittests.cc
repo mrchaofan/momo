@@ -61,10 +61,7 @@ class FakeHost final : public WindowChannel::Host {
   StatusOr<platform::ViewId> CreateWindow(const WindowOptions& options) override {
     created.push_back(options);
     const platform::ViewId id = next_id++;
-    WindowSpec spec;
-    spec.size = options.size;
-    spec.title = options.title;
-    windows[id] = std::make_unique<MockWindow>(spec, &delegate, nullptr);
+    windows[id] = std::make_unique<MockWindow>(options, &delegate, nullptr);
     return id;
   }
   void CloseWindow(platform::ViewId view) override {
