@@ -24,9 +24,11 @@
   之后(`DrainMicrotasks`)`uv_async_send` 唤醒 poll 线程(自带合并)。
 - **入口**:`node::LoadEnvironment` 的 preload 中运行 `runtime/node_bootstrap.cc`(可访问 Node 内部模块),它安装模块钩子
   并返回宿主对象;`RunMainModule` 经 Node 的 ESM 加载器(cascaded loader)导入 bundle,并在 ui 线程 **以 `uv_run(UV_RUN_ONCE)`
-  泵送**直到求值完成(同 Electron `JoinAppCode`):模块图的文件读取、顶层 await 的 Node IO 都在这里完成。保活句柄在泵送期间
-  不计入存活:uv 无事可做时停止泵送,剩下的求值(如顶层 await 等待 momo 的平台通道)继续异步进行。加载/求值错误以
-  Promise 拒绝返回宿主,转成 `Status`(含 JS 栈)。
+  泵送**直到入口开始求值(同 Electron `JoinAppCode`):模块图的文件读取在这里完成, 入口的同步部分随即执行完。
+  **入口不等待顶层 await**(与 Electron 一致):入口停在顶层 await 时 `RunMainModule` 立即返回, 余下的求值在正常的事件
+  循环里继续——泵送的只有 uv, 等下去的话 ui 线程上的引擎任务(平台通道应答、帧)无法执行, 启动会卡住。因此入口里
+  应当同步调用 `runApp`, 不要把它放在顶层 await 之后。加载错误与同步部分的求值错误以
+  Promise 拒绝返回宿主,转成 `Status`(含 JS 栈);顶层 await 之后的错误只记录日志。
 - **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):`JsRuntimeImpl::Call` 在 `node::CallbackScope`
   里调用(同 `node::MakeCallback`),最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask(nextTick 先于
   Promise)。入口都是 ui 线程上的任务,与 uv 回调同属一个循环,顺序即到达顺序。之后 `DrainMicrotasks()` 唤醒 poll 线程。

@@ -29,6 +29,10 @@ if (codeCacheDir) Module.enableCompileCache(codeCacheDir);
 const isNative = (specifier) => specifier.startsWith('momo:') || specifier.startsWith('ext:');
 const hostSources = new Map();
 let nextSourceId = 0;
+const entryStates = new Map();
+Object.defineProperty(globalThis, Symbol.for('momo.entryStarted'), {
+  value: (id) => { const state = entryStates.get(id); if (state) state.started = true; },
+});
 
 function nativeModuleSource(url) {
   let binding;
@@ -71,7 +75,9 @@ Module.registerHooks({
 });
 
 return {
-  // 执行模块;返回其求值 Promise。source 为 undefined 时 url 是文件路径, 否则 url 是源码的名字。
+  // 执行模块;返回 [求值 Promise, 状态]。source 为 undefined 时 url 是文件路径, 否则 url 是源码的名字。
+  // 状态 { started, detached }: started 在模块图加载、链接完成, 入口即将求值时置位(经一个排在入口之前
+  // 求值的标记模块);宿主不再等待结果时置 detached, 此后的失败在这里记录。
   importModule(url, source, baseDir) {
     let target;
     if (source === undefined) {
@@ -81,10 +87,24 @@ return {
       target = `${pathToFileURL(file).href}?momo-source=${++nextSourceId}`;
       hostSources.set(target, source);
     }
-    const promise = getOrInitializeCascadedLoader().import(target, undefined, { __proto__: null },
+    const state = { started: false, detached: false };
+    const id = ++nextSourceId;
+    const marker = `momo-entry:marker-${id}`;
+    const entry = `momo-entry:run-${id}`;
+    entryStates.set(id, state);
+    hostSources.set(marker, `globalThis[Symbol.for('momo.entryStarted')](${id});`);
+    hostSources.set(entry, `import ${JSON.stringify(marker)};\nimport ${JSON.stringify(target)};`);
+    const promise = getOrInitializeCascadedLoader().import(entry, undefined, { __proto__: null },
                                                            undefined, true);
-    promise.catch(() => {});  // 结果由宿主检查, 不算未处理的拒绝
-    return promise;
+    promise.catch((error) => {
+      // 宿主还在等待时由它检查结果;已不再等待(入口停在顶层 await)时在这里记录。
+      if (state.detached) console.error('Uncaught error in the entry module:', error);
+    }).finally(() => {
+      entryStates.delete(id);
+      hostSources.delete(marker);
+      hostSources.delete(entry);
+    });
+    return [promise, state];
   },
   flushCompileCache() {
     Module.flushCompileCache();
