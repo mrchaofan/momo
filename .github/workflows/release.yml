@@ -1,0 +1,168 @@
+# 发布产物(docs/09 §6), 流程参照 Electron 的 release:
+#   推送 tag v<version> → 各平台构建 Release → tools/package_release.py 打包 → 用解压出的产物跑冒烟
+#   → 汇总全部产物 + SHASUMS256.txt → 创建 GitHub Release。
+# tag 必须等于 framework/packages/momo/package.json 的 version(带 "-" 的版本, 如 v0.5.0-beta.1, 发为 prerelease)。
+#
+# 手动触发、或改动发布链路的 PR / main 提交: 走同一套构建与打包, 产物只作为 workflow artifact 上传, 不创建 Release。
+# main 上的运行同时负责预热 libnode 缓存: tag 触发的运行只能读到默认分支上建立的缓存。
+#
+# libnode 从源码构建(tools/build_libnode.py), 在托管 runner 上以小时计, 所以按 Node 版本 + 构建脚本缓存安装结果;
+# 缓存 7 天无人访问会被回收, 之后的第一次运行会重新构建。
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - tools/package_release.py
+      - tools/build_libnode.py
+      - tools/fetch_deps.py
+      - cmake/**
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - tools/package_release.py
+      - tools/build_libnode.py
+      - tools/fetch_deps.py
+      - cmake/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            os: macos-15
+            python: python3
+            cmake_generator: -G Ninja -DCMAKE_BUILD_TYPE=Release
+            # 与平台无关的产物(扩展 SDK、框架 npm 包)只由这一个平台产出。
+            package_args: --platform-independent
+            headless: ./momo_headless
+          - target: win32-x64
+            os: windows-2022
+            python: python
+            cmake_generator: -G "Visual Studio 17 2022" -A x64
+            package_args: ""
+            headless: ./momo_headless.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check that the tag matches the package version
+        run: |
+          version=$(${{ matrix.python }} -c "import json; print(json.load(open('framework/packages/momo/package.json'))['version'])")
+          echo "MOMO_VERSION=$version" >> "$GITHUB_ENV"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match framework/packages/momo/package.json version $version"
+            exit 1
+          fi
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        # Node 的 vcbuild.bat 需要 NASM;Visual Studio 的 ClangCL 组件与 Rust 已在 runner 镜像中。
+        run: |
+          choco install nasm --no-progress -y
+          echo "C:\\Program Files\\NASM" >> "$GITHUB_PATH"
+
+      - name: libnode cache key
+        id: libnode
+        run: |
+          key=$(${{ matrix.python }} -c "import json; d = json.load(open('cmake/deps.lock.json'))['deps']['node']; print(d['version'] + '-' + d['source_archive']['sha256'][:16])")
+          echo "key=libnode-${{ matrix.target }}-$key-${{ hashFiles('tools/build_libnode.py') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore libnode
+        id: libnode-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: third_party/prebuilt/node
+          key: ${{ steps.libnode.outputs.key }}
+
+      - name: Fetch dependencies (builds libnode on a cache miss)
+        run: ${{ matrix.python }} tools/fetch_deps.py
+
+      # 紧跟在构建之后保存: 后面的步骤失败也不必重新构建 libnode。
+      - name: Save libnode
+        if: steps.libnode-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: third_party/prebuilt/node
+          key: ${{ steps.libnode.outputs.key }}
+
+      - name: Configure
+        # 发布构建不带测试与示例扩展;警告不作为错误(runner 的编译器版本会变, 不应因此挡住发布)。
+        run: >
+          cmake -S . -B out/release ${{ matrix.cmake_generator }}
+          -DMOMO_REQUIRE_PREBUILT=ON -DMOMO_BUILD_TESTS=OFF -DMOMO_BUILD_EXAMPLES=OFF
+          -DMOMO_WARNINGS_AS_ERRORS=OFF
+
+      - name: Build
+        run: cmake --build out/release --config Release --parallel
+
+      - name: Package
+        run: ${{ matrix.python }} tools/package_release.py --build-dir out/release --out out/dist ${{ matrix.package_args }}
+
+      - name: Smoke-test the packaged headless runner
+        # 用解压出的产物(而不是构建目录)运行: 验证包自带全部运行期依赖。
+        run: |
+          mkdir -p "$RUNNER_TEMP/headless"
+          unzip -q "out/dist/momo-headless-v$MOMO_VERSION-${{ matrix.target }}.zip" -d "$RUNNER_TEMP/headless"
+          cd "$RUNNER_TEMP/headless"
+          ${{ matrix.headless }} --bundle="$GITHUB_WORKSPACE/embedder/headless/testdata/smoke.js" \
+            --width=320 --height=200 --timeout=60 --screenshot=smoke.png
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.target }}
+          path: out/dist/*
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    name: Publish GitHub Release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          (cd dist && sha256sum -b -- *) > SHASUMS256.txt
+          mv SHASUMS256.txt dist/
+          cat dist/SHASUMS256.txt
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes \
+            --title "momo $GITHUB_REF_NAME" "${flags[@]}"

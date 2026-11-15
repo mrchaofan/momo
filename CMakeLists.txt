@@ -5,7 +5,15 @@ cmake_minimum_required(VERSION 3.24)
 # 最低部署 macOS 12(docs/09 §1), 须在 project() 之前设置。
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.5" CACHE STRING "Minimum macOS version (Node 26 / libnode 要求)")
 
-project(momo LANGUAGES C CXX)
+# 版本号的唯一来源: @momo/framework 的 package.json(发布 tag v<version> 必须与之一致, docs/09 §6)。
+# 预发布后缀(如 0.5.0-beta.1)保留在 MOMO_VERSION;CMake 的 project(VERSION) 只接受数字部分。
+set(_momo_version_file "${CMAKE_CURRENT_SOURCE_DIR}/framework/packages/momo/package.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_momo_version_file}")
+file(READ "${_momo_version_file}" _momo_package_json)
+string(JSON MOMO_VERSION GET "${_momo_package_json}" version)
+string(REGEX MATCH "^[0-9]+\\.[0-9]+\\.[0-9]+" _momo_numeric_version "${MOMO_VERSION}")
+
+project(momo VERSION ${_momo_numeric_version} LANGUAGES C CXX)
 if(MSVC)
   # The Windows Skia prebuilt uses the static release CRT in every configuration.
   set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreaded)

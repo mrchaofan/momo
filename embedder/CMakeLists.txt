@@ -70,7 +70,8 @@ if(APPLE)
     OUTPUT_NAME Momo
     MACOSX_BUNDLE_BUNDLE_NAME Momo
     MACOSX_BUNDLE_GUI_IDENTIFIER dev.momo.app
-    MACOSX_BUNDLE_SHORT_VERSION_STRING 0.0.1)
+    MACOSX_BUNDLE_SHORT_VERSION_STRING ${MOMO_VERSION}
+    MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION})
 
   # ---- .app 打包(docs/09 §4): Resources/bundle.js、Frameworks/libnode.*.dylib ----
   set(MOMO_APP_DEFAULT_BUNDLE "${PROJECT_SOURCE_DIR}/examples/hello_frame/main.js" CACHE FILEPATH
@@ -97,6 +98,8 @@ if(APPLE)
     set_property(TARGET momo_app_mac APPEND PROPERTY BUILD_RPATH "@executable_path/../Frameworks")
     set_property(TARGET momo_app_mac APPEND PROPERTY INSTALL_RPATH "@executable_path/../Frameworks")
   endif()
+  # 发布产物(docs/09 §6): 整个 Momo.app(含上面放进去的 bundle.js 与 Frameworks), rpath 只留包内路径。
+  install(TARGETS momo_app_mac BUNDLE DESTINATION . COMPONENT runtime)
 elseif(WIN32)
   # 注意: embedder/windows 未在 Windows 上编译运行验证(实现于 macOS: 纯逻辑部分有单测, 依赖 Win32 的部分只经
   # mingw-w64 头文件交叉编译检查)。Win10 API(GetDpiForWindow、AdjustWindowRectExForDpi、
@@ -156,12 +159,24 @@ elseif(WIN32)
   endif()
   # libnode.dll 拷到 exe 同级(DLL 搜索路径首选 exe 目录;tools/build_libnode.py 在 Windows 上构建)。
   momo_target_use_v8_runtime(momo_app_win)
+  # 发布产物(docs/09 §6): 与构建目录同一布局 {Momo.exe, libnode.dll, icudtl.dat, bundle.js}。
+  install(TARGETS momo_app_win RUNTIME DESTINATION . COMPONENT runtime)
+  if(MOMO_APP_DEFAULT_BUNDLE)
+    install(FILES "${MOMO_APP_DEFAULT_BUNDLE}" DESTINATION . RENAME bundle.js COMPONENT runtime)
+  endif()
+  momo_install_v8_runtime(runtime)
 endif()
 
 # ---- momo_headless: 无窗口运行 bundle(headless 测试运行器的引擎侧, docs/09 §5)----
 add_executable(momo_headless headless/headless_main.cc)
 target_link_libraries(momo_headless PRIVATE momo::engine)
 momo_target_use_v8_runtime(momo_headless)
+# 发布产物(docs/09 §6): 可执行文件与 libnode 同目录。
+if(APPLE)
+  set_property(TARGET momo_headless PROPERTY INSTALL_RPATH "@executable_path")
+endif()
+install(TARGETS momo_headless RUNTIME DESTINATION . COMPONENT headless)
+momo_install_v8_runtime(headless)
 
 if(MOMO_BUILD_TESTS)
   if(MOMO_HAVE_V8)
