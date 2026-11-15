@@ -1,26 +1,115 @@
 # @momo-examples/ext-webview
 
-系统 WebView(macOS `WKWebView`)作为**平台视图**嵌入 momo 界面的示例扩展。原理见 `docs/05-rendering-pipeline.md` §9,
+系统 WebView(macOS `WKWebView`)作为**平台视图**嵌入 momo 界面的扩展。原理见 `docs/05-rendering-pipeline.md` §9,
 扩展侧接口见 `docs/07-extension-system.md` §3。
 
-- 原生部分 `native/src/ext_webview.mm`:只用 C ABI(`momo_extension.hpp`),注册视图类型 `momo.webview`,
-  处理命令通道 `momo.webview`,经 `momo.webview/events` 推送状态与页面消息。协议在文件头。
-- JS 门面 `js/index.ts`:`WebView` view 与 `WebViewController`(loadUrl / loadHtml / goBack / goForward /
-  reload / stop / evaluateJavaScript / focus,以及 onStateChanged / onMessage / onError 回调)。
+- 原生部分 `native/src/ext_webview.mm`:只用 C ABI(`momo_extension.hpp`),注册视图类型 `momo.webview`。线上协议在文件头。
+- JS 门面 `js/index.ts`:下面的全部接口。
+
+接口参照 Tauri(wry)的取舍, 只保留 WKWebView 与 WebView2 都能实现的部分。
+
+## 自定义资源协议
+
+应用自己的网页不走 `file://`, 也不用 `loadHtml`, 而是声明一个协议并用它加载:
 
 ```ts
-import { WebView } from "@momo-examples/ext-webview";
+import { WebView, registerProtocol } from "@momo-examples/ext-webview";
 
-new SizedBox({ height: 400, child: new WebView({
-  initialUrl: "https://example.com",
-  onCreated: (web) => { web.onStateChanged = (s) => console.log(s.title); },
-}) });
+// 1) 映射到打包资源目录(assets/web/): 原生直接读文件应答, 不经过 JS。
+registerProtocol("app", { assets: "web", fallback: "index.html" });
+
+// 2) JS 处理函数: 动态内容、本地 API。可以异步。
+registerProtocol("api", async (request) => ({
+  mimeType: "application/json",
+  headers: { "Access-Control-Allow-Origin": "*" },
+  body: JSON.stringify({ path: new URL(request.url).pathname }),
+}));
+
+new WebView({ initialUrl: "app://localhost/" });
 ```
 
-页面向 momo 发消息:`window.webkit.messageHandlers.momo.postMessage("hi")`。
+- **必须在创建 WebView 之前声明**(通常在应用启动时)。协议集合在 WebView 创建时确定。
+- 这类地址是真实地址: 刷新、前进后退、相对路径、`fetch` 都有效。
+- 源由 协议 + host 决定: `app://localhost` 请求 `api://host` 是跨源, 响应要带 CORS 头。
+- 资源映射: 目录地址取 `index`(默认 `index.html`);找不到文件返回 404, 或改用 `fallback`(单页应用的前端路由);
+  路径不能越出资源目录。
+- 自定义协议的页面没有 cookie(`document.cookie` 无效);用 `localStorage` 或由 JS 处理函数管理状态。
+- 目前整个响应一次给出, 不支持 Range 请求(大的音视频不适合走这里)。
 
-示例应用 `examples/webview` 是一个多窗口、多标签浏览器(标签可以连同网页移到新窗口而不重新加载)。
-运行(macOS,需先构建 `momo_app_mac` 与 `ext_webview`):
+## 会话与 cookie
+
+会话是一份相互隔离的网站数据(cookie、缓存、localStorage / IndexedDB…)。WebView 的会话在创建时确定。
+
+```ts
+import { WebSession, WebView } from "@momo-examples/ext-webview";
+
+WebSession.default;               // 默认, 持久化
+WebSession.persistent("work");    // 命名的持久会话(多账号);同名即同一份数据。macOS 14+
+const incognito = WebSession.ephemeral();   // 无痕, 只在内存;用完 dispose()
+
+// cookie 不依赖 WebView: 可以先预置登录态再创建视图。
+await incognito.cookies.set({ name: "sid", value: "42", url: "https://example.com/", secure: true, httpOnly: true });
+await incognito.cookies.get("https://example.com/");   // 会随该地址发送的 cookie;不给 url 则全部
+await incognito.cookies.delete("sid", { domain: "example.com" });
+await incognito.cookies.clear();
+await WebSession.default.clearData(["cache"]);          // "cookies" | "cache" | "storage";不给则全部
+
+new WebView({ session: incognito, initialUrl: "https://example.com/" });
+```
+
+`expires` 是 Unix 秒, `null` 为会话 cookie。WebKit 会把过期时间截到最多约 400 天之后。
+
+## WebView
+
+```ts
+new WebView({
+  initialUrl: "app://localhost/",
+  initScripts: ["window.__env = 'prod';"],   // 每个文档开始时、页面脚本之前(主框架)
+  userAgent: "MyApp/1.0",
+  devtools: true,                            // 允许系统网页检查器
+  onCreated: (web) => {
+    web.onStateChanged = (s) => console.log(s.url, s.title, s.loading, s.progress);
+    web.onMessage = (data) => console.log(data);          // 页面: window.momo.postMessage(value)
+    web.onNewWindowRequested = (url) => web.loadUrl(url); // target=_blank / window.open
+    web.onError = (message) => console.error(message);
+  },
+});
+```
+
+`WebViewController`: `loadUrl / loadHtml / goBack / goForward / reload / stop / evaluateJavaScript /
+postMessage / focus`, 以及上面的回调。
+
+页面与应用互发消息(值经 JSON 传递), 两个平台写法相同:
+
+```js
+window.momo.postMessage({ type: "ready" });                       // 页面 → 应用(onMessage)
+window.momo.addEventListener("message", (e) => console.log(e.data)); // 应用 → 页面(web.postMessage)
+```
+
+## 平台映射
+
+| 接口 | WKWebView(已实现) | WebView2(设计依据, 未实现) |
+| --- | --- | --- |
+| `registerProtocol` | `WKWebViewConfiguration.setURLSchemeHandler`(创建视图前) | `CoreWebView2CustomSchemeRegistration`(创建环境前)+ `WebResourceRequested` |
+| `WebSession.default` | `WKWebsiteDataStore.default()` | 默认 profile |
+| `WebSession.persistent(name)` | `WKWebsiteDataStore(forIdentifier:)`(macOS 14+) | `ControllerOptions.ProfileName` |
+| `WebSession.ephemeral()` | `.nonPersistent()` | `ControllerOptions.IsInPrivateModeEnabled` |
+| `cookies.*` | `WKHTTPCookieStore` | `CoreWebView2CookieManager` |
+| `clearData` | `removeData(ofTypes:modifiedSince:)` | `Profile.ClearBrowsingDataAsync` |
+| `initScripts` | `WKUserScript`(atDocumentStart) | `AddScriptToExecuteOnDocumentCreated` |
+| `window.momo` 消息 | `WKScriptMessageHandler` + 注入脚本 | `chrome.webview.postMessage` / `WebMessageReceived` + 注入脚本 |
+| `userAgent` | `customUserAgent` | `Settings.UserAgent` |
+| `devtools` | `isInspectable` | `Settings.AreDevToolsEnabled` |
+| `onNewWindowRequested` | `WKUIDelegate` createWebView 返回 nil | `NewWindowRequested`(`Handled = true`) |
+
+"协议在创建 WebView 之前声明"这条规则来自两边的共同约束: WebView2 要求在创建环境之前登记协议,
+WKWebView 要求在创建视图之前。导航拦截(允许/拒绝某次跳转)没有纳入: WebView2 的 `NavigationStarting`
+不能异步等待 JS 的决定, 需要另行设计成声明式规则。
+
+## 示例与构建
+
+示例应用 `examples/webview` 是一个多窗口、多标签浏览器(标签可以连同网页移到新窗口而不重新加载), 其起始页
+`momo://newtab` 就是用 `registerProtocol` 声明的。运行(macOS,需先构建 `momo_app_mac` 与 `ext_webview`):
 
 ```bash
 node tools/momo-cli/momo.mjs build examples/webview

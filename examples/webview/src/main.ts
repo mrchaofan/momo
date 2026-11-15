@@ -26,13 +26,13 @@ import {
   WindowChrome, app, isApplePlatform, openUrl, reportError, runView,
   type BuildContext, type Offset, type PointerCapture, type PointerEvent, type View,
 } from "@momo/framework";
-import { WebView, type WebViewController, type WebViewState } from "@momo-examples/ext-webview";
+import { WebView, registerProtocol, type WebViewController, type WebViewState } from "@momo-examples/ext-webview";
 import { showContextMenu } from "./context_menu";
 import { Palette, TextStyles, kStripLeadingPadding, kTabStripHeight, kTabStripTitleBarHeight, kTabStripTopInset, kToolbarHeight } from "./style";
 import { IconTap, Tab, TabStrip, dropIndex, tabWidthFor, type TabDrag } from "./tabs";
 import { DetachedPage, DetachedPlaceholder } from "./detached";
 
-/** 起始页的内部地址(WebView 扩展的 momo:// 页面: 真实地址, 刷新后仍是起始页)。 */
+/** 起始页的内部地址(自定义协议 momo://, 见下方 registerProtocol: 真实地址, 刷新后仍是起始页)。 */
 export const kNewTabUrl = "momo://newtab";
 
 const primaryShortcut = isApplePlatform() ? { meta: true } : { control: true };
@@ -58,6 +58,12 @@ const kStartPage = `<!doctype html>
   </nav>
   <p>⌘T 新标签 · ⌘W 关闭 · ⌘L 地址栏 · ⌘R 刷新 · ⌃Tab 切换</p>
 </main></body></html>`;
+
+// 浏览器的内部页面: momo://<页面名>。协议要在创建第一个 WebView 之前声明。
+registerProtocol("momo", (request) => {
+  if (request.url.startsWith(kNewTabUrl)) return { body: kStartPage };
+  return { status: 404, mimeType: "text/plain", body: "没有这个内部页面" };
+});
 
 /** 地址栏输入 → URL:带协议的原样使用;像域名的补 https;其余按搜索。 */
 function toUrl(text: string): string | null {
@@ -563,6 +569,11 @@ export class BrowserAppState extends State<BrowserApp> {
       const w = this.#windowOf(tab);
       if (w !== null && w.activeId === tab.id && tab.detached === null) this.#pages.get(w)?.syncAddress(false);
     };
+    // target="_blank" / window.open: 在该标签所在的窗口里开新标签。
+    web.onNewWindowRequested = (url) => {
+      const w = this.#windowOf(tab);
+      if (this.mounted && w !== null && url !== "") this.openTab(w, url);
+    };
   }
 
   build(_context: BuildContext): View {
@@ -595,7 +606,6 @@ export class BrowserAppState extends State<BrowserApp> {
     return new WebView({
       key: tab.pageKey,
       initialUrl: tab.initialUrl ?? kNewTabUrl,
-      pages: { [kNewTabUrl]: kStartPage },
       onCreated: (web) => this.onWebCreated(tab, web),
     });
   }

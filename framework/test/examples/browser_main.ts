@@ -1,7 +1,8 @@
 // 在 mock 宿主下运行 examples/webview(多标签浏览器)并驱动交互: 新建/关闭标签(含缓动)、页面状态、地址栏。
-import { openedUrls, viewCalls, webCommands } from "./browser_setup";
+import { openedUrls, protocolResponses, viewCalls, webCommands } from "./browser_setup";
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/webview/src/main";
+import { WebSession } from "../../../extensions/examples/webview-extension/js/index";
 import { IconButton, Spinner } from "../../../examples/webview/src/icons";
 import { runRegisteredTests, test, expect } from "../harness";
 import { Phase, ViewTester, type PointerOptions } from "../tester";
@@ -42,6 +43,53 @@ async function release(t: ViewTester, at: Offset): Promise<void> {
   t.sendPointer(Phase.up, at, { buttons: 0 });
   await settle(t);
 }
+
+/** 模拟页面对自定义协议地址的一次请求(原生 → JS 的协议帧), 返回 JS 的应答。 */
+async function protocolRequest(t: ViewTester, requestId: number, url: string): Promise<{ header: Record<string, unknown>; body: string }> {
+  const header = utf8Encode(JSON.stringify({ requestId, viewId: 1, url, method: "GET", headers: {} }));
+  const frame = new Uint8Array(4 + header.length);
+  new DataView(frame.buffer).setUint32(0, header.length, true);
+  frame.set(header, 4);
+  await defaultBinaryMessenger.handlePlatformMessage("momo.webview/protocol", frame.buffer);
+  await t.flushMicrotasks();
+  return protocolResponses.find((r) => r.header.requestId === requestId)!;
+}
+
+test("ext-webview: custom protocol serves the start page; sessions and cookies address their store", async () => {
+  const t = new ViewTester(new Size(1000, 700));
+  await settle(t);
+  // 创建参数带上已声明的协议与会话: 起始页经 momo:// 协议加载。
+  const params = viewCalls.find((c) => c.method === "create")!.params!;
+  expect.equal(params.url, "momo://newtab");
+  expect.equal(params.session, "default");
+  expect.deepEqual(params.protocols, [{ scheme: "momo" }]);
+
+  // 页面请求 momo://newtab/ → JS 处理函数应答起始页;未知页面 404。
+  const page = await protocolRequest(t, 1, "momo://newtab/");
+  expect.equal(page.header.status, 200);
+  expect.equal((page.header.headers as Record<string, string>)["Content-Type"], "text/html; charset=utf-8");
+  expect.isTrue(page.body.includes("<h1>MOMO</h1>"), "start page html");
+  expect.equal((await protocolRequest(t, 2, "momo://nowhere/")).header.status, 404);
+
+  // 会话: 默认 / 命名持久(同名同一个) / 无痕(每次独立);cookie 与清理命令发往各自的会话。
+  expect.isTrue(WebSession.persistent("work") === WebSession.persistent("work"));
+  const incognito = WebSession.ephemeral();
+  expect.isTrue(incognito.id !== WebSession.ephemeral().id && !incognito.isPersistent);
+  const before = webCommands.length;
+  await WebSession.persistent("work").cookies.set({ name: "sid", value: "42", url: "https://example.com/" });
+  expect.deepEqual(await incognito.cookies.get("https://example.com/"), []);
+  expect.equal(await incognito.cookies.delete("sid", { domain: "example.com" }), 0);
+  await WebSession.default.clearData(["cache"]);
+  await WebSession.default.dispose();
+  await incognito.dispose();
+  expect.deepEqual(webCommands.slice(before), [
+    { session: "persistent:work", method: "cookies.set", cookie: { name: "sid", value: "42", url: "https://example.com/" } },
+    { session: incognito.id, method: "cookies.get", url: "https://example.com/" },
+    { session: incognito.id, method: "cookies.delete", name: "sid", domain: "example.com" },
+    { session: "default", method: "session.clearData", kinds: ["cache"] },
+    { session: incognito.id, method: "session.dispose" },
+  ]);
+});
 
 test("examples/webview: open, switch and close tabs with eased insert/remove", async () => {
   const t = new ViewTester(new Size(1000, 700));
