@@ -26,7 +26,8 @@
 // 线程约定与 C ABI 完全相同(见 momo_extension.h 中每个函数的注释):
 //   - OnAttach / OnDetach 在 platform 线程;
 //   - 模块 setup 与 JS 函数在 ui 线程, 禁止阻塞;Call 只在回调栈内有效;
-//   - 通道 handler 在注册时显式指定的 runner 上执行;PostTask 的任务在指定的 runner 上执行。
+//   - 通道 handler 在注册时显式指定的 runner 上执行;PostTask 的任务在指定的 runner 上执行;
+//   - 生命周期事件(Extension::OnLifecycle、Host::AddLifecycleListener)在 platform 线程。
 //
 // 生命周期: 注册给宿主的 std::function(JS 函数、通道 handler、模块 setup)由 Host 持有, 有意不在
 // on_detach 时释放——宿主不卸载扩展动态库, 在途的回调可能晚于 on_detach 返回, 释放它们会悬挂。
@@ -237,6 +238,24 @@ class Host {
     return api_->platform_view_get(engine_, view_id, &view) == kMomoOk ? view : nullptr;
   }
 
+  // ---- 生命周期事件(回调在 platform 线程;语义与顺序见 momo_extension.h"生命周期事件") ----
+  bool SupportsLifecycle() const {
+    return api_->struct_size >= offsetof(MomoHostApi, lifecycle_remove_listener) + sizeof(void*);
+  }
+  // 扩展整体的事件走 Extension::OnLifecycle;这里给扩展内部的子系统各自注册。返回监听器 id(失败为 0)。
+  using LifecycleListener = std::function<void(const MomoLifecycleInfo& info)>;
+  uint64_t AddLifecycleListener(LifecycleListener listener) {
+    if (!SupportsLifecycle()) return 0;
+    auto* holder = Keep(std::make_unique<LifecycleListener>(std::move(listener)));
+    uint64_t id = 0;
+    if (api_->lifecycle_add_listener(engine_, &LifecycleTrampoline, holder, &id) != kMomoOk) return 0;
+    return id;
+  }
+  MomoStatus RemoveLifecycleListener(uint64_t id) {
+    if (!SupportsLifecycle()) return kMomoErrNotFound;
+    return api_->lifecycle_remove_listener(engine_, id);
+  }
+
   // ---- 资源与日志(任意线程) ----
   // 读取打包进应用的资源;未找到返回 std::nullopt。
   std::optional<std::vector<uint8_t>> ReadAsset(const char* path) {
@@ -282,6 +301,9 @@ class Host {
   static void TaskTrampoline(void* user_data) {
     std::unique_ptr<std::function<void()>> task(static_cast<std::function<void()>*>(user_data));
     (*task)();
+  }
+  static void LifecycleTrampoline(void* user_data, const MomoLifecycleInfo* info) {
+    (*static_cast<LifecycleListener*>(user_data))(*info);
   }
   static void FrameTrampoline(void* user_data) {
     (*static_cast<std::function<void()>*>(user_data))();
@@ -331,6 +353,10 @@ class Extension {
   virtual void OnAttach(Host& host) = 0;
   // platform 线程, JS 运行时已销毁。必须停止自己的线程与定时任务;之后宿主忽略该扩展的一切调用。
   virtual void OnDetach() {}
+  // platform 线程。宿主的生命周期事件(momo_extension.h"生命周期事件"), 最常用的是在
+  // kMomoLifecycleRuntimeStopped 时清掉属于旧 JS 运行时的状态。不认识的 info.event 必须忽略。
+  // 宿主不提供生命周期事件(旧版本)时不会被调用。
+  virtual void OnLifecycle(const MomoLifecycleInfo& info) { (void)info; }
 };
 
 namespace internal {
@@ -350,6 +376,9 @@ bool Init(uint32_t host_api_version, MomoExtension* out, const char* id) {
   out->on_attach = [](void* user_data, const MomoHostApi* api, MomoEngineRef engine) {
     auto* instance = static_cast<Instance<T>*>(user_data);
     instance->host = std::make_unique<Host>(api, engine);
+    // 先于 OnAttach 注册: 扩展整体的监听器排在它内部子系统的监听器之前(Starting 先到, Stopped 后到)。
+    instance->host->AddLifecycleListener(
+        [instance](const MomoLifecycleInfo& info) { instance->extension.OnLifecycle(info); });
     instance->extension.OnAttach(*instance->host);
   };
   out->on_detach = [](void* user_data) {

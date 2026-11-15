@@ -9,6 +9,7 @@
 // 状态: v1 定稿(M5)。由 extensions/examples 下的 hello(函数/Promise/通道)与 texture(纹理注入/
 // 帧回调)验证;hello 以纯 C 编译, 验证 ABI 不依赖 C++。
 // v1 追加(M6): 平台视图工厂(platform_view_register_factory / platform_view_get), 由 webview 示例验证。
+// v1 追加: 生命周期事件(lifecycle_add_listener / lifecycle_remove_listener), 由 webview 示例验证。
 // 之后只能在 MomoHostApi / MomoCallApi 末尾追加字段(扩展用 struct_size 判断宿主是否提供)。
 
 #ifndef MOMO_EXTENSION_H_
@@ -128,6 +129,51 @@ typedef struct MomoPlatformViewFactory {
   void* user_data;
 } MomoPlatformViewFactory;
 
+// ---------- 生命周期事件(宿主 → 扩展) ----------
+//
+// on_attach / on_detach 界定扩展自身的存续;这里的事件告诉扩展宿主内部发生了什么。最重要的一类是 JS 运行时
+// 的更替: 一个进程里 JS 运行时可以先后有多个(--dev 热重启时销毁旧的、新建一个), 而扩展只 attach 一次。
+// 扩展里凡是"属于某个 JS 运行时"的状态(JS 传来的句柄、按 id 登记的对象、等待 JS 应答的请求)都应当在
+// kMomoLifecycleRuntimeStopped 时清掉, 否则会泄漏, 或被下一个运行时里恰好相同的 id 误用。
+//
+// 送达方式: 全部在 platform 线程同步送达。JS 运行时更替时的顺序是确定的:
+//   1) 旧运行时创建的平台视图全部 dispose;
+//   2) 旧运行时销毁(ui 线程), 此后 ui 线程停在原地, 直到本次通知结束;
+//   3) kMomoLifecycleRuntimeStopped(按监听器注册的逆序);
+//   4) kMomoLifecycleRuntimeStarting(按注册顺序;关闭时没有这一步, 随后是 on_detach);
+//   5) 新运行时创建、执行 bundle。
+// 因此监听器执行期间没有任何 JS 在运行, 也不会有 JS 函数/帧回调与之并发;新运行时发来的消息一定晚于
+// Starting。旧运行时在销毁前已发出、尚在途中的通道消息仍可能在 Stopped 之后送达(其应答被丢弃)。
+// 监听器里不得阻塞等待 ui 线程(它正停着, 会死锁);耗时的清理请投递到自己的线程。
+//
+// 兼容性: 事件与原因的取值只增不改。扩展必须忽略不认识的 event(直接返回);MomoLifecycleInfo 只在末尾
+// 追加字段, 读取新字段前先比较 struct_size。
+
+typedef enum MomoLifecycleEvent {
+  // 一个新的 JS 运行时即将创建并执行 bundle。reason: Launch(首次)或 HotRestart。
+  kMomoLifecycleRuntimeStarting = 1,
+  // JS 运行时已销毁。reason: HotRestart(随后会有 Starting)或 Shutdown(随后是 on_detach)。
+  kMomoLifecycleRuntimeStopped = 2,
+} MomoLifecycleEvent;
+
+typedef enum MomoLifecycleReason {
+  kMomoLifecycleReasonLaunch = 0,      // 应用启动
+  kMomoLifecycleReasonHotRestart = 1,  // --dev 热重启
+  kMomoLifecycleReasonShutdown = 2,    // 引擎关闭
+} MomoLifecycleReason;
+
+typedef struct MomoLifecycleInfo {
+  size_t struct_size;
+  uint32_t event;   // MomoLifecycleEvent;不认识的值必须忽略
+  uint32_t reason;  // MomoLifecycleReason;不认识的值按"未知原因"处理
+  // 事件所指 JS 运行时的代数: 首个为 1, 每新建一个加 1。Starting 给出即将创建的那一代, Stopped 给出
+  // 刚销毁的那一代。扩展可以用它给"属于某个运行时"的状态打标记。
+  uint64_t runtime_generation;
+} MomoLifecycleInfo;
+
+// 仅在回调期间有效(需要保留必须拷贝)。
+typedef void (*MomoLifecycleFn)(void* user_data, const MomoLifecycleInfo* info);
+
 // ---------- 宿主 API 函数表 ----------
 
 typedef struct MomoHostApi {
@@ -194,6 +240,14 @@ typedef struct MomoHostApi {
                                                const MomoPlatformViewFactory* factory);
   // 取已创建视图的原生指针(扩展在自己的通道 handler 里按 id 找到视图)。未知 id 返回 kMomoErrNotFound。
   MomoStatus (*platform_view_get)(MomoEngineRef, int64_t view_id, void** out_native_view);
+
+  // -- 生命周期事件(注册/注销任意线程;回调总在 platform 线程, 见上文"生命周期事件") --
+  // 一个扩展可以注册多个监听器(各子系统各管各的)。注册时已经发生过的事件不会补发: 在 on_attach 里注册
+  // 可以收到全部事件(首个运行时的 Starting 晚于 on_attach)。on_detach 之后不再回调。
+  MomoStatus (*lifecycle_add_listener)(MomoEngineRef, MomoLifecycleFn fn, void* user_data,
+                                       uint64_t* out_listener_id);
+  // 在监听器回调内注销(包括注销自己)是允许的: 本轮尚未回调到的被注销者不会再被回调。
+  MomoStatus (*lifecycle_remove_listener)(MomoEngineRef, uint64_t listener_id);
 } MomoHostApi;
 
 // ---------- 扩展描述与入口 ----------
