@@ -140,9 +140,7 @@ void Shell::Shutdown() {
   DisposeAllPlatformViews();
   // 扩展: 先告知 JS 运行时已销毁, 再 on_detach(platform 线程, 线程 join 之前;docs/08 §5)。
   if (extensions_) {
-    if (extensions_->runtime_generation() != 0) {
-      extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonShutdown);
-    }
+    extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonShutdown);
     extensions_->DetachAll();
   }
   textures_->SetFrameListener(nullptr, nullptr);

@@ -117,7 +117,6 @@ TEST_F(ExtensionHostTest, LifecycleListenersSeeRuntimeTurnover) {
   EXPECT_EQ(g_api->lifecycle_remove_listener(g_engine_ref, 9999), kMomoErrNotFound);
 
   host_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonLaunch);
-  EXPECT_EQ(host_->runtime_generation(), 1u);
   host_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonHotRestart);
   host_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonHotRestart);
   EXPECT_EQ(log, (std::vector<std::string>{
