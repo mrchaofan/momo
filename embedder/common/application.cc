@@ -201,8 +201,7 @@ Status Application::LaunchEngine() {
   window_manager_->AttachEngine(*shell_, *window_channel_, *platform_channels_);
 
   // --experimental-hot-restart: bundle 变化即 hot restart(docs/04 §8, 不保留 JS 状态)。实验性, 默认关闭。
-  if (options_.config.dev_mode && options_.config.hot_restart && !settings.bundle_path.empty() &&
-      options_.hot_restart_poll > TimeDelta::zero()) {
+  if (options_.config.hot_restart && options_.hot_restart_poll > TimeDelta::zero()) {
     std::error_code ec;
     watched_bundle_ = settings.bundle_path;
     watched_bundle_mtime_ = std::filesystem::last_write_time(watched_bundle_, ec);

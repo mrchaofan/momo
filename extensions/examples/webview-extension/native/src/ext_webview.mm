@@ -29,7 +29,7 @@
 //
 // 协议通道 "momo.webview/protocol"(双向, 二进制帧: uint32 LE 头长度 + 头 JSON + 正文字节):
 //   原生 → JS  头 {"requestId", "viewId", "url", "method", "headers"}, 正文为请求体
-//   JS → 原生  头 {"requestId", "status", "headers"} 或 {"requestId", "error"}, 正文为响应体
+//   JS → 原生  头 {"requestId", "status", "headers"}, 正文为响应体(处理函数抛错时 JS 侧应答 500)
 //
 // 线程: 工厂、命令 handler、WebKit 回调都在 platform(主)线程;事件经 channel_send 发出(任意线程可用)。
 
@@ -367,7 +367,8 @@ class WebViewExtension final : public momo::ext::Extension {
       FailTask(pending_[request_id], NSURLErrorCancelled);
     }
     [pending_ removeAllObjects];
-    // 无痕会话属于创建它的 JS 运行时(下一个运行时会从头编号): 没来得及 dispose 的随运行时一起释放。持久会话的数据在磁盘上, 可以留着复用。
+    // 无痕会话属于创建它的 JS 运行时(下一个运行时会从头编号): 没来得及 dispose 的随运行时一起释放。
+    // 持久会话的数据在磁盘上, 留着复用。
     for (NSString* key in stores_.allKeys) {
       if ([key hasPrefix:@"ephemeral:"]) [stores_ removeObjectForKey:key];
     }
@@ -700,13 +701,9 @@ class WebViewExtension final : public momo::ext::Extension {
     if (DecodeFrame(bytes.data, bytes.size, &header, &body)) {
       id<WKURLSchemeTask> task = TakeTask(NumberField(header, @"requestId"));
       if (task != nil) {
-        if (StringField(header, @"error") != nil) {
-          FailTask(task, NSURLErrorCannotLoadFromNetwork);
-        } else {
-          NSDictionary* headers =
-              [header[@"headers"] isKindOfClass:[NSDictionary class]] ? header[@"headers"] : @{};
-          Respond(task, NumberField(header, @"status").integerValue ?: 200, headers, body);
-        }
+        NSDictionary* headers =
+            [header[@"headers"] isKindOfClass:[NSDictionary class]] ? header[@"headers"] : @{};
+        Respond(task, NumberField(header, @"status").integerValue ?: 200, headers, body);
       }
     }
     if (host_ != nullptr) host_->Reply(token, nullptr, 0);
