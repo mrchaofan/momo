@@ -6,7 +6,8 @@
   python3 tools/fetch_deps.py skia node       # 指定依赖
   python3 tools/fetch_deps.py --platform windows-x64
   python3 tools/fetch_deps.py --mirror DIR    # 离线镜像: 从 DIR/<archive 文件名> 取包, 不联网
-  (锁定文件中带 "build" 的依赖(libnode)由对应脚本从源码构建, 见 tools/build_libnode.py。)
+  (锁定文件中带 "build" 的依赖(libnode)由对应脚本从源码构建, 见 tools/build_libnode.py;
+   --force / --mirror / --jobs 一并传给它。该脚本复用本文件的下载、校验、平台键与戳记函数。)
 
 产物:
   third_party/.downloads/<archive>            下载缓存(断点续传, SHA256 校验)
@@ -46,6 +47,11 @@ MAX_RETRIES = 10
 
 def log(msg):
     print(f"[fetch_deps] {msg}", flush=True)
+
+
+def load_lock():
+    with open(LOCK_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
 
 def host_platform():
@@ -230,10 +236,7 @@ def install(name, dep, entry, archive, platform_key):
         post = entry.get("post_extract")
         if post:
             POST_EXTRACT[post](content)
-        stamp = {"name": name, "version": dep["version"], "platform": platform_key,
-                 "sha256": entry["sha256"]}
-        with open(os.path.join(content, STAMP_NAME), "w") as f:
-            json.dump(stamp, f, indent=2)
+        write_stamp(content, make_stamp(name, dep["version"], platform_key, entry["sha256"]))
         if os.path.exists(dest):
             shutil.rmtree(dest)
         os.replace(content, dest)
@@ -242,14 +245,26 @@ def install(name, dep, entry, archive, platform_key):
     log(f"{name}: installed {dep['version']} → {os.path.relpath(dest, ROOT)}")
 
 
-def is_installed(name, dep, entry, platform_key):
-    stamp = os.path.join(PREBUILT_DIR, name, STAMP_NAME)
-    if not os.path.exists(stamp):
+# ---------------------------------------------------------------------------
+# 戳记: <安装目录>/.momo_dep.json 记录装的是什么;与期望的戳记完全相等才算已安装。
+
+
+def make_stamp(name, version, platform_key, sha256, **extra):
+    """extra: 影响产物的其他输入(如 libnode 的 configure_flags)。"""
+    return {"name": name, "version": version, "platform": platform_key, "sha256": sha256, **extra}
+
+
+def write_stamp(directory, stamp):
+    with open(os.path.join(directory, STAMP_NAME), "w", encoding="utf-8") as f:
+        json.dump(stamp, f, indent=2)
+
+
+def stamp_matches(directory, stamp):
+    path = os.path.join(directory, STAMP_NAME)
+    if not os.path.exists(path):
         return False
-    with open(stamp) as f:
-        s = json.load(f)
-    return (s.get("version") == dep["version"] and s.get("platform") == platform_key
-            and s.get("sha256") == entry["sha256"])
+    with open(path, encoding="utf-8") as f:
+        return json.load(f) == stamp
 
 
 def main():
@@ -261,8 +276,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="忽略已安装戳记, 重新解压")
     args = parser.parse_args()
 
-    with open(LOCK_PATH) as f:
-        lock = json.load(f)
+    lock = load_lock()
     names = args.deps or list(lock["deps"].keys())
     failed = False
     for name in names:
@@ -272,8 +286,15 @@ def main():
             failed = True
             continue
         if dep.get("build"):
-            # 从源码构建的依赖(如 libnode): 交给对应脚本(自带版本戳记, 已安装时跳过)。
-            cmd = [sys.executable, os.path.join(ROOT, dep["build"])] + (["--force"] if args.force else [])
+            # 从源码构建的依赖(如 libnode): 交给对应脚本(已安装时跳过)。只能为宿主平台构建。
+            if args.platform != host_platform():
+                log(f"{name}: built from source for the host platform only, skipped for {args.platform}")
+                continue
+            cmd = [sys.executable, os.path.join(ROOT, dep["build"]), "--download-jobs", str(args.jobs)]
+            if args.force:
+                cmd.append("--force")
+            if args.mirror:
+                cmd += ["--mirror", args.mirror]
             if subprocess.run(cmd).returncode != 0:
                 log(f"{name}: FAILED: {dep['build']}")
                 failed = True
@@ -282,7 +303,8 @@ def main():
         if entry is None:
             log(f"{name}: no prebuilt for {args.platform}, skipped")
             continue
-        if not args.force and is_installed(name, dep, entry, args.platform):
+        stamp = make_stamp(name, dep["version"], args.platform, entry["sha256"])
+        if not args.force and stamp_matches(os.path.join(PREBUILT_DIR, name), stamp):
             log(f"{name}: up to date ({dep['version']})")
             continue
         try:
