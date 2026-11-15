@@ -31,6 +31,8 @@ new WebView({ initialUrl: "app://localhost/" });
 - **必须在创建 WebView 之前声明**(通常在应用启动时)。协议集合在 WebView 创建时确定。
 - 默认每个 WebView 都能用全部已声明的协议。页面可以向它可用的任何协议发请求, 所以加载不受信任网站的 WebView
   要收窄: `new WebView({ protocols: ["app"] })`(`[]` 为一个都不给)。
+- 注册协议与打开网页是两回事: WebView 不校验协议。地址用了没有注册(或没给这个视图)的协议, 就是一次失败的导航,
+  经 `web.onError` 报告。
 - 这类地址是真实地址: 刷新、前进后退、相对路径、`fetch` 都有效。
 - 源由 协议 + host 决定: `app://localhost` 请求 `api://host` 是跨源, 响应要带 CORS 头。
 - 资源映射: 目录地址取 `index`(默认 `index.html`);找不到文件返回 404, 或改用 `fallback`(单页应用的前端路由);

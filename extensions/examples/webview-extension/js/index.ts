@@ -79,11 +79,11 @@ export function registerProtocol(scheme: string, source: ProtocolSource): void {
   protocols.set(scheme, source);
 }
 
-/** 创建参数里的协议表(JS 处理的只给 scheme)。only 给出时只包含其中的协议。 */
+/**
+ * 创建参数里的协议表(JS 处理的只给 scheme)。only 给出时只包含其中的协议。
+ * 这里不做校验: 注册协议与打开网页是两回事, 没有注册(或不给这个视图用)的协议, 其地址加载失败, 经 onError 报告。
+ */
 function protocolSpecs(only?: readonly string[]): Record<string, unknown>[] {
-  for (const scheme of only ?? []) {
-    if (!protocols.has(scheme)) throw new Error(`momo.webview: protocol "${scheme}" is not registered`);
-  }
   return [...protocols]
     .filter(([scheme]) => only === undefined || only.includes(scheme))
     .map(([scheme, source]) => (typeof source === "function" ? { scheme } : { scheme, ...source }));
@@ -370,6 +370,7 @@ export interface WebViewOptions {
   /**
    * 这个 WebView 可用的自定义协议(已用 {@link registerProtocol} 声明的)。默认全部。
    * 加载不受信任网站的 WebView 应当收窄: 页面可以向它可用的任何协议发请求。
+   * 不在其中(或没有声明过)的协议, 其地址打不开: 导航失败经 {@link WebViewController.onError} 报告。
    */
   protocols?: string[];
   /** 每个文档开始加载时、页面脚本之前在主框架执行的脚本(注入全局对象、打补丁)。 */

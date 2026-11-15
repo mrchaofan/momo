@@ -24,7 +24,7 @@
 //   {"id", "event": "state", "url", "title", "loading", "progress", "canGoBack", "canGoForward"}
 //   {"id", "event": "message", "body", "origin"}   页面里 window.momo.postMessage(value);body 为 JSON 文本,
 //                                                  origin 为发送方的源("app://localhost";不透明源为 "null")
-//   {"id", "event": "error", "message"}   导航失败
+//   {"id", "event": "error", "message"}   导航失败(含: 地址的协议不受支持, 也没有注册给这个视图)
 //   {"id", "event": "newWindow", "url"}   页面请求新窗口(target=_blank / window.open);原生不创建
 //
 // 协议通道 "momo.webview/protocol"(双向, 二进制帧: uint32 LE 头长度 + 头 JSON + 正文字节):
@@ -949,6 +949,31 @@ static void* kStateContext = &kStateContext;
     });
   }
   return nil;
+}
+
+// 地址的协议既不是系统 WebView 支持的, 也没有注册给这个视图: WebKit 会静默取消这次导航。这里把它变成
+// 一次普通的导航失败(error 事件), 应用才知道网页没打开。
+- (void)webView:(WKWebView*)webView
+    decidePolicyForNavigationAction:(WKNavigationAction*)action
+                    decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler {
+  NSURL* url = action.request.URL;
+  NSString* scheme = url.scheme.lowercaseString;
+  if (scheme.length == 0 || [WKWebView handlesURLScheme:scheme] ||
+      [webView.configuration urlSchemeHandlerForURLScheme:scheme] != nil) {
+    decisionHandler(WKNavigationActionPolicyAllow);
+    return;
+  }
+  decisionHandler(WKNavigationActionPolicyCancel);
+  // 只报告主框架的导航(targetFrame 为空是新窗口请求, 由 newWindow 事件处理)。
+  if (action.targetFrame.isMainFrame) {
+    [self reportError:[NSError errorWithDomain:NSURLErrorDomain
+                                          code:NSURLErrorUnsupportedURL
+                                      userInfo:@{
+                                        NSLocalizedDescriptionKey : [NSString
+                                            stringWithFormat:@"unsupported protocol \"%@\" (%@)", scheme,
+                                                             url.absoluteString]
+                                      }]];
+  }
 }
 
 - (void)webView:(WKWebView*)webView
