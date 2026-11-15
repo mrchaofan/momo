@@ -83,9 +83,14 @@ export function registerProtocol(scheme: string, source: ProtocolSource): void {
   }
 }
 
-/** 创建参数里的协议表(JS 处理的只给 scheme)。 */
-function protocolSpecs(): Record<string, unknown>[] {
-  return [...protocols].map(([scheme, source]) => (typeof source === "function" ? { scheme } : { scheme, ...source }));
+/** 创建参数里的协议表(JS 处理的只给 scheme)。only 给出时只包含其中的协议。 */
+function protocolSpecs(only?: readonly string[]): Record<string, unknown>[] {
+  for (const scheme of only ?? []) {
+    if (!protocols.has(scheme)) throw new Error(`momo.webview: protocol "${scheme}" is not registered`);
+  }
+  return [...protocols]
+    .filter(([scheme]) => only === undefined || only.includes(scheme))
+    .map(([scheme, source]) => (typeof source === "function" ? { scheme } : { scheme, ...source }));
 }
 
 // 协议通道的帧: uint32 LE 头长度 + 头 JSON + 正文。
@@ -254,6 +259,12 @@ export interface WebViewState {
   canGoForward: boolean;
 }
 
+/** 页面消息的发送方。 */
+export interface MessageSource {
+  /** 发送方的源, 如 "app://localhost"、"https://example.com";不透明源(loadHtml 且没有 baseUrl)为 "null"。 */
+  readonly origin: string;
+}
+
 const controllers = new Map<number, WebViewController>();
 let eventsInstalled = false;
 
@@ -272,8 +283,11 @@ export class WebViewController {
   #state: WebViewState = { url: "", title: "", loading: false, progress: 0, canGoBack: false, canGoForward: false };
   /** 状态变化(URL、标题、加载进度、前进后退能力)。 */
   onStateChanged: ((state: WebViewState) => void) | null = null;
-  /** 页面调用了 `window.momo.postMessage(value)`;data 是该值(经 JSON 传递)。 */
-  onMessage: ((data: unknown) => void) | null = null;
+  /**
+   * 页面调用了 `window.momo.postMessage(value)`;data 是该值(经 JSON 传递)。
+   * WebView 里可能是任何网站: 处理前用 source.origin 确认消息来自自己的页面(如 "app://localhost")。
+   */
+  onMessage: ((data: unknown, source: MessageSource) => void) | null = null;
   /** 导航失败。 */
   onError: ((message: string) => void) | null = null;
   /** 页面请求打开新窗口(target="_blank"、window.open)。WebView 自己不会打开, 由应用决定去向。 */
@@ -346,7 +360,7 @@ export class WebViewController {
         } catch {
           // 页面绕过 window.momo 直接发了非 JSON 的字符串: 原样给出。
         }
-        this.onMessage?.(data);
+        this.onMessage?.(data, { origin: String(m.origin ?? "null") });
         break;
       }
       case "error":
@@ -367,6 +381,11 @@ export interface WebViewOptions {
   baseUrl?: string;
   /** 会话(数据分区), 默认 {@link WebSession.default}。 */
   session?: WebSession;
+  /**
+   * 这个 WebView 可用的自定义协议(已用 {@link registerProtocol} 声明的)。默认全部。
+   * 加载不受信任网站的 WebView 应当收窄: 页面可以向它可用的任何协议发请求。
+   */
+  protocols?: string[];
   /** 每个文档开始加载时、页面脚本之前在主框架执行的脚本(注入全局对象、打补丁)。 */
   initScripts?: string[];
   /** 覆盖 User-Agent。 */
@@ -396,11 +415,11 @@ class WebViewHostState extends State<WebView> {
 
   override initState(): void {
     super.initState();
-    const { initialUrl, initialHtml, baseUrl, session, initScripts, userAgent, devtools } = this.view.opts;
+    const { initialUrl, initialHtml, baseUrl, session, protocols, initScripts, userAgent, devtools } = this.view.opts;
     this.#session = session ?? WebSession.default;
     this.#params = utf8Encode(JSON.stringify({
       url: initialUrl, html: initialHtml, baseUrl, session: this.#session.id, initScripts, userAgent, devtools,
-      protocols: protocolSpecs(),
+      protocols: protocolSpecs(protocols),
     }));
   }
 

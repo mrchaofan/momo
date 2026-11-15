@@ -2,7 +2,7 @@
 import { openedUrls, protocolResponses, viewCalls, webCommands } from "./browser_setup";
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/webview/src/main";
-import { WebSession } from "../../../extensions/examples/webview-extension/js/index";
+import { WebSession, WebView, WebViewController } from "../../../extensions/examples/webview-extension/js/index";
 import { IconButton, Spinner } from "../../../examples/webview/src/icons";
 import { runRegisteredTests, test, expect } from "../harness";
 import { Phase, ViewTester, type PointerOptions } from "../tester";
@@ -70,6 +70,24 @@ test("ext-webview: custom protocol serves the start page; sessions and cookies a
   expect.equal((page.header.headers as Record<string, string>)["Content-Type"], "text/html; charset=utf-8");
   expect.isTrue(page.body.includes("<h1>MOMO</h1>"), "start page html");
   expect.equal((await protocolRequest(t, 2, "momo://nowhere/")).header.status, 404);
+
+  // 协议可以按 WebView 收窄(加载不受信任网站的视图);未声明的协议直接报错。
+  let refused = "";
+  try {
+    const state = new WebView({ protocols: ["nope"] }).createState() as unknown as { view: WebView; initState(): void };
+    Object.defineProperty(state, "view", { value: new WebView({ protocols: ["nope"] }) });
+    state.initState();
+  } catch (e) {
+    refused = String(e);
+  }
+  expect.isTrue(refused.includes('protocol "nope" is not registered'), refused);
+
+  // 页面消息带上发送方的源。
+  const seen: unknown[] = [];
+  const web = new WebViewController({ viewId: 7 } as never, WebSession.default);
+  web.onMessage = (data, source) => seen.push([data, source.origin]);
+  web._handleEvent({ id: 7, event: "message", body: '{"a":1}', origin: "momo://newtab" });
+  expect.deepEqual(seen, [[{ a: 1 }, "momo://newtab"]]);
 
   // 会话: 默认 / 命名持久(同名同一个) / 无痕(每次独立);cookie 与清理命令发往各自的会话。
   expect.isTrue(WebSession.persistent("work") === WebSession.persistent("work"));

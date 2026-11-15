@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -524,32 +525,34 @@ TEST(MacNativeLoopTest, QuitInsideAModalLoopEndsTheMainLoop) {
                                                 backing:NSBackingStoreBuffered
                                                   defer:YES];
   panel.releasedWhenClosed = NO;
-  bool quit_in_modal = false;
-  bool modal_returned = false;
-  bool run_returned = false;
-  bool timed_out = false;
+  // 状态放在堆上: 看门狗的延时任务可能晚于本测试返回才执行。
+  struct Flags {
+    bool quit_in_modal = false;
+    bool modal_returned = false;
+    bool run_returned = false;
+    bool timed_out = false;
+  };
+  auto flags = std::make_shared<Flags>();
+  MacNativeLoop* loop_ptr = &loop;
   // 像 AppKit 的启动回调那样从 run loop 源进入模态循环。不能放进 loop.PostTask: GCD 主队列是串行的,
   // 任务里跑模态循环会让后面的任务(包括下面的 Quit)一直排不上。
-  bool* quit_in_modal_ptr = &quit_in_modal;
-  bool* modal_returned_ptr = &modal_returned;
-  MacNativeLoop* loop_ptr = &loop;
   CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
     // GCD 主队列在模态循环里照常执行: 这个任务在 runModalForWindow 内部调用 Quit。
     loop_ptr->PostDelayedTask(
         [=] {
-          *quit_in_modal_ptr = NSApp.modalWindow == panel;
+          flags->quit_in_modal = NSApp.modalWindow == panel;
           loop_ptr->Quit();
         },
         std::chrono::milliseconds(50));
     [NSApp runModalForWindow:panel];
-    *modal_returned_ptr = true;
+    flags->modal_returned = true;
     [panel close];
   });
   // 看门狗: 主循环没有随 Quit 结束时, 记录失败并强制结束, 不让测试进程挂住。
   loop.PostDelayedTask(
-      [&] {
-        if (run_returned) return;
-        timed_out = true;
+      [flags] {
+        if (flags->run_returned) return;
+        flags->timed_out = true;
         [NSApp abortModal];
         [NSApp stop:nil];
         [NSApp postEvent:[NSEvent otherEventWithType:NSEventTypeApplicationDefined
@@ -565,12 +568,10 @@ TEST(MacNativeLoopTest, QuitInsideAModalLoopEndsTheMainLoop) {
       },
       std::chrono::seconds(3));
   loop.Run();
-  run_returned = true;
-  EXPECT_TRUE(quit_in_modal) << "Quit was expected to run inside the modal loop";
-  EXPECT_TRUE(modal_returned);
-  EXPECT_FALSE(timed_out) << "Quit inside a modal loop left the main loop running";
-  // 看门狗的延时任务还在主队列里: 让它在局部变量失效前无害地执行完。
-  [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:3.2]];
+  flags->run_returned = true;
+  EXPECT_TRUE(flags->quit_in_modal) << "Quit was expected to run inside the modal loop";
+  EXPECT_TRUE(flags->modal_returned);
+  EXPECT_FALSE(flags->timed_out) << "Quit inside a modal loop left the main loop running";
 }
 
 }  // namespace
