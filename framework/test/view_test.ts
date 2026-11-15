@@ -1,11 +1,12 @@
 // 多窗口: Widget(原生窗口对象)的方法与事件、RootView 把内容渲染进窗口、各窗口独立 MediaQuery/Overlay/渲染、
 // 共享状态、GlobalKey 跨窗口迁移;app 的退出流程与窗口全部关闭。
 import {
-  Builder, Center, ColoredBox, Colors, Focus, FocusManager, FocusNode, GestureDetector, GlobalKey, MediaQuery, Offset,
-  RootView, SizedBox, State, StatefulView, Text, ViewAnchor, Widget, WindowChrome, app,
+  Builder, Center, ColoredBox, Colors, Column, Focus, FocusManager, FocusNode, GestureDetector, GlobalKey, MediaQuery,
+  MouseRegion, Offset, Positioned, RootView, SchedulerBinding, SizedBox, Stack, State, StatefulView, Text, ViewAnchor,
+  Widget, WindowChrome, app, LogicalKeyboardKey, PhysicalKeyboardKey,
   ViewsBinding, EdgeInsets, GestureBinding, MediaQueryData, Rect, Size, runView, type BuildContext, type View,
 } from "../packages/momo/src/index";
-import { Phase } from "./tester";
+import { Kind, Phase } from "./tester";
 
 import { expect, group } from "./harness";
 import { testViews } from "./util";
@@ -66,7 +67,7 @@ group("multi-window", () => {
     await t.pumpView(new Center({ child: new Text("main") }));
     await t.pump();
     expect.deepEqual(mock.openViews(), []);
-    expect.equal(ViewsBinding.instance.viewHosts.size, 0);
+    expect.isFalse(ViewsBinding.instance.viewHosts.has(win.id), "the closed window's RootView is unregistered");
   }, { mockOnly: true });
 
   // 标题栏: 应用只声明自己的标题栏高度;系统控制按钮占用的区域由宿主报告, 经 MediaQuery.windowControls 提供。
@@ -213,7 +214,7 @@ group("multi-window", () => {
     expect.isTrue(win.isMinimized);
     expect.isFalse(win.viewport!.visible, "a minimized window's viewport is not visible");
     mock.sceneOpsByView.delete(win.id);
-    t.binding.renderView.markNeedsPaint();
+    ViewsBinding.instance.viewHosts.get(win.id)!.renderView.markNeedsPaint();
     await t.pump();
     expect.isFalse(mock.sceneOpsByView.has(win.id), "no frame for a minimized window");
     win.restore();
@@ -286,6 +287,128 @@ group("multi-window", () => {
     startup.destroy();
     await t.flushMicrotasks();
     expect.isFalse(mock.hasView(0));
+  }, { mockOnly: true });
+
+  // runApp 就是视图 0 上的 RootView: 启动窗口与其他窗口登记在同一处。
+  testViews("runApp renders the startup window through RootView", async (t) => {
+    await t.pumpView(new Text("app"));
+    const root = ViewsBinding.instance.rootView;
+    expect.isTrue(root instanceof RootView && root.widget === Widget.fromId(0));
+    expect.equal(ViewsBinding.instance.viewHosts.get(0)?.viewport, Widget.fromId(0)!.viewport);
+    // 替换 app: 同一个 RootView(同一个登记), 不重建窗口的渲染树。
+    const host = ViewsBinding.instance.viewHosts.get(0);
+    await t.pumpView(new Text("app 2"));
+    expect.equal(ViewsBinding.instance.viewHosts.get(0), host);
+    expect.equal(t.byText("app 2").length, 1);
+  });
+
+  // 启动窗口在 runApp 之前就关闭了: app 照常构建, 不渲染到任何窗口。
+  testViews("runApp without the startup window builds the app and renders nowhere", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    expect.isTrue(await mock.requestCloseView(0));
+    await t.flushMicrotasks();
+    const rendered = mock.renderedScenes;
+    const sizes: string[] = [];
+    await t.pumpView(new Builder({ builder: (c) => {
+      sizes.push(MediaQuery.of(c).size.toString());
+      return new Text("headless");
+    } }));
+    await t.pump();
+    expect.deepEqual(sizes, [Size.zero.toString()]);
+    expect.equal(t.byText("headless").length, 1);
+    expect.equal(ViewsBinding.instance.viewHosts.size, 0);
+    expect.equal(mock.renderedScenes, rendered);
+    expect.isFalse(SchedulerBinding.instance.hasScheduledFrame, "a tree without a window requests no frames");
+  }, { mockOnly: true });
+
+  // 没有脏节点的窗口不重复合成、提交;首帧、尺寸变化、重新可见、引擎自己发起的帧照常提交。
+  testViews("only windows whose render tree changed are re-submitted", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    const key = new GlobalKey<CounterState>();
+    const win = await Widget.create({ width: 200, height: 100 });
+    await t.pumpView(withWindows(new Counter({ key }), [{ widget: win, child: new ColoredBox({ color: Colors.white }) }]));
+    await t.pump();
+    expect.isTrue(mock.sceneOpsByView.has(win.id), "first frame");
+
+    // 只有主窗口的内容变了。
+    mock.sceneOpsByView.delete(win.id);
+    let rendered = mock.renderedScenes;
+    key.currentState!.count = 1;
+    key.currentState!.setState();
+    await t.pump();
+    expect.equal(mock.renderedScenes, rendered + 1, "the changed window is submitted");
+    expect.isFalse(mock.sceneOpsByView.has(win.id), "the unchanged window is not");
+
+    // 框架请求了帧, 但渲染树没有变化: 都不提交。
+    rendered = mock.renderedScenes;
+    SchedulerBinding.instance.scheduleFrame();
+    await t.pump();
+    expect.equal(mock.renderedScenes, rendered);
+    expect.isFalse(mock.sceneOpsByView.has(win.id));
+
+    // 尺寸变化: 提交。
+    t.setViewSize(new Size(640, 480));
+    await t.pump();
+    expect.equal(mock.renderedScenes, rendered + 1, "resize");
+
+    // 隐藏期间不提交(哪怕有变化), 重新可见后补一帧。
+    win.hide();
+    await t.flushMicrotasks();
+    ViewsBinding.instance.viewHosts.get(win.id)!.renderView.markNeedsPaint();
+    await t.pump();
+    expect.isFalse(mock.sceneOpsByView.has(win.id));
+    win.show();
+    await t.flushMicrotasks();
+    expect.isTrue(SchedulerBinding.instance.hasScheduledFrame, "becoming visible requests a frame");
+    rendered = mock.renderedScenes;
+    await t.pump();
+    expect.isTrue(mock.sceneOpsByView.has(win.id), "visible again");
+    expect.equal(mock.renderedScenes, rendered, "the other window is left alone");
+
+    // 引擎自己发起的帧(框架没有请求): 每个可见窗口都提交。
+    mock.sceneOpsByView.delete(win.id);
+    expect.isFalse(SchedulerBinding.instance.hasScheduledFrame);
+    await t.pump();
+    expect.isTrue(mock.sceneOpsByView.has(win.id));
+    expect.equal(mock.renderedScenes, rendered + 1);
+  }, { mockOnly: true });
+
+  // 默认快捷键(Tab 遍历)在每个窗口里都生效: 窗口的作用域在默认快捷键的节点之下。
+  testViews("default shortcuts work in every window", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    const a = new FocusNode({ debugLabel: "a" });
+    const b = new FocusNode({ debugLabel: "b" });
+    const win = await Widget.create({ width: 200, height: 100 });
+    const box = (node: FocusNode): View => new Focus({ focusNode: node, child: new SizedBox({ width: 20, height: 20 }) });
+    await t.pumpView(withWindows(new SizedBox({}), [{ widget: win, child: new Column({ children: [box(a), box(b)] }) }]));
+    await t.pump();
+    mock.setWindowFocus(win.id, true);
+    await t.pump();
+    const tab = { logical: LogicalKeyboardKey.tab.keyId, physical: PhysicalKeyboardKey.tab.keyId };
+    await t.pressKey(tab);
+    expect.equal(FocusManager.instance.primaryFocus, a);
+    await t.pressKey(tab);
+    expect.equal(FocusManager.instance.primaryFocus, b);
+  }, { mockOnly: true });
+
+  // 布局变化后悬停状态按新布局重新计算(指针没动), 不论是哪个窗口。
+  testViews("a layout change in any window re-evaluates hover", async (t) => {
+    const win = await Widget.create({ width: 200, height: 100 });
+    const log: string[] = [];
+    const content = (left: number): View => new Stack({ children: [
+      new Positioned({ left, top: 0, width: 40, height: 40, child: new MouseRegion({
+        onEnter: () => log.push("enter"), onExit: () => log.push("exit"), child: new ColoredBox({ color: Colors.white }),
+      }) }),
+    ] });
+    const root = (left: number): View => withWindows(new SizedBox({}), [{ widget: win, child: content(left) }]);
+    await t.pumpView(root(120));
+    await t.pump();
+    t.sendPointer(Phase.hover, new Offset(20, 20), { kind: Kind.mouse, buttons: 0, view: win.id });
+    await t.pump();
+    expect.deepEqual(log, []);
+    await t.pumpView(root(0));  // 区域移到指针下面
+    await t.pump();
+    expect.deepEqual(log, ["enter"]);
   }, { mockOnly: true });
 
   // 最后一个窗口关闭: 应用不退出, 只收到 'window-all-closed'。

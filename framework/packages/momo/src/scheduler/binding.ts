@@ -23,30 +23,45 @@ export interface DelayedTask {
   readonly isActive: boolean;
 }
 
+/**
+ * 延迟任务的定时器来源。生产环境是宿主的定时器(运行时是 libnode: setTimeout);测试注入假时钟
+ * ({@link SchedulerBinding.timerHost}), 时间由测试推进。
+ */
+export interface TimerHost {
+  /** delayMs 毫秒后调用 callback 一次;返回取消用的句柄。 */
+  setTimer(callback: () => void, delayMs: number): unknown;
+  /** 取消尚未触发的定时器。 */
+  clearTimer(handle: unknown): void;
+}
+
+/** 宿主定时器。 */
+const hostTimers: TimerHost = {
+  setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+  clearTimer: (handle) => clearTimeout(handle),
+};
+
 class DelayedTaskImpl implements DelayedTask {
   isActive = true;
-  #id = 0;
-  #deadline = -1;
-  constructor(readonly binding: SchedulerBinding, readonly delayMs: number, readonly callback: () => void) {
-    this.#schedule();
-  }
-  #schedule(): void {
-    this.#id = this.binding.scheduleFrameCallback(this.#onFrame);
-  }
-  #onFrame = (timeStampMs: number): void => {
-    if (!this.isActive) return;
-    if (this.#deadline < 0) this.#deadline = timeStampMs + this.delayMs;
-    if (timeStampMs >= this.#deadline) {
+  readonly #timers: TimerHost;
+  readonly #handle: unknown;
+  constructor(timers: TimerHost, delayMs: number, callback: () => void, readonly onDone: (task: DelayedTaskImpl) => void) {
+    this.#timers = timers;
+    this.#handle = timers.setTimer(() => {
+      if (!this.isActive) return;
       this.isActive = false;
-      this.callback();
-    } else {
-      this.#schedule();
-    }
-  };
+      this.onDone(this);
+      try {
+        callback();
+      } catch (e) {
+        reportError(e, "during a delayed task");
+      }
+    }, Math.max(0, delayMs));
+  }
   cancel(): void {
     if (!this.isActive) return;
     this.isActive = false;
-    this.binding.cancelFrameCallbackWithId(this.#id);
+    this.onDone(this);
+    this.#timers.clearTimer(this.#handle);
   }
 }
 
@@ -76,6 +91,10 @@ export class SchedulerBinding {
   #currentFrameTimeStamp = 0;
   #framesEnabled = true;
   #frameCount = 0;
+  #currentFrameWasRequested = false;
+  readonly #delayed = new Set<DelayedTaskImpl>();
+  /** 延迟任务用的定时器(缺省宿主定时器;测试换成假时钟)。只影响之后登记的任务。 */
+  timerHost: TimerHost = hostTimers;
 
   private constructor() {
     platformDispatcher.onBeginFrame = (t: number) => this.handleBeginFrame(t);
@@ -93,6 +112,13 @@ export class SchedulerBinding {
   /** 当前(或最近一帧)的 vsync 时间戳(毫秒)。 */
   get currentFrameTimeStamp(): number {
     return this.#currentFrameTimeStamp;
+  }
+  /**
+   * 当前(或最近一帧)是否由框架请求(scheduleFrame)。false: 引擎自己发起的帧(新视图、窗口重新可见、
+   * 扩展的帧回调…)。
+   */
+  get currentFrameWasRequested(): boolean {
+    return this.#currentFrameWasRequested;
   }
   /** 已处理的帧数。 */
   get frameCount(): number {
@@ -149,14 +175,18 @@ export class SchedulerBinding {
   }
 
   /**
-   * 延迟任务:基于帧回调计时(框架不使用宿主定时器)。等待期间会持续请求帧。
+   * 延迟任务: delayMs 毫秒后调用 callback 一次。由定时器({@link timerHost})驱动, 等待期间不请求帧;
+   * 回调在帧外执行, 其中的 setState / markNeedsPaint 等照常请求帧。
    */
   scheduleDelayed(delayMs: number, callback: () => void): DelayedTask {
-    return new DelayedTaskImpl(this, delayMs, callback);
+    const task = new DelayedTaskImpl(this.timerHost, delayMs, callback, (t) => this.#delayed.delete(t));
+    this.#delayed.add(task);
+    return task;
   }
 
   /** onBeginFrame 处理:执行 transient 回调。 */
   handleBeginFrame(timeStampMs: number): void {
+    this.#currentFrameWasRequested = this.#hasScheduledFrame;
     this.#hasScheduledFrame = false;
     this.#currentFrameTimeStamp = timeStampMs;
     this.#phase = SchedulerPhase.transientCallbacks;
@@ -203,8 +233,9 @@ export class SchedulerBinding {
     this.#frameCount++;
   }
 
-  /** 测试用:清空所有 transient/post-frame 回调(persistent 保留)。 */
+  /** 测试用:清空所有 transient/post-frame 回调并取消延迟任务(persistent 保留)。 */
   debugResetForTest(): void {
+    for (const task of [...this.#delayed]) task.cancel();
     this.#transient.clear();
     this.#postFrame.length = 0;
     this.#removedIds.clear();

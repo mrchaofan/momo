@@ -141,7 +141,7 @@ group("rendering/layers → SceneBuilder", () => {
         new Positioned({ left: 200, top: 0, width: 64, height: 48, child: new Texture({ textureId: 7 }) }),
       ],
     }));
-    const root = t.binding.renderView.rootLayer!;
+    const root = t.renderView.rootLayer!;
     expect.isTrue(root instanceof TransformLayer);
     expect.deepEqual(Array.from(root.transform.storage), [2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
     const kinds = layerKinds(root);

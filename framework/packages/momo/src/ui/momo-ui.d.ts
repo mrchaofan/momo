@@ -362,7 +362,7 @@ declare module "momo:ui" {
 //                                          composingEnd(), command({command})
 //                               replaceStart/End(UTF-16): 输入法显式指定的替换区间(重音字符/重新转换),
 //                               缺省时替换 composing 区间, 否则替换选区。
-//   momo/extensions  native→JS  扩展加载错误上报(string)
+//   momo/extensions  JS→native  方法调用: getErrors() → string[](加载失败的扩展 "<id>: <原因>";随时可查)
 //   momo/platform_views  JS→native  create {id, viewType, params?: Uint8Array} / dispose {id} / focus {id}
 //                        native→JS  focused {id}(用户点击等使平台视图获得键盘焦点)
 // 方法调用编码(StandardMethodCodec, 与 Flutter 一致): 请求 = method(string 值)后紧接 args 值;
