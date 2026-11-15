@@ -19,6 +19,32 @@ dispatch_block_t MakeBlock(Closure task) {
   };
 }
 
+// 结束 [NSApp run]。
+void StopMainLoop() {
+  // 模态循环(系统的"重新打开窗口"提示、应用自己的 runModal)里 stop: 只结束模态循环, 主循环照常继续。
+  const bool in_modal = NSApp.modalWindow != nil;
+  [NSApp stop:nil];
+  // stop 只在处理完下一个事件后生效: 投递一个空事件唤醒 run loop。
+  NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                      location:NSZeroPoint
+                                 modifierFlags:0
+                                     timestamp:0
+                                  windowNumber:0
+                                       context:nil
+                                       subtype:0
+                                         data1:0
+                                         data2:0];
+  [NSApp postEvent:event atStart:NO];
+  if (in_modal) {
+    // 模态循环不在 default mode 下运行: 这个 block 要等它退出、回到外层循环后才执行, 届时再停一次
+    // (多层模态则逐层重复)。
+    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopDefaultMode, ^{
+      StopMainLoop();
+    });
+    CFRunLoopWakeUp(CFRunLoopGetMain());
+  }
+}
+
 }  // namespace
 
 void MacNativeLoop::PostTask(Closure task) {
@@ -35,19 +61,6 @@ bool MacNativeLoop::RunsTasksOnCurrentThread() const { return pthread_main_np() 
 
 void MacNativeLoop::Run() { [NSApp run]; }
 
-void MacNativeLoop::Quit() {
-  [NSApp stop:nil];
-  // stop 只在处理完下一个事件后生效: 投递一个空事件唤醒 run loop。
-  NSEvent* event = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
-                                      location:NSZeroPoint
-                                 modifierFlags:0
-                                     timestamp:0
-                                  windowNumber:0
-                                       context:nil
-                                       subtype:0
-                                         data1:0
-                                         data2:0];
-  [NSApp postEvent:event atStart:NO];
-}
+void MacNativeLoop::Quit() { StopMainLoop(); }
 
 }  // namespace momo::embedder::macos
