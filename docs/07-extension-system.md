@@ -103,10 +103,28 @@ Shell 启动 → ExtensionHost 读 extensions.manifest
  → 逐个 dlopen/LoadLibrary(应用包内路径) → 解析 momo_ext_init → 版本握手
  → on_attach(host_api, engine)            [platform 线程]
  → 扩展注册模块/通道; ui 线程建 JS 绑定
+ → 生命周期事件 RuntimeStarting(#1, Launch) → 创建 JS 运行时, 执行 bundle
  … 运行期 …
- → 引擎关闭(JS 运行时已销毁): on_detach → 排空并停止扩展 worker pool → 拒绝该扩展此后的一切 API 调用
+ → --dev 热重启(可多次): 平台视图全部 dispose → 旧运行时销毁, ui 线程停住
+     → RuntimeStopped(#n, HotRestart) → RuntimeStarting(#n+1, HotRestart) → 放行 ui 线程, 新运行时执行 bundle
+ → 引擎关闭: 平台视图 dispose → JS 运行时销毁 → RuntimeStopped(#n, Shutdown) → on_detach
+   → 排空并停止扩展 worker pool → 拒绝该扩展此后的一切 API 调用
    (动态库不卸载: 扩展线程上可能仍有在途回调, 与 Flutter 插件一致)
 ```
+
+**生命周期事件**(`lifecycle_add_listener`;C++ 封装里是 `Extension::OnLifecycle` 与 `Host::AddLifecycleListener`)。
+扩展只 attach 一次, 而 JS 运行时可以先后有多个: 凡是"属于某个 JS 运行时"的状态(JS 传来的句柄、按 id 登记的对象、
+等待 JS 应答的请求)都应在 `RuntimeStopped` 时清掉。设计要点:
+
+- **时机确定**。事件在 platform 线程同步送达;送达期间旧运行时已销毁、新运行时尚未创建、ui 线程停着——监听器
+  不会与任何 JS 并发, 新运行时的消息一定晚于 `RuntimeStarting`。
+- **对扩展无要求**。不注册就什么都不发生;监听器有 bug 只影响它自己的状态。宿主自己管的东西(平台视图、
+  通道应答、Promise)不依赖扩展配合, 照常由宿主回收。
+- **可扩展**。事件是一个带 `struct_size` 的结构加上只增不改的枚举: 新增事件(如应用挂起/恢复)或新字段不改函数表,
+  老扩展按约定忽略不认识的事件。一个扩展可以注册多个监听器(各子系统各管各的), 建立类事件按注册顺序送达,
+  拆除类事件逆序。`runtime_generation` 标识是第几个运行时, 可用来给状态打标记。
+- **限制**。监听器里不能阻塞等待 ui 线程(会死锁);旧运行时销毁前已发出、尚在途中的通道消息可能在 `RuntimeStopped`
+  之后送达。
 
 失败隔离:单个扩展 init 失败只禁用该扩展并上报(应用可在 JS 捕获 `momo/extensions` 通道的错误),不拖垮引擎。扩展内崩溃无法隔离(同进程),文档明确要求扩展自行保证健壮性;`--dev` 下加载时带符号名日志辅助定位。
 

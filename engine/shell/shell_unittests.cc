@@ -322,6 +322,49 @@ TEST_F(ShellTest, HostChannelsRegisteredInOnCreatedSeeTopLevelCalls) {
   (*shell)->Shutdown();
 }
 
+// 扩展的生命周期事件与 JS 运行时的更替严格有序: Starting 早于该运行时发出的任何消息, Stopped 时它已经
+// 销毁(其平台视图也已 dispose), 热重启的 Stopped/Starting 之间没有 JS 在运行。
+std::vector<std::string>* g_turnover_log = nullptr;
+
+bool InitTurnoverExtension(uint32_t version, MomoExtension* out) {
+  out->id = "test.turnover";
+  out->on_attach = [](void*, const MomoHostApi* api, MomoEngineRef engine) {
+    g_turnover_log->push_back("attach");
+    uint64_t id = 0;
+    api->lifecycle_add_listener(
+        engine,
+        [](void*, const MomoLifecycleInfo* info) {
+          g_turnover_log->push_back(
+              std::string(info->event == kMomoLifecycleRuntimeStarting ? "starting" : "stopped") + "#" +
+              std::to_string(info->runtime_generation) + "/" + std::to_string(info->reason));
+        },
+        nullptr, &id);
+  };
+  out->on_detach = [](void*) { g_turnover_log->push_back("detach"); };
+  return version >= 1;
+}
+
+TEST_F(ShellTest, ExtensionsAreToldAboutRuntimeTurnover) {
+  Settings settings;
+  settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
+  std::vector<std::string> log;
+  g_turnover_log = &log;
+  // bundle 顶层会调用 momo/window setTitle: 作为"这个运行时发出的消息"记进同一份日志。
+  auto shell = Shell::Create(runners_, settings, RecordCalls("momo/window", &log, runners_.platform), nullptr,
+                             {{"test.turnover", &InitTurnoverExtension}});
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  const auto messages = [&] { return std::count(log.begin(), log.end(), "setTitle:Momo · hello_frame"); };
+  ASSERT_TRUE(PumpUntil([&] { return messages() == 1; }));
+  (*shell)->RequestHotRestart();
+  ASSERT_TRUE(PumpUntil([&] { return messages() == 2; }));
+  (*shell)->Shutdown();
+  EXPECT_EQ(log, (std::vector<std::string>{
+                     "attach", "starting#1/0", "setTitle:Momo · hello_frame",
+                     "stopped#1/1", "starting#2/1", "setTitle:Momo · hello_frame",
+                     "stopped#2/2", "detach"}));
+  g_turnover_log = nullptr;
+}
+
 #endif  // MOMO_HAS_JS_RUNTIME
 
 

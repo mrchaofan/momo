@@ -88,6 +88,8 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
       PostToObject(weak, [cb, code](Shell&) { cb(code); });
     };
   }
+  // 首个 JS 运行时即将创建(扩展已全部 attach, ui 线程还没有 JS)。
+  raw->extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonLaunch);
   task_runners.ui->PostTask([raw, &settings, &host, &ui_status, &ui_ready] {
     Engine::Delegate& delegate = *raw;  // 私有基类: 在成员上下文内转换
     auto engine = Engine::Create(settings, delegate, raw->MakeVsyncWaiter({}), host);
@@ -136,8 +138,11 @@ void Shell::Shutdown() {
   PostTaskAndWait(*task_runners_.ui, [this] { engine_.reset(); });
   // 平台视图: JS 已不在, 先移出窗口再交给扩展释放(必须早于扩展 on_detach)。
   DisposeAllPlatformViews();
-  // 扩展 on_detach(platform 线程, JS 运行时已销毁, 线程 join 之前;docs/08 §5)。
+  // 扩展: 先告知 JS 运行时已销毁, 再 on_detach(platform 线程, 线程 join 之前;docs/08 §5)。
   if (extensions_) {
+    if (extensions_->runtime_generation() != 0) {
+      extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonShutdown);
+    }
     extensions_->DetachAll();
   }
   textures_->SetFrameListener(nullptr, nullptr);
@@ -326,11 +331,33 @@ void Shell::DisposeAllPlatformViews() {
 void Shell::RequestHotRestart() {
   // 旧 JS 创建的平台视图随运行时一起作废(新 bundle 从头创建, id 可能复用)。
   DisposeAllPlatformViews();
-  PostToEngine([](Engine& engine) {
-    if (Status status = engine.HotRestart(); !status.ok()) {
+  if (shut_down_) {
+    return;
+  }
+  // 旧运行时销毁后 ui 线程停住, 在这里(platform 线程)同步告知扩展, 然后放行 ui 线程创建新运行时:
+  // 扩展清理旧运行时的状态时没有 JS 在运行, 新运行时发来的消息一定晚于这两个事件。
+  struct Handoff {
+    WaitableEvent runtime_destroyed;
+    WaitableEvent resume;
+  };
+  auto handoff = std::make_shared<Handoff>();
+  task_runners_.ui->PostTask([this, handoff] {
+    if (engine_ == nullptr) {
+      handoff->runtime_destroyed.Signal();
+      return;
+    }
+    const Status status = engine_->HotRestart([&] {
+      handoff->runtime_destroyed.Signal();
+      handoff->resume.Wait();
+    });
+    if (!status.ok()) {
       MOMO_LOG(ERROR) << "Hot restart failed: " << status;
     }
   });
+  handoff->runtime_destroyed.Wait();
+  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonHotRestart);
+  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonHotRestart);
+  handoff->resume.Signal();
 }
 
 void Shell::SetAppSuspended(bool suspended) {

@@ -50,12 +50,17 @@ Engine::~Engine() {
   MOMO_LOG(INFO) << "Engine destroyed.";
 }
 
-Status Engine::HotRestart() {
+Status Engine::HotRestart(const std::function<void()>& runtime_destroyed) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MOMO_RETURN_IF_ERROR(CheckBundle(settings_));
   MOMO_LOG(INFO) << "Hot restart: reloading " << settings_.bundle_path.string();
   driver_.reset();  // 先销毁旧运行时(释放 momo:* 端点), 再建新的
-  auto driver = ui::CreateAppDriver(settings_, *this, host_);
+  if (runtime_destroyed) {
+    runtime_destroyed();
+  }
+  const Status bundle = CheckBundle(settings_);
+  StatusOr<std::unique_ptr<ui::AppDriver>> driver =
+      bundle.ok() ? ui::CreateAppDriver(settings_, *this, host_)
+                  : StatusOr<std::unique_ptr<ui::AppDriver>>(bundle);
   if (!driver.ok()) {
     // 新 bundle 有错: 退回占位驱动, 保持引擎可用(--dev 下修复后可再次重启)。
     driver_ = std::make_unique<ui::PlaceholderDriver>(static_cast<ui::WindowClient&>(*this));
