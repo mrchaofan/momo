@@ -772,11 +772,6 @@ void ExtensionHost::NotifyLifecycle(MomoLifecycleEvent event, MomoLifecycleReaso
   }
 }
 
-uint64_t ExtensionHost::runtime_generation() const {
-  MutexLock lock(core_->mutex);
-  return core_->runtime_generation;
-}
-
 std::vector<std::string> ExtensionHost::attached_ids() const {
   MutexLock lock(core_->mutex);
   std::vector<std::string> ids;

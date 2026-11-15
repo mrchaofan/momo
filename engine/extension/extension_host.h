@@ -93,8 +93,6 @@ class ExtensionHost final : public Object {
   // 调用方(Shell)保证时机: RuntimeStarting 在创建 JS 运行时之前, RuntimeStopped 在它销毁之后, 两者派发
   // 期间 ui 线程不运行 JS。代数由这里维护: Starting 时加一。
   void NotifyLifecycle(MomoLifecycleEvent event, MomoLifecycleReason reason);
-  // 最近一次 RuntimeStarting 的代数(还没有过为 0)。
-  uint64_t runtime_generation() const;
 
   std::vector<std::string> attached_ids() const;
   std::vector<std::string> errors() const;

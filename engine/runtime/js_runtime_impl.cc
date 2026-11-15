@@ -302,19 +302,17 @@ Status JsRuntimeImpl::RunModule(const std::string& url, const std::string* sourc
       V8String(isolate_, base_dir.string())};
   v8::Local<v8::Value> result;
   v8::Local<v8::Value> promise_value;
-  v8::Local<v8::Value> state_value;
-  if (!import_fn.As<v8::Function>()->Call(context, host, 3, args).ToLocal(&result) ||
-      !result->IsArray() ||
-      !result.As<v8::Array>()->Get(context, 0).ToLocal(&promise_value) || !promise_value->IsPromise() ||
-      !result.As<v8::Array>()->Get(context, 1).ToLocal(&state_value) || !state_value->IsObject()) {
+  if (!import_fn.As<v8::Function>()->Call(context, host, 3, args).ToLocal(&result) || !result->IsObject() ||
+      !result.As<v8::Object>()->Get(context, V8String(isolate_, "promise")).ToLocal(&promise_value) ||
+      !promise_value->IsPromise()) {
     return try_catch.HasCaught() ? ExceptionToStatus(try_catch, what)
-                                 : InternalError(what + ": importModule did not return [Promise, state]");
+                                 : InternalError(what + ": importModule did not return { promise, … }");
   }
+  v8::Local<v8::Object> run = result.As<v8::Object>();
   v8::Local<v8::Promise> promise = promise_value.As<v8::Promise>();
-  v8::Local<v8::Object> state = state_value.As<v8::Object>();
   auto started = [&] {
     v8::Local<v8::Value> flag;
-    return state->Get(context, V8String(isolate_, "started")).ToLocal(&flag) && flag->IsTrue();
+    return run->Get(context, V8String(isolate_, "started")).ToLocal(&flag) && flag->IsTrue();
   };
 
   // 模块图的加载经 uv_run 推进(同 Electron NodeBindings::JoinAppCode;文件读取在 uv 线程池完成), 到入口
@@ -336,7 +334,7 @@ Status JsRuntimeImpl::RunModule(const std::string& url, const std::string* sourc
     return PromiseToStatus(promise, what);
   }
   if (promise->State() == v8::Promise::kPending) {
-    (void)state->Set(context, V8String(isolate_, "detached"), v8::True(isolate_));
+    (void)run->Set(context, V8String(isolate_, "detached"), v8::True(isolate_));
     MOMO_LOG(INFO) << url << ": the entry module is suspended at a top-level await; startup does not "
                              "wait for it (evaluation continues asynchronously).";
   }

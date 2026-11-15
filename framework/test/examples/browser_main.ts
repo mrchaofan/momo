@@ -90,7 +90,7 @@ test("ext-webview: custom protocol serves the start page; sessions and cookies a
   expect.deepEqual(seen, [[{ a: 1 }, "momo://newtab"]]);
 
   // 会话: 默认 / 命名持久(同名同一个) / 无痕(每次独立);cookie 与清理命令发往各自的会话。
-  expect.isTrue(WebSession.persistent("work") === WebSession.persistent("work"));
+  expect.equal(WebSession.persistent("work").id, WebSession.persistent("work").id);
   const incognito = WebSession.ephemeral();
   expect.isTrue(incognito.id !== WebSession.ephemeral().id && !incognito.isPersistent);
   const before = webCommands.length;

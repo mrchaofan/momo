@@ -16,7 +16,7 @@
 //       evaluateJavaScript {script} | getState
 //   会话命令 {"session": <会话键>, "method", ...}:
 //       cookies.get {url?} → [cookie] | cookies.set {cookie} | cookies.delete {name, url?, domain?, path?} |
-//       cookies.clear | session.clearData {kinds?: ["cookies"|"cache"|"storage"]} | session.dispose
+//       session.clearData {kinds?: ["cookies"|"cache"|"storage"]} | session.dispose
 //   cookie: {"name", "value", "domain", "path", "expires": <Unix 秒>|null, "secure", "httpOnly",
 //            "sameSite": "lax"|"strict"|null};cookies.set 可用 "url" 代替 "domain"。
 //
@@ -367,7 +367,7 @@ class WebViewExtension final : public momo::ext::Extension {
       FailTask(pending_[request_id], NSURLErrorCancelled);
     }
     [pending_ removeAllObjects];
-    // 无痕会话由 JS 对象持有: 没来得及 dispose 的随运行时一起释放。持久会话的数据在磁盘上, 可以留着复用。
+    // 无痕会话属于创建它的 JS 运行时(下一个运行时会从头编号): 没来得及 dispose 的随运行时一起释放。持久会话的数据在磁盘上, 可以留着复用。
     for (NSString* key in stores_.allKeys) {
       if ([key hasPrefix:@"ephemeral:"]) [stores_ removeObjectForKey:key];
     }
@@ -685,11 +685,8 @@ class WebViewExtension final : public momo::ext::Extension {
           ReplyResult(token, @(removed));
         });
       }];
-    } else if ([method isEqualToString:@"cookies.clear"] || [method isEqualToString:@"session.clearData"]) {
-      NSSet<NSString*>* types = [method isEqualToString:@"cookies.clear"]
-                                    ? [NSSet setWithObject:WKWebsiteDataTypeCookies]
-                                    : DataTypesFor(ArrayField(call, @"kinds"));
-      [store removeDataOfTypes:types
+    } else if ([method isEqualToString:@"session.clearData"]) {
+      [store removeDataOfTypes:DataTypesFor(ArrayField(call, @"kinds"))
                  modifiedSince:[NSDate distantPast]
              completionHandler:^{
                ReplyResult(token, nil);

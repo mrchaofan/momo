@@ -107,7 +107,7 @@ class JsRuntimeImpl {
   node::Environment* env_ = nullptr;
   v8::Global<v8::Context> context_;
   std::unique_ptr<NodeBindings> bindings_;
-  // node_bootstrap 返回的宿主对象: { importModule, flushCompileCache }(importModule 返回 [Promise, 状态])。
+  // node_bootstrap 返回的宿主对象: { importModule, flushCompileCache }(importModule 返回 { promise, started, detached })。
   v8::Global<v8::Object> host_;
   bool code_cache_ = false;
 

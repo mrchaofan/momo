@@ -62,7 +62,9 @@ type ProtocolSource = ProtocolHandler | AssetProtocol;
 // 系统 WebView 自己处理、不能接管的协议。
 const kBuiltInSchemes = new Set(["http", "https", "file", "about", "data", "blob", "javascript", "ws", "wss", "ftp"]);
 const protocols = new Map<string, ProtocolSource>();
-let protocolChannelInstalled = false;
+protocolChannel.setMessageHandler((frame) => {
+  if (frame !== null) void serveProtocolRequest(frame);
+});
 
 /**
  * 声明一个自定义资源协议, 之后创建的 WebView 可以加载 `<scheme>://…` 地址(如 `app://localhost/index.html`)。
@@ -75,12 +77,6 @@ export function registerProtocol(scheme: string, source: ProtocolSource): void {
   if (!/^[a-z][a-z0-9+.-]*$/.test(scheme)) throw new Error(`momo.webview: invalid protocol scheme "${scheme}" (lowercase letters, digits, + . -)`);
   if (kBuiltInSchemes.has(scheme)) throw new Error(`momo.webview: "${scheme}" is handled by the system WebView and cannot be registered`);
   protocols.set(scheme, source);
-  if (typeof source === "function" && !protocolChannelInstalled) {
-    protocolChannelInstalled = true;
-    protocolChannel.setMessageHandler((frame) => {
-      if (frame !== null) void serveProtocolRequest(frame);
-    });
-  }
 }
 
 /** 创建参数里的协议表(JS 处理的只给 scheme)。only 给出时只包含其中的协议。 */
@@ -189,9 +185,9 @@ export class CookieStore {
   async delete(name: string, scope: { url?: string; domain?: string; path?: string } = {}): Promise<number> {
     return Number(await call({ session: this.session.id }, "cookies.delete", { name, ...scope }));
   }
-  /** 清空本会话的全部 cookie。 */
-  async clear(): Promise<void> {
-    await call({ session: this.session.id }, "cookies.clear");
+  /** 清空本会话的全部 cookie(同 `session.clearData(["cookies"])`)。 */
+  clear(): Promise<void> {
+    return this.session.clearData(["cookies"]);
   }
 }
 
@@ -203,10 +199,7 @@ export type WebDataKind = "cookies" | "cache" | "storage";
  * 不同会话互不可见。WebView 的会话在创建时确定, 之后不能更换。
  */
 export class WebSession {
-  static #named = new Map<string, WebSession>();
   static #ephemeralCount = 0;
-  // 无痕会话的键带上本次 JS 运行的标记: 热重启后不会撞上原生侧仍然存活的旧会话。
-  static readonly #run = Date.now().toString(36);
 
   /** 默认会话: 持久化到磁盘, 未指定 session 的 WebView 都用它。 */
   static readonly default = new WebSession("default");
@@ -214,18 +207,17 @@ export class WebSession {
   /** 命名的持久会话(多账号、多工作区): 同名即同一份数据, 重启后仍在。macOS 需要 14 及以上。 */
   static persistent(name: string): WebSession {
     if (name === "") throw new Error("momo.webview: a persistent session needs a name");
-    let session = WebSession.#named.get(name);
-    if (session === undefined) WebSession.#named.set(name, (session = new WebSession(`persistent:${name}`)));
-    return session;
+    return new WebSession(`persistent:${name}`);
   }
 
   /** 新建一个无痕会话: 数据只在内存里, 每次调用都是独立的一份。用完后 {@link dispose}。 */
   static ephemeral(): WebSession {
-    return new WebSession(`ephemeral:${WebSession.#run}-${++WebSession.#ephemeralCount}`);
+    return new WebSession(`ephemeral:${++WebSession.#ephemeralCount}`);
   }
 
   readonly cookies: CookieStore;
 
+  /** id 相同即同一个会话(对象本身不带状态)。 */
   private constructor(readonly id: string) {
     this.cookies = new CookieStore(this);
   }
@@ -266,17 +258,11 @@ export interface MessageSource {
 }
 
 const controllers = new Map<number, WebViewController>();
-let eventsInstalled = false;
-
-function installEvents(): void {
-  if (eventsInstalled) return;
-  eventsInstalled = true;
-  events.setMessageHandler((message) => {
-    const m = message as Record<string, unknown> | null;
-    if (m === null || typeof m.id !== "number") return;
-    controllers.get(m.id)?._handleEvent(m);
-  });
-}
+events.setMessageHandler((message) => {
+  const m = message as Record<string, unknown> | null;
+  if (m === null || typeof m.id !== "number") return;
+  controllers.get(m.id)?._handleEvent(m);
+});
 
 /** 操作一个已创建的 WebView。 */
 export class WebViewController {
@@ -430,7 +416,6 @@ class WebViewHostState extends State<WebView> {
   }
 
   #onCreated = (platformView: PlatformViewController): void => {
-    installEvents();
     const controller = new WebViewController(platformView, this.#session);
     this.#controller = controller;
     controllers.set(controller.viewId, controller);
