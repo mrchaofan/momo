@@ -22,7 +22,8 @@
 //
 // 事件通道 "momo.webview/events"(原生 → JS, JSON):
 //   {"id", "event": "state", "url", "title", "loading", "progress", "canGoBack", "canGoForward"}
-//   {"id", "event": "message", "body"}    页面里 window.momo.postMessage(value);body 为 JSON 文本
+//   {"id", "event": "message", "body", "origin"}   页面里 window.momo.postMessage(value);body 为 JSON 文本,
+//                                                  origin 为发送方的源("app://localhost";不透明源为 "null")
 //   {"id", "event": "error", "message"}   导航失败
 //   {"id", "event": "newWindow", "url"}   页面请求新窗口(target=_blank / window.open);原生不创建
 //
@@ -361,12 +362,52 @@ class WebViewExtension final : public momo::ext::Extension {
 
   // ---- 自定义协议 ----
 
-  // 读取打包资源(路径相对应用的 assets 目录)。
-  NSData* ReadAsset(NSString* path) {
-    if (host_ == nullptr) return nil;
-    auto bytes = host_->ReadAsset(path.UTF8String);
-    if (!bytes) return nil;
-    return [NSData dataWithBytes:bytes->data() length:bytes->size()];
+  // 在途的协议请求: 登记后才可以异步应答;WebKit 停止任务(导航取消、视图销毁)时注销, 之后不得再碰它。
+  NSNumber* TrackTask(id<WKURLSchemeTask> task) {
+    NSNumber* request_id = @(++next_request_id_);
+    pending_[request_id] = task;
+    return request_id;
+  }
+  id<WKURLSchemeTask> TakeTask(NSNumber* request_id) {
+    id<WKURLSchemeTask> task = request_id ? pending_[request_id] : nil;
+    if (task != nil) [pending_ removeObjectForKey:request_id];
+    return task;
+  }
+  void ForgetTask(id<WKURLSchemeTask> task) {
+    for (NSNumber* request_id in [pending_ allKeysForObject:task]) {
+      [pending_ removeObjectForKey:request_id];
+    }
+  }
+
+  // 用打包资源应答(路径相对应用的 assets 目录;path 为 nil 或不存在时改用 fallback, 都没有则 404)。
+  // 文件在后台线程读取, 不占用 platform 线程。
+  void ServeAsset(id<WKURLSchemeTask> task, NSString* path, NSString* fallback) {
+    momo::ext::Host* host = host_;
+    if (host == nullptr) {
+      FailTask(task, NSURLErrorCancelled);
+      return;
+    }
+    NSNumber* request_id = TrackTask(task);
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+      NSString* served = path;
+      NSData* data = path != nil ? ReadAsset(host, path) : nil;
+      if (data == nil && fallback != nil) {
+        served = fallback;
+        data = ReadAsset(host, fallback);
+      }
+      dispatch_async(dispatch_get_main_queue(), ^{
+        id<WKURLSchemeTask> live = TakeTask(request_id);
+        if (live == nil) return;  // 已被 WebKit 停止, 或扩展已卸载
+        if (data == nil) {
+          Respond(live, 404, @{@"Content-Type" : @"text/plain; charset=utf-8"},
+                  [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding]);
+          return;
+        }
+        NSString* mime = MimeTypeForPath(served);
+        if (IsTextMime(mime)) mime = [mime stringByAppendingString:@"; charset=utf-8"];
+        Respond(live, 200, @{@"Content-Type" : mime}, data);
+      });
+    });
   }
 
   // 把请求转给 JS 的协议处理函数;应答经协议通道回来(HandleProtocolResponse)。
@@ -375,8 +416,7 @@ class WebViewExtension final : public momo::ext::Extension {
       FailTask(task, NSURLErrorCancelled);
       return;
     }
-    NSNumber* request_id = @(++next_request_id_);
-    pending_[request_id] = task;
+    NSNumber* request_id = TrackTask(task);
     NSURLRequest* request = task.request;
     NSData* frame = EncodeFrame(@{
       @"requestId" : request_id,
@@ -389,11 +429,18 @@ class WebViewExtension final : public momo::ext::Extension {
     host_->Send(kProtocolChannel, frame.bytes, frame.length);
   }
 
-  // WebKit 停止了任务(导航取消、视图销毁): 之后不得再向它应答。
-  void ForgetTask(id<WKURLSchemeTask> task) {
-    for (NSNumber* request_id in [pending_ allKeysForObject:task]) {
-      [pending_ removeObjectForKey:request_id];
-    }
+  // 任意线程。数据直接引用宿主的缓冲区(不再拷贝), 随 NSData 释放。
+  static NSData* ReadAsset(momo::ext::Host* host, NSString* path) {
+    const MomoHostApi* api = host->api();
+    MomoEngineRef engine = host->engine();
+    const uint8_t* bytes = nullptr;
+    size_t size = 0;
+    if (api->open_asset(engine, path.UTF8String, &bytes, &size) != kMomoOk) return nil;
+    return [[NSData alloc] initWithBytesNoCopy:const_cast<uint8_t*>(bytes)
+                                        length:size
+                                   deallocator:^(void* pointer, NSUInteger) {
+                                     api->free_asset(engine, static_cast<const uint8_t*>(pointer));
+                                   }];
   }
 
   static void Respond(id<WKURLSchemeTask> task, NSInteger status, NSDictionary* headers, NSData* body) {
@@ -635,10 +682,8 @@ class WebViewExtension final : public momo::ext::Extension {
     NSDictionary* header = nil;
     NSData* body = nil;
     if (DecodeFrame(bytes.data, bytes.size, &header, &body)) {
-      NSNumber* request_id = NumberField(header, @"requestId");
-      id<WKURLSchemeTask> task = request_id ? pending_[request_id] : nil;
+      id<WKURLSchemeTask> task = TakeTask(NumberField(header, @"requestId"));
       if (task != nil) {
-        [pending_ removeObjectForKey:request_id];
         if (StringField(header, @"error") != nil) {
           FailTask(task, NSURLErrorCannotLoadFromNetwork);
         } else {
@@ -672,7 +717,7 @@ class WebViewExtension final : public momo::ext::Extension {
   std::map<int64_t, MomoWebViewEntry*> entries_;
   // 非默认会话的数据存储, 按会话键。一直持有: 没有 WebView 时也能读写其 cookie(无痕会话到 session.dispose 为止)。
   NSMutableDictionary<NSString*, WKWebsiteDataStore*>* stores_ = [NSMutableDictionary dictionary];
-  // 已转给 JS、等待应答的协议请求。
+  // 在途的协议请求(等待 JS 应答, 或正在后台读取资源)。
   NSMutableDictionary<NSNumber*, id<WKURLSchemeTask>>* pending_ = [NSMutableDictionary dictionary];
   uint64_t next_request_id_ = 0;
 };
@@ -712,19 +757,8 @@ class WebViewExtension final : public momo::ext::Extension {
     return;
   }
   NSString* file = [self assetFileForURL:task.request.URL];
-  NSData* data = file ? _owner->ReadAsset([self assetPath:file]) : nil;
-  if (data == nil && _fallback != nil) {
-    file = _fallback;
-    data = _owner->ReadAsset([self assetPath:file]);
-  }
-  if (data == nil) {
-    WebViewExtension::Respond(task, 404, @{@"Content-Type" : @"text/plain; charset=utf-8"},
-                              [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding]);
-    return;
-  }
-  NSString* mime = MimeTypeForPath(file);
-  if (IsTextMime(mime)) mime = [mime stringByAppendingString:@"; charset=utf-8"];
-  WebViewExtension::Respond(task, 200, @{@"Content-Type" : mime}, data);
+  _owner->ServeAsset(task, file != nil ? [self assetPath:file] : nil,
+                     _fallback != nil ? [self assetPath:_fallback] : nil);
 }
 
 - (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {
@@ -871,7 +905,19 @@ static void* kStateContext = &kStateContext;
     NSData* data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
     text = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
   }
-  _owner->SendEvent(@{@"id" : @(_viewId), @"event" : @"message", @"body" : text ?: @"null"});
+  // 来源: 页面可以是任意网站(也可能是其中的 iframe), 应用据此判断是否可信。
+  WKSecurityOrigin* source = message.frameInfo.securityOrigin;
+  NSString* origin = @"null";  // 不透明源(loadHtml 且没有 baseUrl、data: 等)
+  if (source.protocol.length > 0) {
+    origin = [NSString stringWithFormat:@"%@://%@", source.protocol, source.host ?: @""];
+    if (source.port != 0) origin = [origin stringByAppendingFormat:@":%ld", (long)source.port];
+  }
+  _owner->SendEvent(@{
+    @"id" : @(_viewId),
+    @"event" : @"message",
+    @"body" : text ?: @"null",
+    @"origin" : origin
+  });
 }
 
 // 页面请求新窗口: 不创建, 交给应用决定(在本视图打开、开新标签或交给系统浏览器)。

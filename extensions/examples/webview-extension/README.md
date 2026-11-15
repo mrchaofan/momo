@@ -29,10 +29,13 @@ new WebView({ initialUrl: "app://localhost/" });
 ```
 
 - **必须在创建 WebView 之前声明**(通常在应用启动时)。协议集合在 WebView 创建时确定。
+- 默认每个 WebView 都能用全部已声明的协议。页面可以向它可用的任何协议发请求, 所以加载不受信任网站的 WebView
+  要收窄: `new WebView({ protocols: ["app"] })`(`[]` 为一个都不给)。
 - 这类地址是真实地址: 刷新、前进后退、相对路径、`fetch` 都有效。
 - 源由 协议 + host 决定: `app://localhost` 请求 `api://host` 是跨源, 响应要带 CORS 头。
 - 资源映射: 目录地址取 `index`(默认 `index.html`);找不到文件返回 404, 或改用 `fallback`(单页应用的前端路由);
   路径不能越出资源目录。
+- 资源文件在后台线程读取, 不阻塞界面。
 - 自定义协议的页面没有 cookie(`document.cookie` 无效);用 `localStorage` 或由 JS 处理函数管理状态。
 - 目前整个响应一次给出, 不支持 Range 请求(大的音视频不适合走这里)。
 
@@ -69,7 +72,9 @@ new WebView({
   devtools: true,                            // 允许系统网页检查器
   onCreated: (web) => {
     web.onStateChanged = (s) => console.log(s.url, s.title, s.loading, s.progress);
-    web.onMessage = (data) => console.log(data);          // 页面: window.momo.postMessage(value)
+    web.onMessage = (data, source) => {                   // 页面: window.momo.postMessage(value)
+      if (source.origin === "app://localhost") console.log(data);
+    };
     web.onNewWindowRequested = (url) => web.loadUrl(url); // target=_blank / window.open
     web.onError = (message) => console.error(message);
   },
@@ -79,7 +84,8 @@ new WebView({
 `WebViewController`: `loadUrl / loadHtml / goBack / goForward / reload / stop / evaluateJavaScript /
 postMessage / focus`, 以及上面的回调。
 
-页面与应用互发消息(值经 JSON 传递), 两个平台写法相同:
+页面与应用互发消息(值经 JSON 传递), 两个平台写法相同。`window.momo` 存在于这个 WebView 加载的**每一个**页面里,
+包括跳转到的外部网站: `onMessage` 的第二个参数给出发送方的源, 处理前先核对。
 
 ```js
 window.momo.postMessage({ type: "ready" });                       // 页面 → 应用(onMessage)
@@ -101,6 +107,12 @@ window.momo.addEventListener("message", (e) => console.log(e.data)); // 应用 �
 | `userAgent` | `customUserAgent` | `Settings.UserAgent` |
 | `devtools` | `isInspectable` | `Settings.AreDevToolsEnabled` |
 | `onNewWindowRequested` | `WKUIDelegate` createWebView 返回 nil | `NewWindowRequested`(`Handled = true`) |
+
+## 生命周期
+
+WebView 的原生视图与它在视图树里的 `State` 同生共死: 组件移出树即销毁(之后对 controller 的调用报错), 页面状态不保留。
+给 `WebView` 一个 `GlobalKey`, 就可以把它移到视图树的别处——包括另一个窗口——而不销毁: 原生视图换窗口, 页面不刷新,
+`viewId`、controller、消息与协议请求都照常工作(示例浏览器的"在新窗口中打开"就是这样做的)。
 
 "协议在创建 WebView 之前声明"这条规则来自两边的共同约束: WebView2 要求在创建环境之前登记协议,
 WKWebView 要求在创建视图之前。导航拦截(允许/拒绝某次跳转)没有纳入: WebView2 的 `NavigationStarting`
