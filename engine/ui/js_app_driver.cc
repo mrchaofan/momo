@@ -14,9 +14,9 @@ namespace {
 class JsAppDriver final : public AppDriver {
  public:
   JsAppDriver(std::unique_ptr<runtime::JsRuntime> runtime, WindowClient& client,
-              const AppHost& host, const Settings& settings)
+              const AppHost& host, const Settings& settings, uint64_t runtime_generation)
       : runtime_(std::move(runtime)),
-        bindings_(UiBindings::Install(*runtime_, client, host, settings)),
+        bindings_(UiBindings::Install(*runtime_, client, host, settings, runtime_generation)),
         placeholder_(client) {}
 
   Status Run(const std::filesystem::path& bundle) { return runtime_->RunMainModule(bundle); }
@@ -58,8 +58,9 @@ class JsAppDriver final : public AppDriver {
 
 }  // namespace
 
-StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings,
-                                                     WindowClient& client, const AppHost& host) {
+StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings, WindowClient& client,
+                                                     const AppHost& host,
+                                                     uint64_t runtime_generation) {
   if (settings.bundle_path.empty()) {
     MOMO_LOG(INFO) << "No JS bundle: placeholder frames.";
     return std::unique_ptr<AppDriver>(std::make_unique<PlaceholderDriver>(client));
@@ -73,7 +74,8 @@ StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings,
   options.on_process_exit = host.request_exit;
   MOMO_ASSIGN_OR_RETURN(std::unique_ptr<runtime::JsRuntime> runtime,
                         runtime::JsRuntime::Create(options));
-  auto driver = std::make_unique<JsAppDriver>(std::move(runtime), client, host, settings);
+  auto driver = std::make_unique<JsAppDriver>(std::move(runtime), client, host, settings,
+                                              runtime_generation);
   MOMO_LOG(INFO) << "Running JS bundle: " << settings.bundle_path.string();
   MOMO_RETURN_IF_ERROR(driver->Run(settings.bundle_path));
   return std::unique_ptr<AppDriver>(std::move(driver));

@@ -92,13 +92,13 @@ const char* KeyTypeName(platform::KeyEventType type) {
 // UiBindings::Impl
 
 UiBindings::Impl::Impl(JsRuntimeImpl* runtime, WindowClient* client, const AppHost& host,
-                       const Settings& settings)
+                       const Settings& settings, uint64_t runtime_generation)
     : runtime(runtime),
       client(client),
       host(host),
       settings(settings),
       assets(settings.assets_dir),
-      next_request_(static_cast<uint64_t>(Clock::now().time_since_epoch().count()) << 8 | 1),
+      next_request_((runtime_generation << 48) | 1),
       weak_this_(this) {
   runtime->isolate()->SetData(kIsolateSlotUi, this);
 }
@@ -247,7 +247,7 @@ void UiBindings::Impl::InstallExports(v8::Isolate* isolate, v8::Local<v8::Contex
     w->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
   }
   window.Reset(isolate, w);
-  // 引擎里已存在的视图(隐式视图 0;热重启后还有其他视图)。
+  // 引擎里已存在的视图(宿主在运行时启动前绑定的: 启动窗口即视图 0;热重启后还有其他视图)。
   for (ViewId id : client->views()) {
     AddViewObject(isolate, context, id);
   }
@@ -324,9 +324,9 @@ v8::MaybeLocal<v8::Value> UiBindings::Impl::CallViewHandler(ViewId id, const cha
 // UiBindings
 
 std::unique_ptr<UiBindings> UiBindings::Install(runtime::JsRuntime& js, WindowClient& client,
-                                                const AppHost& host,
-                                                const Settings& settings) {
-  auto impl = std::make_unique<Impl>(&js.impl(), &client, host, settings);
+                                                const AppHost& host, const Settings& settings,
+                                                uint64_t runtime_generation) {
+  auto impl = std::make_unique<Impl>(&js.impl(), &client, host, settings, runtime_generation);
   Impl* raw = impl.get();
   js.impl().RegisterNativeModule(
       "momo:ui", [raw](v8::Isolate* isolate, v8::Local<v8::Context> context,

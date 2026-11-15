@@ -74,11 +74,11 @@ cd framework && npm install
 ### 4. 运行一个 View 示例
 
 ```bash
-node framework/scripts/build_example.mjs examples/counter/src/main.ts examples/counter/dist/main.js
+node tools/momo-cli/momo.mjs bundle examples/counter
 ```
 
 ```bash
-out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/counter/dist/main.js
+out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/counter/dist/bundle.js
 ```
 
 ---
@@ -155,11 +155,11 @@ runApp(new MaterialApp({ title: "MyApp", home: new CounterPage() }));
 把 TS 打成单文件 ESM bundle（只保留 `momo:*` / `ext:*` 外部导入，引擎会以内置模块提供），再用 `--dev` 启动运行时：
 
 ```bash
-node framework/scripts/build_example.mjs my-app/src/main.ts my-app/dist/main.js
+node tools/momo-cli/momo.mjs bundle my-app
 ```
 
 ```bash
-out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=my-app/dist/main.js
+out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=my-app/dist/bundle.js
 ```
 
 重新构建后重启运行时即可看到改动。
@@ -174,7 +174,7 @@ API 形状与 Flutter 基本一致，主要差异：
 - 枚举多用字符串字面量：`mainAxisSize: "min"`、`crossAxisAlignment: "start"`。
 - 颜色是 `new Color(0xff4285f4)` 或 `Colors.*`。
 - 没有 `runtimeType`：两个 View 可以复用同一 Element 的条件是**构造函数相同且 key 相等**。
-- 运行环境里没有 DOM / Node API（没有 `fetch`、`setTimeout`），延迟任务请用 `SchedulerBinding.instance.scheduleDelayed(ms, fn)`，网络、文件等能力由扩展提供。
+- 运行环境里没有 DOM API（没有 `fetch`）；UI 里的延迟任务请用 `SchedulerBinding.instance.scheduleDelayed(ms, fn)`（由定时器驱动，等待期间不出帧；测试里走假时钟），网络、文件等能力由扩展提供。
 
 ---
 
@@ -290,7 +290,7 @@ MyApp.app/Contents/
     └── extensions/              # extensions.manifest + 原生扩展动态库
 ```
 
-非 `--dev` 模式下，引擎会把 JS 编译结果缓存在 `~/Library/Caches/dev.momo.app/v8`，加快之后的启动。
+非 `--dev` 模式下，引擎会把 JS 编译结果缓存在 `~/Library/Caches/<bundle identifier>/v8`（每个应用一个目录；默认的 Momo.app 是 `dev.momo.app`），加快之后的启动。
 
 ---
 
@@ -451,7 +451,7 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | `examples/counter` | View | Material 计数器：按钮、主题、键盘快捷键 |
 | `examples/todo` | View | 输入框、添加/勾选/删除、列表滚动 |
 
-View 示例都是独立 npm 工程，可以用 `build_example.mjs` 构建后以 `--bundle` 运行，也可以用 `momo build` 打包成 `.app`。
+View 示例都是独立 npm 工程，可以用 `momo bundle` 构建后以 `--bundle` 运行，也可以用 `momo build` 打包成 `.app`。
 
 ---
 

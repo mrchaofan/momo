@@ -4,6 +4,8 @@
 //
 // 状态机: NotRunning → Launching → Running ⇄ Suspended → Terminating
 //                         └──────────(启动失败)──────────────┘
+// Launching 跨越事件循环: Launch() 建好窗口与引擎、异步启动 JS 运行时后就返回, 主线程照常泵消息;
+// bundle 执行完的结果回到 platform 线程后才进入 Running(失败则以退出码 1 有序退出)。
 // Suspended 只表示应用整体被隐藏(macOS Cmd+H / applicationDidHide):与窗口无关——窗口的最小化、隐藏只影响
 // 该窗口的视图是否出帧(引擎按视图处理)。没有窗口也是合法状态: JS 照常运行, 不出帧。
 //
@@ -62,6 +64,9 @@ class Application final : public Object, private WindowManager::Observer, privat
     AppConfig config;
     // 资源根目录(Mac: NSBundle resourcePath;Win: exe 目录)。
     std::filesystem::path resources_dir;
+    // 本应用的用户缓存目录(Mac: ~/Library/Caches/<bundle id>;Win: %LOCALAPPDATA%\<exe 名>), 由平台入口
+    // 给出;V8 code cache 放在它的 v8/ 下。为空 = 不缓存。
+    std::filesystem::path cache_dir;
     Observer* observer = nullptr;  // 非拥有, 必须比 Application 活得久
     // 退出流程中每次询问 JS 后若在此时间内无回复(ui 线程卡死), 强制退出进程(无法有序关闭: 关闭需要
     // 与 ui 线程同步汇合)。<= 0 关闭超时机制。
@@ -77,11 +82,14 @@ class Application final : public Object, private WindowManager::Observer, privat
       Options options, std::unique_ptr<PlatformIntegration> platform);
   ~Application() override;  // 若尚未关闭则执行 Terminate()
 
-  // 启动时序第 4–5 步: 创建并显示启动窗口(config.startup_window)→ 启动引擎(V8 + bundle)→ 绑定窗口。
-  // 失败时已完成有序清理, 状态为 Terminating。
+  // 启动时序第 4–5 步: 创建并显示启动窗口(config.startup_window)→ 创建引擎(Shell::Create, 不执行 JS)→
+  // 注册宿主通道、绑定窗口 → 异步启动 JS 运行时(Shell::Run)。不等待 bundle 执行: 返回时状态仍是 Launching,
+  // 结果稍后在事件循环里到达(成功 → Running;bundle 加载/执行失败 → Terminate(1), Run() 返回 1)。
+  // 返回值只反映同步部分(窗口、资源解析、引擎创建)的错误;这类失败已完成有序清理, 状态为 Terminating。
   Status Launch();
 
   // 启动时序第 7 步: 运行 platform EventLoop(原生消息循环), 直到 Terminate 后排空。返回进程退出码。
+  // Launch 之后即可调用(不必等 JS 运行时就绪)。
   int Run();
 
   // 请求退出(可被 JS 取消;重复请求合并)。
@@ -100,7 +108,6 @@ class Application final : public Object, private WindowManager::Observer, privat
   void OnReopen(bool has_visible_windows);
 
   State state() const { return state_; }
-  bool is_active() const { return active_; }
   bool is_quitting() const { return quitting_; }
   int exit_code() const { return exit_code_; }
   const engine::TaskRunners& task_runners() const { return task_runners_; }
@@ -119,8 +126,10 @@ class Application final : public Object, private WindowManager::Observer, privat
   bool TransitionTo(State to);
   void UpdateSuspended();
   void NotifyShutdownStep(ShutdownStep step);
-  // 解析 bundle/资源 → 创建 Shell(同步等待 JS 运行时与 raster 就绪)→ 注册宿主通道 → 绑定窗口。
+  // 解析 bundle/资源 → 创建 Shell → 注册宿主通道 → 绑定窗口 → Shell::Run(异步)。
   Status LaunchEngine();
+  // Shell::Run 的结果(platform 线程): 完成 Launching → Running, 或启动失败退出。
+  void OnRuntimeStarted(Status status);
   // hot restart(实验性): 定时检查 bundle 修改时间, 变化时关闭旧 JS 打开的窗口(按配置保证启动窗口存在)并 hot restart。
   void PollBundleForChanges();
 
@@ -161,7 +170,7 @@ class Application final : public Object, private WindowManager::Observer, privat
   // 全部窗口。先于 shell_ 声明: 后于 Shell 析构(raster 停用 surface 之后才销毁窗口)。
   std::unique_ptr<WindowManager> window_manager_;
   std::unique_ptr<engine::Shell> shell_;
-  // 宿主通道: Shell 创建时(JS bundle 执行前)注册, Shell 关闭前移除(先于 shell_ 析构)。
+  // 宿主通道: Shell 创建后、JS 运行时启动前注册, Shell 关闭前移除(先于 shell_ 析构)。
   std::unique_ptr<AppChannel> app_channel_;
   std::unique_ptr<WindowChannel> window_channel_;
   std::unique_ptr<PlatformChannels> platform_channels_;

@@ -74,18 +74,25 @@ class MacPlatformIntegration final : public PlatformIntegration {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
   }
 
-  StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec& spec,
+  StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowOptions& options,
                                                          WindowDelegate* delegate) override {
     if (delegate == nullptr) {
       return InvalidArgumentError("CreateWindow requires a delegate");
     }
-    return std::unique_ptr<PlatformWindow>(std::make_unique<MacWindow>(spec, delegate, mouse_input_));
+    return std::unique_ptr<PlatformWindow>(std::make_unique<MacWindow>(options, delegate, mouse_input_));
   }
 
-  StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource(const PlatformWindow& window) override {
-    // native_handle() 为内容 NSView;platform::VsyncSource 只弱引用其 NSWindow(可能晚于窗口销毁)。
-    NSView* view = (__bridge NSView*)window.native_handle();
-    return MacVsyncDisplayLink::Create(view.window);
+  StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource() override {
+    MOMO_ASSIGN_OR_RETURN(ObjectPtr<MacVsyncDisplayLink> link, MacVsyncDisplayLink::Create());
+    vsync_ = WeakPtr<MacVsyncDisplayLink>(link.get());  // 所有权在调用方(Shell);这里只为切换显示器
+    return ObjectPtr<platform::VsyncSource>(link.release());
+  }
+
+  void SetVsyncWindow(const PlatformWindow* window) override {
+    if (MacVsyncDisplayLink* link = vsync_.get()) {
+      // native_handle() 为内容 NSView;display link 只弱引用其 NSWindow(可能晚于窗口销毁)。
+      link->SetWindow(window != nullptr ? ((__bridge NSView*)window->native_handle()).window : nil);
+    }
   }
 
   momo::embedder::PlatformServices& services() override { return services_; }
@@ -118,6 +125,8 @@ class MacPlatformIntegration final : public PlatformIntegration {
   MacApp app_;
   // 进程内唯一的指针输入(PointerDispatcher), 注入每个窗口;窗口先于本对象销毁。
   MacMouseInput mouse_input_;
+  // 应用的帧时钟来源(由 Shell 持有;已释放时为空)。
+  WeakPtr<MacVsyncDisplayLink> vsync_;
 };
 
 }  // namespace

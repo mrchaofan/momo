@@ -15,7 +15,7 @@
 //    接收窗口(隐藏的顶层窗口, 类名 "MomoSingleInstance.<app_id>";顶层窗口才能收到 WM_QUERYENDSESSION /
 //    WM_ENDSESSION 广播)。后续实例 AllowSetForegroundWindow 让首个实例
 //    可以把自己的窗口带到前台。
-//  - 命令行: UTF-16 → UTF-8;资源目录: exe 所在目录(docs/09 §4)。
+//  - 命令行: UTF-16 → UTF-8;资源目录: exe 所在目录(docs/09 §4);缓存目录: %LOCALAPPDATA%\<app_id>。
 // 消息循环本身由 embedder/windows 的 NativeLoop 提供;接收窗口属于主线程, 在该泵(及系统模态循环)中照常收到消息。
 // 线程约定: 仅 OS 主线程。
 
@@ -47,6 +47,8 @@ class WinAppDelegate final : public windows::WinAppObserver {
   static std::vector<std::string> CommandLineArgsUtf8();  // 不含 argv[0]
   static std::filesystem::path ExecutablePath();
   static std::filesystem::path ExecutableDir() { return ExecutablePath().parent_path(); }
+  // 本应用的用户缓存目录 %LOCALAPPDATA%\<app_id>(不创建);取不到时为空。
+  static std::filesystem::path UserCacheDir(const std::wstring& app_id);
 
   // windows::WinAppObserver
   void OnAppActiveChanged(bool active) override;

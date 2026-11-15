@@ -6,44 +6,36 @@
 
 namespace momo::embedder {
 
+StatusOr<std::unique_ptr<WindowController>> WindowController::Create(PlatformIntegration& platform,
+                                                                     const WindowOptions& options,
+                                                                     Client& client,
+                                                                     engine::platform::ViewId view_id) {
+  std::unique_ptr<WindowController> controller(new WindowController(client, view_id));
+  MOMO_ASSIGN_OR_RETURN(controller->window_, platform.CreateWindow(options, controller.get()));
+  // 以创建完成后的窗口为准(创建过程中的回调可能已经写过缓存)。
+  PlatformWindow& window = *controller->window_;
+  controller->metrics_ = window.metrics();
+  controller->state_ = window.state();
+  controller->frame_.reset();
+  controller->controls_ = window.window_controls_rect();
+  return controller;
+}
+
 WindowController::WindowController(Client& client, engine::platform::ViewId view_id)
     : client_(client), view_id_(view_id) {}
 
 WindowController::~WindowController() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MOMO_DCHECK(shell_ == nullptr) << "DetachEngine must be called before destruction";
-  DestroyWindow();
-}
-
-Status WindowController::CreateWindow(PlatformIntegration& platform,
-                                      const WindowSpec& spec) {
-  MOMO_DCHECK(window_ == nullptr);
-  MOMO_ASSIGN_OR_RETURN(window_, platform.CreateWindow(spec, this));
-  last_metrics_ = window_->metrics();
-  has_metrics_ = true;
-  state_ = window_->state();
-  return Status::Ok();
-}
-
-void WindowController::DestroyWindow() {
   MOMO_DCHECK(shell_ == nullptr) << "Window destroyed while the engine still renders into it";
-  window_.reset();
+  window_.reset();  // 销毁过程中的窗口回调仍落在完整的对象上
 }
 
-PlatformWindow& WindowController::window() {
-  MOMO_CHECK(window_ != nullptr);
-  return *window_;
-}
-
-void WindowController::AttachEngine(engine::Shell& shell,
-                                    ObjectPtr<platform::VsyncSource> vsync) {
-  MOMO_CHECK(window_ != nullptr) << "AttachEngine requires a window";
+void WindowController::AttachEngine(engine::Shell& shell, WindowChannel& events) {
   MOMO_DCHECK(shell_ == nullptr);
   shell_ = &shell;
-  shell.AttachView(view_id_, this, &window_->surface(), std::move(vsync));
-  if (has_metrics_) {
-    shell.OnMetricsChanged(view_id_, last_metrics_);
-  }
+  events_ = &events;
+  shell.AttachView(view_id_, this, &window_->surface());
+  shell.OnMetricsChanged(view_id_, metrics_);
   if (focused_) {
     shell.OnFocusChanged(view_id_, true);
   }
@@ -75,11 +67,14 @@ void WindowController::DetachEngine() {
   }
   shell_->DetachView(view_id_);
   shell_ = nullptr;
+  events_ = nullptr;
 }
 
 void WindowController::OnMetricsChanged(const platform::ViewportMetrics& metrics) {
-  last_metrics_ = metrics;
-  has_metrics_ = true;
+  if (metrics == metrics_) {
+    return;
+  }
+  metrics_ = metrics;
   if (shell_ != nullptr) {
     shell_->OnMetricsChanged(view_id_, metrics);
   }
@@ -108,6 +103,9 @@ void WindowController::OnFocusChanged(bool focused) {
   if (shell_ != nullptr) {
     shell_->OnFocusChanged(view_id_, focused);
   }
+  if (events_ != nullptr) {
+    events_->NotifyFocusChanged(view_id_, focused);
+  }
   client_.OnWindowFocusChanged(view_id_, focused);
 }
 
@@ -117,7 +115,9 @@ void WindowController::OnWindowStateChanged(const WindowStateFlags& state) {
   }
   state_ = state;
   UpdateRendering();
-  client_.OnWindowStateChanged(view_id_, state);
+  if (events_ != nullptr) {
+    events_->NotifyStateChanged(view_id_, state);
+  }
 }
 
 void WindowController::OnTextInput(const TextInputEvent& event) {
@@ -131,26 +131,14 @@ void WindowController::OnPlatformViewFocused(int64_t view_id) {
 }
 
 void WindowController::OnPlatformViewCreated(int64_t view_id, void* native_view) {
-  if (window_) {
-    window_->AddPlatformView(view_id, native_view);
-  }
+  window_->AddPlatformView(view_id, native_view);
 }
 
-void WindowController::OnPlatformViewDisposed(int64_t view_id) {
-  if (window_) {
-    window_->RemovePlatformView(view_id);
-  }
-}
+void WindowController::OnPlatformViewDisposed(int64_t view_id) { window_->RemovePlatformView(view_id); }
 
-void WindowController::OnPlatformViewFocusRequested(int64_t view_id) {
-  if (window_) {
-    window_->FocusPlatformView(view_id);
-  }
-}
+void WindowController::OnPlatformViewFocusRequested(int64_t view_id) { window_->FocusPlatformView(view_id); }
 
-void* WindowController::GetNativeWindowHandle() {
-  return window_ ? window_->native_handle() : nullptr;
-}
+void* WindowController::GetNativeWindowHandle() { return window_->native_handle(); }
 
 void WindowController::OnFirstFramePresented() {
   if (first_frame_) {
@@ -158,15 +146,29 @@ void WindowController::OnFirstFramePresented() {
   }
   first_frame_ = true;
   UpdateRendering();
-  client_.OnWindowFirstFrame(view_id_);
+  if (events_ != nullptr) {
+    events_->NotifyReadyToShow(view_id_);
+  }
 }
 
 void WindowController::OnWindowFrameChanged(const Rect& screen_frame) {
-  client_.OnWindowFrameChanged(view_id_, screen_frame);
+  if (frame_ == screen_frame) {
+    return;
+  }
+  frame_ = screen_frame;
+  if (events_ != nullptr) {
+    events_->NotifyFrameChanged(view_id_, screen_frame);
+  }
 }
 
 void WindowController::OnWindowControlsChanged(const std::optional<Rect>& rect) {
-  client_.OnWindowControlsChanged(view_id_, rect);
+  if (rect == controls_) {
+    return;
+  }
+  controls_ = rect;
+  if (events_ != nullptr) {
+    events_->NotifyControlsChanged(view_id_, rect);
+  }
 }
 
 }  // namespace momo::embedder

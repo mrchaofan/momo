@@ -70,7 +70,7 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | 消息通道 | `channel_set_handler / channel_send / channel_reply` | 字节流;handler 可声明回调线程(platform/pool) |
 | 任务投递 | `post_task(engine, runner_kind, fn, user_data)`、`post_delayed` | runner_kind ∈ {platform, ui, io, worker_pool} |
 | 窗口访问 | `get_window_handle(view_id)` → HWND/NSView* | 仅 platform 线程;托盘、子窗口、系统集成用 |
-| 帧参与 | `add_frame_callback(engine, cb)` | ui 线程,vsync 后调用;视频/图表类扩展驱动动画 |
+| 帧参与 | `add_frame_callback(engine, cb)` | ui 线程注册(注册即请求一帧, 不经其他线程),vsync 后调用;视频/图表类扩展驱动动画 |
 | 纹理注入 | `texture_registry_register(...)`, `texture_mark_frame_available` | 扩展在自己线程生成像素/GPU 纹理,引擎合成时采样——视频播放、相机、原生渲染互操作的正路 |
 | 平台视图 | `platform_view_register_factory(engine, "acme.webview", factory)`、`platform_view_get(id)` | 仅 platform 线程。扩展提供原生视图(NSView*/HWND)的 create/dispose,引擎负责嵌入、合成、输入与焦点(docs/05 §9)——WebView、地图、系统控件的正路 |
 | 资源 | `open_asset(path)` | 读取打进应用包的扩展资源 |
@@ -103,11 +103,11 @@ Shell 启动 → ExtensionHost 读 extensions.manifest
  → 逐个 dlopen/LoadLibrary(应用包内路径) → 解析 momo_ext_init → 版本握手
  → on_attach(host_api, engine)            [platform 线程]
  → 扩展注册模块/通道; ui 线程建 JS 绑定
- → 生命周期事件 RuntimeStarting(#1, Launch) → 创建 JS 运行时, 执行 bundle
+ → 宿主 Shell::Run: 生命周期事件 RuntimeStarting(#1, Launch) → ui 线程创建 JS 运行时, 执行 bundle(异步)
  … 运行期 …
- → 热重启(实验性, --experimental-hot-restart;可多次): 平台视图全部 dispose → 旧运行时销毁, ui 线程停住
-     → RuntimeStopped(#n, HotRestart) → RuntimeStarting(#n+1, HotRestart) → 放行 ui 线程, 新运行时执行 bundle
- → 引擎关闭: 平台视图 dispose → JS 运行时销毁 → RuntimeStopped(#n, Shutdown) → on_detach
+ → 热重启(实验性, --experimental-hot-restart;可多次): 旧运行时销毁(platform 等它完成) → 平台视图全部 dispose
+     → RuntimeStopped(#n, HotRestart) → RuntimeStarting(#n+1, HotRestart) → ui 线程创建新运行时, 执行 bundle
+ → 引擎关闭: JS 运行时销毁 → 平台视图 dispose → RuntimeStopped(#n, Shutdown) → on_detach
    → 排空并停止扩展 worker pool → 拒绝该扩展此后的一切 API 调用
    (动态库不卸载: 扩展线程上可能仍有在途回调, 与 Flutter 插件一致)
 ```
@@ -116,8 +116,8 @@ Shell 启动 → ExtensionHost 读 extensions.manifest
 扩展只 attach 一次, 而 JS 运行时可以先后有多个: 凡是"属于某个 JS 运行时"的状态(JS 传来的句柄、按 id 登记的对象、
 等待 JS 应答的请求)都应在 `RuntimeStopped` 时清掉。设计要点:
 
-- **时机确定**。事件在 platform 线程同步送达;送达期间旧运行时已销毁、新运行时尚未创建、ui 线程停着——监听器
-  不会与任何 JS 并发, 新运行时的消息一定晚于 `RuntimeStarting`。
+- **时机确定**。事件在 platform 线程同步送达;启动、热重启、关闭走同一条"停止/启动运行时"的链路, 送达期间旧运行时
+  已销毁、新运行时尚未创建、引擎不出帧——监听器不会与任何 JS 或帧回调并发, 新运行时的消息一定晚于 `RuntimeStarting`。
 - **对扩展无要求**。不注册就什么都不发生;监听器有 bug 只影响它自己的状态。宿主自己管的东西(平台视图、
   通道应答、Promise)不依赖扩展配合, 照常由宿主回收。
 - **可扩展**。事件是一个带 `struct_size` 的结构加上只增不改的枚举: 新增事件(如应用挂起/恢复)或新字段不改函数表,
@@ -125,9 +125,10 @@ Shell 启动 → ExtensionHost 读 extensions.manifest
   拆除类事件逆序。`runtime_generation` 标识是第几个运行时, 可用来给状态打标记。
 - **消息不跨代**。通道消息带代际标识(`MessageChannelHub`): 旧运行时销毁前已发出、尚在途中的消息不再送达 handler,
   发给旧运行时的消息也到不了新运行时。`RuntimeStopped` 之后收到的通道消息一定来自新运行时。
-- **限制**。监听器里不能阻塞等待 ui 线程(会死锁)。
+- **限制**。ui 线程在此期间并不停住: 扩展自己投递到 ui 线程的任务可能与监听器并发, 需要时由扩展自行同步。
+  监听器在 platform 线程上执行, 不要做耗时的事。
 
-失败隔离:单个扩展 init 失败只禁用该扩展并上报(应用可在 JS 捕获 `momo/extensions` 通道的错误),不拖垮引擎。扩展内崩溃无法隔离(同进程),文档明确要求扩展自行保证健壮性;`--dev` 下加载时带符号名日志辅助定位。
+失败隔离:单个扩展 init 失败只禁用该扩展并记录(应用可在 JS 里经 `momo/extensions` 通道的 `getErrors` 查询, 见 §8),不拖垮引擎。扩展内崩溃无法隔离(同进程),文档明确要求扩展自行保证健壮性;`--dev` 下加载时带符号名日志辅助定位。
 
 ## 6. 能力与权限
 
@@ -140,14 +141,17 @@ manifest 中 `capabilities` 字段声明扩展需要的敏感能力(filesystem/n
 ## 8. 实现状态(M5)
 
 - 宿主: `engine/extension/extension_host.{h,cc}`(manifest 解析、dlopen/LoadLibrary、版本与 id 握手、失败隔离、
-  MomoHostApi 的非 JS 部分);JS 胶水: `engine/ui/extension_bindings.cc`(`ext:*` synthetic module、MomoCallApi)。
+  MomoHostApi 的非 JS 部分);JS 胶水: `engine/ui/extension_bindings.cc`(`ext:*` synthetic module、MomoCallApi),
+  经 `ui::GetExtensionJsGlue` 在链接期交给 ExtensionHost——函数表在 `on_attach` 之前一次填好, 之后不再改动(扩展可以拷贝它)。
 - 线程: `on_attach`/`on_detach` 在 platform 线程;`register_module` 只在 `on_attach` 中有效(JS 运行时创建时安装);
   `channel_set_handler` 可指定 handler 线程(platform/ui/io/worker pool);`promise_*`、`post_task`、`texture_*` 任意线程。
 - 纹理: v1 只支持 CPU 像素帧(`texture_update_pixels`, 或 acquire/release 在调用 `texture_mark_frame_available`
   的线程上同步回调);宿主拷贝为不可变 Image, 合成时取最新帧(DisplayList 中含纹理的部分不进入 SkPicture 缓存)。
   GPU 共享句柄(IOSurface / D3D)为预留。
-- 引擎保留 `momo/*` 通道名;扩展加载错误经 `momo/extensions` 通道(string)报给 JS。
-- 工具链: `tools/momo-cli/momo.mjs` 的 `build`(manifest 生成 + 库拷贝 + 能力报告)、`ext create`、`ext verify`。
+- 引擎保留 `momo/*` 通道名;扩展加载错误是可查询的状态: JS 向 `momo/extensions` 发方法调用 `getErrors`(StandardMethodCodec),
+  得到 `string[]`(每项 `"<id>: <原因>"`, 全部成功为空数组)。任何时刻、热重启后的新运行时都能问到同样的结果。
+  框架里的写法: `new MethodChannel("momo/extensions").invokeMethod("getErrors")`。
+- 工具链: `tools/momo-cli/momo.mjs` 的 `bundle` / `build`(manifest 生成 + 库拷贝 + 能力报告;声明校验与 `ext verify --package` 共用)、`ext create`、`ext verify`。
 - 平台视图(v1 追加, M6): `MomoHostApi` 末尾追加 `platform_view_register_factory` / `platform_view_get`(扩展以
   `struct_size` 判断宿主是否提供;C++ 封装 `Host::SupportsPlatformViews / RegisterPlatformViewFactory / PlatformView`)。
   create 返回的原生视图归扩展所有(macOS 惯用 `CFBridgingRetain`/`CFBridgingRelease`),每次成功 create 恰好对应一次

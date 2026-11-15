@@ -14,7 +14,7 @@
 | `assets/` | momo_engine_assets | 资源读取(路径越界防护)、图片解码(静态/多帧) | `asset_manager.h/.cc`、`image_decoder.h/.cc` |
 | `extension/` | momo_engine_extension | 扩展宿主: manifest、dlopen、版本握手、MomoHostApi(C ABI 实现侧) | `extension_host.h/.cc` |
 
-硬性规则:v8.h 不出 runtime/ui 实现文件;Skia 头不出 graphics/text/assets;engine 只认识自己的平台契约 `engine/platform/`,禁止 include `embedder/`;窗口外观与行为、平台服务不进 engine 的接口(`Shell::Delegate`、`Engine::Delegate`、`WindowClient`), 由宿主在 hub 上注册通道。引擎的测试不依赖 `extensions/examples`(示例扩展的端到端测试在 `extensions/` 的 `momo_extension_examples_unittests`)。
+硬性规则:v8.h 不出 runtime/ui 实现文件;Skia 头不出 graphics/text/assets;engine 只认识自己的平台契约 `engine/platform/`,禁止 include `embedder/`;窗口外观与行为、平台服务不进 engine 的接口(`Shell::Delegate`、`WindowClient`), 由宿主在 hub 上注册通道。引擎的测试不依赖 `extensions/examples`(示例扩展的端到端测试在 `extensions/` 的 `momo_extension_examples_unittests`)。
 
 ## 状态(M5)
 

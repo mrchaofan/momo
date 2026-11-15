@@ -23,9 +23,9 @@ engine/platform/                   # 平台契约(engine 可见的全部;零平�
 └── viewport_metrics.h             # ViewportMetrics(物理尺寸 + DPR)
 
 embedder/common/                   # embedder 的平台抽象(engine 不可见)
-├── platform_integration.h         # 工厂与根入口(创建窗口/VsyncSource、服务、应用能力、显示器、原生循环)
+├── platform_integration.h         # 工厂与根入口(创建窗口、应用唯一的 VsyncSource、服务、应用能力、显示器、原生循环)
 ├── platform_app.h                 # 应用级能力(隐藏/显示/激活, AppCapability)
-├── platform_window.h              # 窗口接口(含可选能力 WindowCapability)+ WindowDelegate 回调 + WindowSpec
+├── platform_window.h              # 窗口接口(含可选能力 WindowCapability)+ WindowDelegate 回调
 ├── platform_services.h            # 剪贴板/打开 URL(低频服务)
 ├── text_input.h                   # IME 接入接口与 TextEditingState/TextInputEvent
 ├── window_types.h                 # SystemCursor、WindowOptions、WindowStateFlags、TitleBarOptions、WindowResizeOptions…
@@ -86,8 +86,9 @@ embedder 内以 `platform::X` 指代契约类型(`embedder/common/engine_platfor
 class PlatformIntegration {
  public:
   virtual ~PlatformIntegration() = default;
-  virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowSpec&, WindowDelegate*) = 0;
-  virtual StatusOr<ObjectPtr<VsyncSource>> CreateVsyncSource(const PlatformWindow&) = 0;  // momo::Object, 归属 platform 线程
+  virtual StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowOptions&, WindowDelegate*) = 0;
+  virtual StatusOr<ObjectPtr<VsyncSource>> CreateVsyncSource() = 0;  // 整个应用一个;momo::Object, 归属 platform 线程
+  virtual void SetVsyncWindow(const PlatformWindow*) {}              // 帧时钟跟随这个窗口所在的显示器(空 = 主显示器)
   virtual PlatformServices& services() = 0;  // embedder 抽象(platform_services.h)
   virtual PlatformApp& app() = 0;            // 应用级能力(platform_app.h)
   virtual std::vector<DisplayInfo> displays() const = 0;
@@ -152,11 +153,13 @@ class RenderSurface {
 
 ## 4. VSync 与显示
 
-`VsyncSource::RequestFrameCallback(cb)` 一次性请求,由 `Animator` 按需发起(无动画不请求,空闲零功耗)。`VsyncSource` 是 platform 线程归属的 `momo::Object`:请求经投递在 platform 线程调用,回调也在 platform 线程执行(回调一律在调用方线程执行;CVDisplayLink / DwmFlush 线程只投递, 不调用回调);由 `ObjectPtr` 持有,释放即 DeleteLater,析构可能晚于窗口销毁,实现不得依赖窗口对象存活(docs/08 §3)。Windows 用 DWM/DXGI 等待 vblank 的专用线程;macOS 用 CVDisplayLink。DPR 或刷新率变化(拖拽跨屏)通过 `OnMetricsChanged` 上报。
+`VsyncSource::RequestFrameCallback(cb)` 一次性请求,由 `Animator` 按需发起(无动画不请求,空闲零功耗)。`VsyncSource` 是 platform 线程归属的 `momo::Object`:请求经投递在 platform 线程调用,回调也在 platform 线程执行(回调一律在调用方线程执行;CVDisplayLink / DwmFlush 线程只投递, 不调用回调);由 `ObjectPtr` 持有,释放即 DeleteLater,析构可能晚于窗口销毁,实现不得依赖窗口对象存活(docs/08 §3)。**整个应用只有一个 VsyncSource**(所有窗口共用一个 Animator):`WindowManager` 在引擎就绪时创建并交给 `Shell::SetVsyncSource`, 再用 `PlatformIntegration::SetVsyncWindow` 指定它跟随哪个窗口所在的显示器——id 最小的窗口(视图 0 优先), 窗口打开/关闭时重新选择, 没有窗口时用主显示器。Windows 用 DWM/DXGI 等待 vblank 的专用线程(节拍是全局的, 不跟随窗口);macOS 用 CVDisplayLink。DPR 或刷新率变化(拖拽跨屏)通过 `OnMetricsChanged` 上报。
 
 ## 5. 平台服务与消息通道
 
-应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 的 `on_created` 回调里, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层, 这与扩展机制使用同一套通路(docs/07)。
+应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 之后、`Shell::Run` 之前, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层, 这与扩展机制使用同一套通路(docs/07)。
+
+所有宿主通道共用 `HostChannel` 的错误码映射:`unimplemented`(未知方法、平台不支持)、`notFound`、`invalidArgument`, 其余为 `error`。
 
 窗口的可选能力(隐藏标题栏、系统拖动、移动循环、指针捕获、置顶、定位、平台视图、隐藏、最小化/最大化…)由 `PlatformWindow::capabilities()` 显式声明, 不支持的方法返回 `Unimplemented`(JS 收到错误码 `unimplemented`, 框架当作空操作), JS 可经 `momo/window getState` 查询。
 

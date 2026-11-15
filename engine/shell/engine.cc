@@ -1,7 +1,5 @@
 #include "engine/shell/engine.h"
 
-#include <filesystem>
-#include <system_error>
 #include <utility>
 
 #include "base/logging.h"
@@ -9,48 +7,58 @@
 
 namespace momo::engine {
 
-StatusOr<std::unique_ptr<Engine>> Engine::Create(const Settings& settings, Delegate& delegate,
-                                                 std::unique_ptr<VsyncWaiter> waiter,
-                                                 const ui::AppHost& host) {
-  std::unique_ptr<Engine> engine(new Engine(settings, delegate, std::move(waiter), host));
-  MOMO_ASSIGN_OR_RETURN(engine->driver_, ui::CreateAppDriver(settings, *engine, engine->host_));
-  return engine;
-}
-
-Engine::Engine(const Settings& settings, Delegate& delegate,
-               std::unique_ptr<VsyncWaiter> waiter, const ui::AppHost& host)
-    : delegate_(delegate),
+Engine::Engine(const Settings& settings, DrawCallback on_draw, std::unique_ptr<VsyncWaiter> waiter,
+               const ui::AppHost& host)
+    : on_draw_(std::move(on_draw)),
       settings_(settings),
       host_(host),
       animator_(*this, task_runner(), std::move(waiter)) {
-  if (settings.implicit_view) {
-    views_[platform::kImplicitViewId];  // 隐式视图: bundle 执行前即存在(宿主随后绑定其窗口)
+  // 帧请求端都在 ui 线程: 纹理新帧由 TextureRegistry 投递到本线程, 扩展的帧回调本来就在本线程注册。
+  // 纹理通知可能在 Engine 析构后才执行: 经 WeakPtr 判活。
+  if (host_.textures) {
+    host_.textures->SetFrameListener(task_runner(), [weak = WeakPtr<Engine>(this)](int64_t) {
+      if (Engine* self = weak.get()) self->animator_.RequestFrame();
+    });
+  }
+  if (host_.extensions != nullptr) {
+    host_.extensions->SetFrameRequester([this] { animator_.RequestFrame(); });
   }
   UpdateAnimator();
 }
 
 Engine::~Engine() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  // driver_(JS 运行时)先于 animator_ 销毁;JS 端点随运行时一起移除(见 services 绑定)。
-  driver_.reset();
+  InvalidateWeakPtrs();
+  if (host_.extensions != nullptr) {
+    host_.extensions->SetFrameRequester(nullptr);
+  }
+  if (host_.textures) {
+    host_.textures->SetFrameListener(nullptr, nullptr);
+  }
+  // 运行时先于 animator_ 销毁。
+  StopRuntime();
   MOMO_LOG(INFO) << "Engine destroyed.";
 }
 
-Status Engine::HotRestart(const std::function<void()>& runtime_destroyed) {
+Status Engine::StartRuntime(uint64_t generation) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MOMO_LOG(INFO) << "Hot restart: reloading " << settings_.bundle_path.string();
-  driver_.reset();  // 先销毁旧运行时(释放 momo:* 端点), 再建新的
-  if (runtime_destroyed) {
-    runtime_destroyed();
+  MOMO_DCHECK(driver_ == nullptr) << "StartRuntime while a runtime exists";
+  MOMO_LOG(INFO) << "Starting JS runtime #" << generation << ": "
+                 << (settings_.bundle_path.empty() ? "<no bundle>" : settings_.bundle_path.string());
+  // 从这里起发出的通道消息属于这一代(MessageChannelHub 的代际)。
+  if (host_.hub) {
+    host_.hub->SetJsGeneration(generation);
   }
-  auto driver = ui::CreateAppDriver(settings_, *this, host_);
-  if (!driver.ok()) {
-    // 新 bundle 加载失败(不存在或有错): 退回占位驱动, 保持引擎可用(修复后可再次重启)。
-    driver_ = std::make_unique<ui::PlaceholderDriver>(static_cast<ui::WindowClient&>(*this));
-    driver_->OnMetricsChanged(platform::kImplicitViewId);
-    return driver.status();
+  ui::WindowClient& client = *this;
+  auto driver = ui::CreateAppDriver(settings_, client, host_, generation);
+  Status status = driver.status();
+  if (driver.ok()) {
+    driver_ = std::move(driver).value();
+  } else {
+    // bundle 加载失败(不存在或有错): 退回占位驱动, 引擎保持可用。
+    driver_ = std::make_unique<ui::PlaceholderDriver>(client);
   }
-  driver_ = std::move(driver).value();
+  // 运行时创建前就已绑定的视图: 驱动创建时已读到它们, 这里补发各自的状态。
   for (const auto& [view, state] : views_) {
     driver_->OnMetricsChanged(view);
     if (state.focused) {
@@ -61,10 +69,26 @@ Status Engine::HotRestart(const std::function<void()>& runtime_destroyed) {
     }
   }
   animator_.RequestFrame();
-  return Status::Ok();
+  return status;
+}
+
+void Engine::StopRuntime() {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  if (driver_ == nullptr) {
+    return;
+  }
+  driver_.reset();  // JS 端点随运行时一起移除(见 services 绑定)
+  // 旧运行时已发出、尚在途中的消息从此作废。
+  if (host_.hub) {
+    host_.hub->SetJsGeneration(0);
+  }
+  MOMO_LOG(INFO) << "JS runtime stopped.";
 }
 
 void Engine::OnAnimatorBeginFrame(TimePoint frame_start, TimePoint) {
+  if (driver_ == nullptr) {
+    return;  // 没有运行时: 不出帧, 也不执行扩展帧回调(扩展的生命周期监听器不会与帧回调并发)
+  }
   // 扩展帧回调先于应用帧(视频/图表类扩展在此推送纹理帧);仍有回调时持续出帧。
   const bool more = host_.extensions != nullptr && host_.extensions->RunFrameCallbacks();
   driver_->BeginFrame(frame_start);
@@ -81,7 +105,7 @@ void Engine::AddView(platform::ViewId view) {
   }
   views_[view];
   MOMO_LOG(VERBOSE) << "View added: " << view;
-  driver_->OnViewAdded(view);
+  if (driver_) driver_->OnViewAdded(view);
   UpdateAnimator();
 }
 
@@ -90,7 +114,7 @@ void Engine::RemoveView(platform::ViewId view) {
     return;
   }
   MOMO_LOG(VERBOSE) << "View removed: " << view;
-  driver_->OnViewRemoved(view);
+  if (driver_) driver_->OnViewRemoved(view);
   UpdateAnimator();
 }
 
@@ -134,11 +158,11 @@ void Engine::OnMetricsChanged(platform::ViewId view, const platform::ViewportMet
   it->second.metrics = metrics;
   MOMO_LOG(VERBOSE) << "Metrics (view " << view << "): " << metrics.physical_size.width << "x"
                     << metrics.physical_size.height << " @" << metrics.device_pixel_ratio;
-  driver_->OnMetricsChanged(view);
+  if (driver_) driver_->OnMetricsChanged(view);
 }
 
 void Engine::OnPointerPacket(platform::ViewId view, const platform::PointerDataPacket& packet) {
-  if (packet.empty() || views_.count(view) == 0) {
+  if (driver_ == nullptr || packet.empty() || views_.count(view) == 0) {
     return;
   }
   // 指针序列的接收方由宿主(原生捕获)与框架(逻辑捕获)决定, 引擎原样转发。
@@ -146,7 +170,7 @@ void Engine::OnPointerPacket(platform::ViewId view, const platform::PointerDataP
 }
 
 void Engine::OnKeyData(platform::ViewId view, const platform::KeyData& data) {
-  if (views_.count(view) != 0) {
+  if (driver_ != nullptr && views_.count(view) != 0) {
     driver_->OnKeyData(view, data);
   }
 }
@@ -157,7 +181,7 @@ void Engine::OnFocusChanged(platform::ViewId view, bool focused) {
     return;
   }
   it->second.focused = focused;
-  driver_->OnFocusChanged(view, focused);
+  if (driver_) driver_->OnFocusChanged(view, focused);
 }
 
 void Engine::OnVisibilityChanged(platform::ViewId view, bool visible) {
@@ -167,7 +191,7 @@ void Engine::OnVisibilityChanged(platform::ViewId view, bool visible) {
   }
   it->second.visible = visible;
   MOMO_LOG(VERBOSE) << "View " << view << (visible ? " visible" : " hidden");
-  driver_->OnVisibilityChanged(view, visible);
+  if (driver_) driver_->OnVisibilityChanged(view, visible);
   UpdateAnimator();
   if (visible) {
     animator_.RequestFrame();  // 重新可见: 补一帧最新画面

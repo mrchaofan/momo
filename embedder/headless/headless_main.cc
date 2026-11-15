@@ -148,7 +148,7 @@ int Run(const Options& options) {
       exit_code = code;
       loop->Terminate();
     };
-    auto shell = engine::Shell::Create(runners, settings, nullptr, on_exit);
+    auto shell = engine::Shell::Create(runners, settings, on_exit);
     if (!shell.ok()) {
       std::fprintf(stderr, "momo_headless: %s\n", std::string(shell.status().message()).c_str());
       loop->Terminate();
@@ -203,10 +203,20 @@ int Run(const Options& options) {
           reply.Send(engine::EncodeSuccessEnvelope(engine::EncodableValue()));
         });
 
-    (*shell)->AttachView(&delegate, &surface,
-                         options.manual_frames ? MakeObject<ManualVsyncSource>() : nullptr);
+    if (options.manual_frames) {
+      (*shell)->SetVsyncSource(MakeObject<ManualVsyncSource>());
+    }
+    (*shell)->AttachView(&delegate, &surface);
     (*shell)->OnMetricsChanged({{options.width * options.dpr, options.height * options.dpr}, options.dpr});
     (*shell)->OnFocusChanged(true);
+    // 通道处理器与视图都已就位: 启动 JS 运行时(ui 线程执行 bundle)。加载/执行失败即结束(退出码 2)。
+    (*shell)->Run([&](Status status) {
+      if (!status.ok()) {
+        std::fprintf(stderr, "momo_headless: %s\n", std::string(status.message()).c_str());
+        done = true;
+        loop->Terminate();
+      }
+    });
     loop->GetTaskRunner()->PostDelayedTask(
         [&] {
           if (!done) {

@@ -48,7 +48,7 @@ embedder::Application (每进程一个)
                                     ├─ Animator (帧调度, 连接 VsyncSource)
                                     ├─ Rasterizer (raster 线程, 持有 GPU Context)
                                     └─ extension::ExtensionHost (扩展注册与生命周期)
- └─ embedder::PlatformWindow (由 embedder 创建; 其 RenderSurface/VsyncSource 经 AttachView 交给 Shell)
+ └─ embedder::PlatformWindow (由 embedder 创建; 其 RenderSurface 经 AttachView 交给 Shell; 应用唯一的 VsyncSource 经 SetVsyncSource)
 ```
 
 ## 4. 线程模型(详见 docs/08)

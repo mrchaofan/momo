@@ -62,8 +62,8 @@ target_link_libraries(momo_engine_extension PUBLIC momo_base momo_engine_common 
 target_link_libraries(momo_engine_extension PRIVATE ${CMAKE_DL_LIBS})
 
 # ---- momo_engine_runtime / momo_engine_ui: V8(v8.h 只在这两个模块的实现文件中出现) ----
-# ui 提供 AppDriver(engine/ui/app_driver.h)的实现, shell 只面向该接口。
-# sanitizer 构建没有 V8(docs/09 §2.1): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)。
+# ui 提供 AppDriver 与扩展 C ABI 的 JS 部分(engine/ui/app_driver.h)的实现, shell 只面向该接口。
+# sanitizer 构建没有 V8(docs/09 §2.1): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)与返回错误的 JS 胶水。
 if(MOMO_HAVE_V8)
   add_library(momo_engine_runtime STATIC
     runtime/js_args.cc
@@ -89,7 +89,8 @@ if(MOMO_HAVE_V8)
                         momo_engine_platform)
 else()
   add_library(momo_engine_ui STATIC ui/app_driver_no_js.cc)
-  target_link_libraries(momo_engine_ui PUBLIC momo_engine_common momo_engine_graphics momo_engine_platform)
+  target_link_libraries(momo_engine_ui PUBLIC momo_engine_common momo_engine_graphics momo_engine_extension
+                        momo_engine_platform)
 endif()
 
 # ---- momo_engine_shell ----

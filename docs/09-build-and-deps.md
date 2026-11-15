@@ -19,7 +19,7 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
 | googletest | 测试 | FetchContent |
 | rapidjson 或 simdjson | manifest/配置解析 | FetchContent(禁异常配置) |
 
-所有预编译包带 SHA256 锁定在 `cmake/deps.lock.json`;`tools/fetch_deps.py` 支持离线镜像。
+所有预编译包带 SHA256 锁定在 `cmake/deps.lock.json`;`tools/fetch_deps.py` 支持离线镜像(`--mirror`,对 libnode 的源码包同样生效)。
 
 ### 2.1 当前落地(macOS arm64)
 
@@ -31,7 +31,7 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
 与原规划的差异与已知限制:
 
 - **V8 来自 libnode,不另带一份**。嵌入 Node(docs/04 §1)要求 isolate 由 Node 自带的 V8 创建,所以 `momo::v8` 直接指向
-  libnode 的头文件与 dylib。`build_libnode.py` 校验源码包 SHA256 → `configure --shared --without-npm --ninja` → `ninja libnode`
+  libnode 的头文件与 dylib。`build_libnode.py` 用 `fetch_deps.py` 的下载器取源码包并校验 SHA256(同样支持 `--mirror`/`--jobs`)→ `configure --shared --without-npm --ninja` → `ninja libnode`
   → 安装头文件(Node 的 `tools/install.py --headers-only`,另补 V8 inspector 头)与 dylib(install name 改为 `@rpath/...`,
   ad-hoc 重签名)→ 写戳记;已安装且版本/参数一致时跳过。首次构建约 20~40 分钟,需要 Python ≥ 3.10(Node 的 configure 要求,
   脚本会在 PATH 与 uv 管理的解释器中查找)。打包 `.app` 时 dylib 拷进 `Contents/Frameworks`。
@@ -63,8 +63,9 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 
 ## 4. JS/TS 构建
 
-- framework/ 独立 npm workspace;`npm run build` 用 esbuild 产出 `framework/out/momo_framework.js`(ESM, 单文件)。
-- 应用打包不走 CMake,由 `tools/momo-cli/momo.mjs build` 完成:调 esbuild 打应用 bundle,扫描依赖产出 `extensions.manifest`,拷贝进:
+- framework/ 独立 npm workspace;框架不单独打包,应用 bundle 把 `@momo/framework` 直接解析到 `framework/packages/momo/src`(esbuild 选项在 `framework/scripts/common.mjs`)。
+- 打应用 bundle 只有一个入口:`tools/momo-cli/momo.mjs bundle <app> [--out=<dir>]`,调 esbuild 产出 `<out>/bundle.js`,扫描依赖产出 `<out>/extensions/{extensions.manifest, 原生库}`(`<out>` 默认 `<app>/dist`;开发循环用它,再以 `Momo --dev --bundle=` 运行)。
+- 应用打包不走 CMake,由 `tools/momo-cli/momo.mjs build` 完成:复制运行时,把 `momo bundle` 的产物与 `assets/` 放进:
   - macOS: `<Name>.app/Contents/Resources/{bundle.js, assets/, extensions/}`
   - Windows: `<Name>/{<Name>.exe, libnode.dll, bundle.js, assets/, extensions/}`(exe 同级即资源目录;`momo build --runtime=<含 Momo.exe 的目录>`, 未验证)
 - CMake 只做一件相关的事:把 `MOMO_APP_DEFAULT_BUNDLE`(默认 `examples/hello_frame/main.js`)拷进 `Momo.app` 作为默认 bundle。

@@ -58,10 +58,11 @@ struct WindowStateFlags {
   friend bool operator==(const WindowStateFlags&, const WindowStateFlags&) = default;
 };
 
-// 窗口创建参数(momo/window create;逻辑点)。
+// 窗口创建参数(逻辑点)。唯一的一份: 启动窗口(AppConfig::window, 命令行)、momo/window create 与
+// PlatformIntegration::CreateWindow 都用它。
 struct WindowOptions {
-  std::string title;
-  Size size{800, 600};
+  std::string title = "Momo";
+  Size size{1024, 768};
   Size min_size{200, 150};
   // 内容区左上角的屏幕位置(逻辑点, 主屏左上原点);为空时由宿主决定(居中)。
   std::optional<Point> position;
@@ -70,8 +71,11 @@ struct WindowOptions {
   bool non_activating = false;
   // 用户能否拖动边框缩放窗口(之后可经 momo/window setResizable 修改)。
   bool resizable = true;
+  // 首帧前的闪屏底色。JS 打开的窗口沿用启动窗口的值(WindowManager::CreateWindow)。
+  uint32_t background_argb = 0xFFFFFFFF;
   // 创建后立即显示。false: 窗口创建并绑定引擎但不显示, 第一帧呈现后宿主发 readyToShow, 应用再 show
-  // (避免先看到空白窗口, 同 Electron 的 show: false + ready-to-show)。
+  // (避免先看到空白窗口, 同 Electron 的 show: false + ready-to-show)。由 WindowManager 执行:
+  // 平台窗口创建时总是不显示。
   bool show = true;
 };
 

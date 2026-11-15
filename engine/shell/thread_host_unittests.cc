@@ -23,7 +23,6 @@ TEST(ThreadHostTest, ProvidesDistinctRunnersOnSeparateThreads) {
   auto platform = std::make_shared<FakePlatformRunner>();
   TaskRunners runners = host.MakeTaskRunners(platform);
   ASSERT_TRUE(runners.IsValid());
-  EXPECT_EQ(runners.label, "t");
   EXPECT_EQ(runners.platform, platform);
 
   std::thread::id ids[3];

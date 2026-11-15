@@ -1,7 +1,7 @@
 #pragma once
 
 // MacWindow: NSWindow + layer-backed 内容视图(MomoContentView)。仅被 .mm 文件包含。
-//   - 原生窗口: 普通窗口为 MomoWindow(NSWindow);WindowSpec::non_activating 为 MomoPanel(NSPanel, 非激活面板)。
+//   - 原生窗口: 普通窗口为 MomoWindow(NSWindow);WindowOptions::non_activating 为 MomoPanel(NSPanel, 非激活面板)。
 //     两者只把 -sendEvent: 与平台视图投递转给本对象(SendEvent / DeliverToPlatformView), 行为都在这里。
 //   - Surface: 默认 CAMetalLayer(MacMetalSurface, 可回退软件);无 Metal 设备或环境变量
 //     MOMO_SOFTWARE_RENDERING=1 时直接用 IOSurface 软件 surface(MacSoftwareSurface)。
@@ -42,7 +42,7 @@ class MacTextInput;
 class MacWindow final : public PlatformWindow, public PointerWindow {
  public:
   // mouse 必须比窗口活得久(MacPlatformIntegration 持有)。
-  MacWindow(const WindowSpec& spec, WindowDelegate* delegate, MacMouseInput& mouse);
+  MacWindow(const WindowOptions& options, WindowDelegate* delegate, MacMouseInput& mouse);
   ~MacWindow() override;
 
   // PlatformWindow
@@ -99,11 +99,12 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   MomoPlatformViews* platform_views() const { return platform_views_; }
   // 指针此刻归本窗口的谁(PointerDispatcher::PointerOwner)。
   std::optional<int64_t> PointerOwner() const;
+  // 下面四个"可能变了"的通知都把当前值原样报给 delegate(可以重复): 去重在 WindowController。
   void NotifyMetricsChanged();
   void NotifyFrameChanged();
-  // 窗口状态(显示、最小化、缩放、全屏)可能变化: 有变化时通知 delegate。
+  // 窗口状态(显示、最小化、缩放、全屏)可能变化。
   void NotifyStateChanged();
-  // 系统窗口控制按钮(红绿灯)的占用范围可能变化(标题栏样式、尺寸、全屏): 有变化时通知 delegate。
+  // 系统窗口控制按钮(红绿灯)的占用范围可能变化(标题栏样式、尺寸、全屏)。
   void NotifyControlsChanged();
   // 隐藏标题栏时把红绿灯垂直居中到应用标题栏高度内(尺寸变化、退出全屏后重新布局)。
   void LayoutTrafficLights();
@@ -132,16 +133,12 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   bool non_activating_ = false;  // NSPanel(非激活面板): 显示/激活时不激活应用
   bool system_tracking_ = false;  // 当前按下序列交给了 AppKit(红绿灯等窗口控件), 直到抬起
   int64_t routed_platform_view_ = 0;  // 正在经 AppKit 投递给的平台视图(0 = 无;kNoPlatformView = 不许落到平台视图)
-  Rect last_frame_;
-  WindowStateFlags last_state_;
   TitleBarOptions title_bar_;
-  std::optional<Rect> last_controls_;
   std::unique_ptr<platform::RenderSurface> surface_;
   MacMetalSurface* metal_surface_ = nullptr;  // 指向 surface_(若为 Metal)
   std::unique_ptr<MacTextInput> text_input_;
-  platform::ViewportMetrics last_metrics_;
   bool resize_waiting_ = false;
-  // 缩放行为(momo/window setResizable / setResizeBorder;resizable 由 WindowSpec 初始化)。
+  // 缩放行为(momo/window setResizable / setResizeBorder;resizable 由 WindowOptions 初始化)。
   WindowResizeOptions resize_options_;
 };
 

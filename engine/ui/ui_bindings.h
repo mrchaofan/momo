@@ -20,9 +20,11 @@ class UiBindings {
  public:
   // 向 runtime 注册 `momo:ui` 与 `momo:services` 原生模块。runtime 与 client 必须比返回的对象活得久。
   // host 提供消息通道/io 线程/纹理等设施(测试可传空: 相应功能不可用, 调用时抛错或回复 null)。
+  // runtime_generation: 这个运行时的代数(>= 1), 编进 Promise id / 扩展 promise token。
   static std::unique_ptr<UiBindings> Install(runtime::JsRuntime& runtime, WindowClient& client,
                                              const AppHost& host = {},
-                                             const Settings& settings = {});
+                                             const Settings& settings = {},
+                                             uint64_t runtime_generation = 1);
   ~UiBindings();
 
   // ---- 事件入口: 调用 JS 回调(未设置则忽略), 之后排空 microtask ----

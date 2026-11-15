@@ -9,8 +9,8 @@ namespace momo::embedder {
 using engine::platform::kImplicitViewId;
 using engine::platform::ViewId;
 
-WindowManager::WindowManager(PlatformIntegration& platform, WindowSpec startup_spec, Observer& observer)
-    : platform_(platform), startup_spec_(std::move(startup_spec)), observer_(observer) {}
+WindowManager::WindowManager(PlatformIntegration& platform, WindowOptions startup_options, Observer& observer)
+    : platform_(platform), startup_options_(std::move(startup_options)), observer_(observer) {}
 
 WindowManager::~WindowManager() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
@@ -21,41 +21,31 @@ WindowManager::~WindowManager() {
 // ---------------------------------------------------------------------------
 // 创建与绑定
 
-StatusOr<std::unique_ptr<WindowController>> WindowManager::NewWindow(ViewId view_id, const WindowSpec& spec) {
-  WindowController::Client& client = *this;  // 私有基类: 在成员上下文内转换
-  auto controller = std::make_unique<WindowController>(client, view_id);
-  MOMO_RETURN_IF_ERROR(controller->CreateWindow(platform_, spec));
-  return controller;
-}
-
 Status WindowManager::OpenStartupWindow() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MOMO_ASSIGN_OR_RETURN(std::unique_ptr<WindowController> controller,
-                        NewWindow(kImplicitViewId, startup_spec_));
-  Open(std::move(controller), /*show=*/true);
-  return Status::Ok();
+  return Open(kImplicitViewId, startup_options_);
 }
 
-void WindowManager::Open(std::unique_ptr<WindowController> controller, bool show) {
-  const ViewId view_id = controller->view_id();
+Status WindowManager::Open(ViewId view_id, const WindowOptions& options) {
+  WindowController::Client& client = *this;  // 私有基类: 在成员上下文内转换
+  MOMO_ASSIGN_OR_RETURN(std::unique_ptr<WindowController> controller,
+                        WindowController::Create(platform_, options, client, view_id));
   WindowController& raw = *controller;
   windows_[view_id] = std::move(controller);
-  if (show) {
+  if (options.show) {
     raw.window().Show();
   }
   if (shell_ != nullptr) {
-    Attach(raw);
+    raw.AttachEngine(*shell_, *window_channel_);
+    UpdateVsyncWindow();
   }
-  MOMO_LOG(INFO) << "Window opened (view " << view_id << (show ? "" : ", hidden") << ").";
+  MOMO_LOG(INFO) << "Window opened (view " << view_id << (options.show ? "" : ", hidden") << ").";
+  return Status::Ok();
 }
 
-void WindowManager::Attach(WindowController& controller) {
-  StatusOr<ObjectPtr<platform::VsyncSource>> vsync = platform_.CreateVsyncSource(controller.window());
-  if (!vsync.ok()) {
-    MOMO_LOG(VERBOSE) << "No platform vsync for view " << controller.view_id() << " (" << vsync.status()
-                      << "); the engine falls back to a timer.";
-  }
-  controller.AttachEngine(*shell_, vsync.ok() ? std::move(vsync).value() : nullptr);
+void WindowManager::UpdateVsyncWindow() {
+  WindowController* front = front_window();
+  platform_.SetVsyncWindow(front != nullptr ? &front->window() : nullptr);
 }
 
 void WindowManager::AttachEngine(engine::Shell& shell, WindowChannel& window_channel,
@@ -65,9 +55,17 @@ void WindowManager::AttachEngine(engine::Shell& shell, WindowChannel& window_cha
   shell_ = &shell;
   window_channel_ = &window_channel;
   platform_channels_ = &platform_channels;
-  for (auto& [view_id, controller] : windows_) {
-    Attach(*controller);
+  // 帧时钟: 整个应用一个来源, 由 Shell 持有(Shell 关闭时释放)。
+  StatusOr<ObjectPtr<platform::VsyncSource>> vsync = platform_.CreateVsyncSource();
+  if (vsync.ok()) {
+    shell.SetVsyncSource(std::move(vsync).value());
+  } else {
+    MOMO_LOG(VERBOSE) << "No platform vsync (" << vsync.status() << "); the engine falls back to a timer.";
   }
+  for (auto& [view_id, controller] : windows_) {
+    controller->AttachEngine(shell, window_channel);
+  }
+  UpdateVsyncWindow();
 }
 
 void WindowManager::DetachEngine() {
@@ -92,16 +90,14 @@ StatusOr<ViewId> WindowManager::CreateWindow(const WindowOptions& options) {
   if (shell_ == nullptr) {
     return FailedPreconditionError("the engine is not running");
   }
-  WindowSpec spec = startup_spec_;  // 继承启动窗口的闪屏底色等
-  spec.title = options.title.empty() ? spec.title : options.title;
-  spec.size = options.size;
-  spec.min_size = options.min_size;
-  spec.position = options.position;
-  spec.non_activating = options.non_activating;
-  spec.resizable = options.resizable;
+  // 标题缺省与闪屏底色沿用启动窗口的。
+  WindowOptions window = options;
+  if (window.title.empty()) {
+    window.title = startup_options_.title;
+  }
+  window.background_argb = startup_options_.background_argb;
   const ViewId view_id = next_view_id_++;
-  MOMO_ASSIGN_OR_RETURN(std::unique_ptr<WindowController> controller, NewWindow(view_id, spec));
-  Open(std::move(controller), options.show);
+  MOMO_RETURN_IF_ERROR(Open(view_id, window));
   return view_id;
 }
 
@@ -120,9 +116,7 @@ void WindowManager::Close(ViewId view_id, bool report_all_closed) {
   windows_.erase(it);
   // 进行中的指针序列若由这个窗口接收: 先以取消结束它(此时引擎仍绑定, 框架收得到), 再解绑。
   // 序列已改交别的窗口时(拖动中并入另一个窗口)什么也不做, 拖动继续。
-  if (controller->has_window()) {
-    controller->window().ReleasePointerCapture();
-  }
+  controller->window().ReleasePointerCapture();
   // 先解绑(raster 同步停用 surface, JS 收到 onViewportsChanged), 再销毁窗口。
   controller->DetachEngine();
   if (window_channel_ != nullptr) {
@@ -130,6 +124,9 @@ void WindowManager::Close(ViewId view_id, bool report_all_closed) {
   }
   if (focused_window_ == view_id) {
     focused_window_.reset();
+  }
+  if (shell_ != nullptr) {
+    UpdateVsyncWindow();  // 帧时钟改为跟随剩下的窗口(这个窗口稍后才销毁)
   }
   // 关闭按钮的回调可能仍在窗口自身的调用栈上: 延后到安全点销毁。用 DeleteLater 而不是普通任务: 普通任务也会在
   // 嵌套循环里执行(拖拽缩放时等待新帧的 RunDueTasksNested、系统模态循环), 那时窗口的方法可能还在栈上;
@@ -152,7 +149,7 @@ void WindowManager::RequestCloseWindow(ViewId view_id) {
   if (windows_.count(view_id) == 0) {
     return;
   }
-  if (window_channel_ == nullptr) {  // 引擎尚未就绪(启动中)或已关闭: 直接关闭
+  if (window_channel_ == nullptr) {  // 引擎尚未创建或已关闭: 直接关闭
     CloseWindow(view_id);
     return;
   }
@@ -205,11 +202,8 @@ void WindowManager::RequestCloseAll(MoveOnlyFunction<void(bool all_closed)> done
 void WindowManager::ResetForHotRestart(bool keep_startup_window) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   if (keep_startup_window && windows_.count(kImplicitViewId) == 0) {
-    StatusOr<std::unique_ptr<WindowController>> startup = NewWindow(kImplicitViewId, startup_spec_);
-    if (startup.ok()) {
-      Open(std::move(startup).value(), /*show=*/true);
-    } else {
-      MOMO_LOG(ERROR) << "Hot restart: cannot reopen the startup window: " << startup.status();
+    if (Status status = OpenStartupWindow(); !status.ok()) {
+      MOMO_LOG(ERROR) << "Hot restart: cannot reopen the startup window: " << status;
     }
   }
   for (ViewId id : view_ids()) {
@@ -249,7 +243,7 @@ std::vector<ViewId> WindowManager::view_ids() const {
 
 PlatformWindow* WindowManager::FindWindow(ViewId view_id) {
   WindowController* controller = window(view_id);
-  return controller != nullptr && controller->has_window() ? &controller->window() : nullptr;
+  return controller != nullptr ? &controller->window() : nullptr;
 }
 
 TextInputConnection* WindowManager::FocusedTextInput() {
@@ -257,7 +251,7 @@ TextInputConnection* WindowManager::FocusedTextInput() {
   if (controller == nullptr) {
     controller = front_window();
   }
-  return controller != nullptr && controller->has_window() ? &controller->window().text_input() : nullptr;
+  return controller != nullptr ? &controller->window().text_input() : nullptr;
 }
 
 // ---------------------------------------------------------------------------
@@ -265,12 +259,7 @@ TextInputConnection* WindowManager::FocusedTextInput() {
 
 void WindowManager::OnWindowCloseRequested(ViewId view) { RequestCloseWindow(view); }
 
-void WindowManager::OnWindowStateChanged(ViewId view, const WindowStateFlags& state) {
-  if (window_channel_ != nullptr) window_channel_->NotifyStateChanged(view, state);
-}
-
 void WindowManager::OnWindowFocusChanged(ViewId view, bool focused) {
-  if (window_channel_ != nullptr) window_channel_->NotifyFocusChanged(view, focused);
   if (focused) {
     focused_window_ = view;
   } else if (focused_window_ == view) {
@@ -280,18 +269,6 @@ void WindowManager::OnWindowFocusChanged(ViewId view, bool focused) {
 
 void WindowManager::OnWindowTextInput(ViewId, const TextInputEvent& event) {
   if (platform_channels_ != nullptr) platform_channels_->SendTextInput(event);
-}
-
-void WindowManager::OnWindowFrameChanged(ViewId view, const Rect& screen_frame) {
-  if (window_channel_ != nullptr) window_channel_->NotifyFrameChanged(view, screen_frame);
-}
-
-void WindowManager::OnWindowControlsChanged(ViewId view, const std::optional<Rect>& controls) {
-  if (window_channel_ != nullptr) window_channel_->NotifyControlsChanged(view, controls);
-}
-
-void WindowManager::OnWindowFirstFrame(ViewId view) {
-  if (window_channel_ != nullptr) window_channel_->NotifyReadyToShow(view);
 }
 
 }  // namespace momo::embedder

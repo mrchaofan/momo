@@ -1,7 +1,6 @@
 #include "embedder/common/application.h"
 
 #include <cstdlib>
-
 #include <utility>
 #include <vector>
 
@@ -126,22 +125,44 @@ Status Application::Launch() {
     return status;
   };
 
-  // 4) 启动窗口(隐式视图 0): 此时只有原生空窗口(闪屏底色), 先显示以尽早给用户反馈。引擎就绪后再绑定。
+  // 4) 启动窗口(隐式视图 0): 此时只有原生空窗口(闪屏底色), 先显示以尽早给用户反馈。引擎创建后再绑定。
   if (options_.config.startup_window) {
     if (Status status = window_manager_->OpenStartupWindow(); !status.ok()) {
       return fail(std::move(status));
     }
   }
 
-  // 5) 引擎。
+  // 5) 引擎: 创建、绑定, 异步启动 JS 运行时。bundle 的执行结果由 OnRuntimeStarted 接收。
   if (Status status = LaunchEngine(); !status.ok()) {
     return fail(std::move(status));
   }
+  return Status::Ok();
+}
 
+void Application::OnRuntimeStarted(Status status) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  if (state_ != State::kLaunching) {
+    return;  // 启动期间已请求退出
+  }
+  if (!status.ok()) {
+    MOMO_LOG(ERROR) << "Launch failed: " << status;
+    Terminate(1);
+    return;
+  }
   TransitionTo(State::kRunning);
   // 启动期间应用可能已被隐藏。
   UpdateSuspended();
-  return Status::Ok();
+
+  // --experimental-hot-restart: bundle 变化即 hot restart(docs/04 §8, 不保留 JS 状态)。实验性, 默认关闭。
+  if (options_.config.hot_restart && options_.hot_restart_poll > TimeDelta::zero()) {
+    std::error_code ec;
+    watched_bundle_mtime_ = std::filesystem::last_write_time(watched_bundle_, ec);
+    task_runner()->PostDelayedTask(
+        [weak = WeakPtr<Application>(this)] {
+          if (Application* self = weak.get()) self->PollBundleForChanges();
+        },
+        options_.hot_restart_poll);
+  }
 }
 
 Status Application::LaunchEngine() {
@@ -150,67 +171,44 @@ Status Application::LaunchEngine() {
   settings.enable_inspector = options_.config.dev_mode && options_.config.inspector_port >= 0;
   settings.inspector_port = options_.config.inspector_port;
   settings.inspector_wait = options_.config.inspector_wait;
-  settings.implicit_view = options_.config.startup_window;
-  AssetResolver resolver(options_.resources_dir);
+  AssetResolver resolver(options_.resources_dir, options_.cache_dir);
   // bundle: --bundle 给了就用它, 否则用应用包内的默认 bundle。是否存在不在这里检查: 加载失败(不存在、
   // 语法错误、顶层抛出)都由引擎在执行入口时报告, 启动随之失败, 进程以非零退出码有序退出。
   MOMO_ASSIGN_OR_RETURN(ResolvedAssets assets, resolver.Resolve(options_.config));
   settings.bundle_path = assets.bundle_path;
   settings.assets_dir = assets.assets_dir;
   settings.extensions_dir = assets.extensions_dir;
-  // V8 code cache: 用户缓存目录(Mac ~/Library/Caches/<app>/v8, Win %LOCALAPPDATA%\<app>\v8)。
-  // --dev 下 bundle 频繁变化, 缓存反复失效, 不启用。
+  // V8 code cache: 入口给出的应用缓存目录下。--dev 下 bundle 频繁变化, 缓存反复失效, 不启用。
   if (!options_.config.dev_mode) {
-#if defined(_WIN32)
-    const char* base = std::getenv("LOCALAPPDATA");
-    if (base != nullptr) settings.code_cache_dir = std::filesystem::path(base) / "Momo" / "v8";
-#else
-    const char* home = std::getenv("HOME");
-    if (home != nullptr) {
-      settings.code_cache_dir = std::filesystem::path(home) / "Library" / "Caches" / "dev.momo.app" / "v8";
-    }
-#endif
+    settings.code_cache_dir = assets.code_cache_dir;
   }
   // 主显示器(列表第一个)的刷新率, 供 vsync 回退定时器使用;未知时由引擎取默认值。
   const std::vector<DisplayInfo> displays = platform_->displays();
   if (!displays.empty()) {
     settings.refresh_rate = displays.front().refresh_rate;
   }
-  // 宿主通道在 JS bundle 执行之前注册(bundle 顶层代码就可能设置标题、打开窗口、退出)。
-  auto register_channels = [this](engine::Shell& shell) {
-    AppChannel::Host* app_host = this;  // 私有基类: 在成员上下文内转换
-    app_channel_ = std::make_unique<AppChannel>(shell.hub(), task_runner(), app_host);
-    window_channel_ = std::make_unique<WindowChannel>(shell.hub(), task_runner(), window_manager_.get());
-    platform_channels_ = std::make_unique<PlatformChannels>(
-        shell.hub(), task_runner(), &platform_->services(),
-        [this] { return window_manager_->FocusedTextInput(); });
-  };
   // process.exit(code): JS 已停止, 有序退出。
   auto on_exit_requested = [weak = WeakPtr<Application>(this)](int code) {
     if (Application* self = weak.get()) self->Exit(code);
   };
-  StatusOr<std::unique_ptr<engine::Shell>> shell =
-      engine::Shell::Create(task_runners_, settings, register_channels, on_exit_requested);
-  if (!shell.ok()) {
-    app_channel_.reset();
-    window_channel_.reset();
-    platform_channels_.reset();
-    return shell.status();
-  }
-  shell_ = std::move(shell).value();
+  // 引擎: 此时还没有 JS 运行时, 不等待任何线程。
+  MOMO_ASSIGN_OR_RETURN(shell_, engine::Shell::Create(task_runners_, settings, on_exit_requested));
+
+  // 宿主通道与窗口在 JS bundle 执行之前就位(bundle 顶层代码就可能设置标题、打开窗口、退出;
+  // 启动窗口作为视图 0 在顶层即可渲染)。
+  AppChannel::Host* app_host = this;  // 私有基类: 在成员上下文内转换
+  app_channel_ = std::make_unique<AppChannel>(shell_->hub(), task_runner(), app_host);
+  window_channel_ = std::make_unique<WindowChannel>(shell_->hub(), task_runner(), window_manager_.get());
+  platform_channels_ = std::make_unique<PlatformChannels>(
+      shell_->hub(), task_runner(), &platform_->services(),
+      [this] { return window_manager_->FocusedTextInput(); });
   window_manager_->AttachEngine(*shell_, *window_channel_, *platform_channels_);
 
-  // --experimental-hot-restart: bundle 变化即 hot restart(docs/04 §8, 不保留 JS 状态)。实验性, 默认关闭。
-  if (options_.config.hot_restart && options_.hot_restart_poll > TimeDelta::zero()) {
-    std::error_code ec;
-    watched_bundle_ = settings.bundle_path;
-    watched_bundle_mtime_ = std::filesystem::last_write_time(watched_bundle_, ec);
-    task_runner()->PostDelayedTask(
-        [weak = WeakPtr<Application>(this)] {
-          if (Application* self = weak.get()) self->PollBundleForChanges();
-        },
-        options_.hot_restart_poll);
-  }
+  // 启动 JS 运行时: ui 线程执行 bundle, 本线程回到事件循环;结果稍后到达。
+  watched_bundle_ = settings.bundle_path;
+  shell_->Run([weak = WeakPtr<Application>(this)](Status status) {
+    if (Application* self = weak.get()) self->OnRuntimeStarted(std::move(status));
+  });
   return Status::Ok();
 }
 
@@ -239,7 +237,8 @@ void Application::PollBundleForChanges() {
 
 int Application::Run() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (state_ == State::kRunning || state_ == State::kSuspended) {
+  // Launching 时也进入循环: JS 运行时的启动结果要在这里到达。
+  if (state_ == State::kLaunching || state_ == State::kRunning || state_ == State::kSuspended) {
     platform_loop_->Run();  // 返回时已排空并清理 DeleteLater 对象
   }
   return exit_code_;
@@ -348,7 +347,8 @@ void Application::Quit() {
   if (state_ == State::kTerminating || quitting_) {
     return;  // 重复请求合并
   }
-  if (app_channel_ == nullptr) {  // 引擎尚未就绪: 没有 JS 可询问
+  if (app_channel_ == nullptr || state_ == State::kLaunching) {
+    // 引擎尚未就绪, 或 bundle 还在执行(退出处理器尚未注册): 没有 JS 可询问。
     Terminate(exit_code_);
     return;
   }

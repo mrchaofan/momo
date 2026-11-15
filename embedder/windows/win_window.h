@@ -3,7 +3,7 @@
 // WinWindow: HWND 封装 + WndProc(docs/03 §1/§6;对应 macOS 的 MacWindow)。仅被 embedder/windows 的 .cc 包含。
 //
 //  - DPI: 进程为 Per-Monitor-V2(入口在创建任何窗口前设置)。客户区坐标即物理像素;DPR = GetDpiForWindow / 96。
-//    WM_DPICHANGED 采用系统建议矩形;WM_GETDPISCALEDSIZE 精确换算客户区。WindowSpec 的尺寸为逻辑点。
+//    WM_DPICHANGED 采用系统建议矩形;WM_GETDPISCALEDSIZE 精确换算客户区。WindowOptions 的尺寸为逻辑点。
 //    屏幕坐标(screen_frame、SetPosition、指针的 screen_x/y)是全局逻辑点, 经 WinDisplays(WinScreenLayout)换算,
 //    混合 DPI 的多显示器下也与 macOS 同一约定。
 //  - 输入: 鼠标消息经进程内唯一的 WinMouseInput(构造时注入)翻译后交给 PointerDispatcher 决定接收方, 本类作为
@@ -56,7 +56,7 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
     WinApp& app;
   };
 
-  static StatusOr<std::unique_ptr<WinWindow>> Create(const WindowSpec& spec, WindowDelegate* delegate,
+  static StatusOr<std::unique_ptr<WinWindow>> Create(const WindowOptions& options, WindowDelegate* delegate,
                                                      const Context& context);
   ~WinWindow() override;
 
@@ -105,13 +105,14 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   HWND hwnd() const { return hwnd_; }
 
  private:
-  WinWindow(const WindowSpec& spec, WindowDelegate* delegate, const Context& context);
+  WinWindow(const WindowOptions& options, WindowDelegate* delegate, const Context& context);
 
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
 
-  Status Initialize(const WindowSpec& spec);
+  Status Initialize(const WindowOptions& options);
   void CreateSurface(uint32_t background_argb);
+  // 下面四个"可能变了"的通知都把当前值原样报给 delegate(可以重复;创建过程中不上报): 去重在 WindowController。
   void NotifyMetricsChanged();
   void NotifyFrameChanged();
   void NotifyStateChanged();
@@ -163,10 +164,9 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   Size min_size_;               // 逻辑点
   WindowResizeOptions resize_options_;
   TitleBarOptions title_bar_;
-  Rect last_frame_;
-  WindowStateFlags last_state_{.visible = false};
-  std::optional<Rect> last_controls_;
-  platform::ViewportMetrics last_metrics_;
+  // 最近一次非最小化时的控制按钮占用范围: 最小化时客户区为空, 算不出来, window_controls_rect() 返回它
+  // (不是去重缓存)。
+  std::optional<Rect> restored_controls_;
 
   std::unique_ptr<platform::RenderSurface> surface_;
   WinD3DSurface* d3d_surface_ = nullptr;      // 指向 surface_(若为 D3D)

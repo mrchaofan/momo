@@ -32,20 +32,6 @@ class RecordingShellDelegate final : public Shell::Delegate {
   int first_frames = 0;
 };
 
-// 宿主通道(on_created 注册): 记录 JS 发来的方法调用(channel:method)。
-std::function<void(Shell&)> RecordCalls(const std::string& channel,
-                                        std::vector<std::string>* calls,
-                                        std::shared_ptr<TaskRunner> runner) {
-  return [channel, calls, runner](Shell& shell) {
-    shell.hub()->SetNativeHandler(channel, runner, [calls](MessageBytes message, MessageReply reply) {
-      StatusOr<MethodCall> call = DecodeMethodCall(message);
-      calls->push_back(call.ok() ? call->method + ":" + call->args.Find("title")->AsString().value_or("")
-                                 : "<bad>");
-      reply.Send(EncodeSuccessEnvelope(EncodableValue()));
-    });
-  };
-}
-
 // platform 线程 = 测试主线程, 绑定一个 EventLoop;需要时由 Pump()/WaitFor 驱动。
 class ShellTest : public ::testing::Test {
  protected:
@@ -70,13 +56,48 @@ class ShellTest : public ::testing::Test {
 
   static platform::ViewportMetrics Metrics(double w, double h) { return {{w, h}, 2.0}; }
 
+  // Shell::Run 并等待结果回到 platform 线程。
+  Status RunAndWait(Shell& shell) {
+    std::optional<Status> result;
+    shell.Run([&](Status status) { result = std::move(status); });
+    if (!PumpUntil([&] { return result.has_value(); })) {
+      return UnavailableError("Shell::Run did not report a result");
+    }
+    return *result;
+  }
+  // 宿主的启动流程: Create → setup(注册通道、添加进程内扩展、绑定视图)→ Run, 等到 bundle 执行完。
+  // 运行时启动失败时关闭 Shell 并返回错误。
+  StatusOr<std::unique_ptr<Shell>> Launch(const Settings& settings,
+                                          const std::function<void(Shell&)>& setup = nullptr,
+                                          std::function<void(int)> on_exit = nullptr) {
+    auto shell = Shell::Create(runners_, settings, std::move(on_exit));
+    if (!shell.ok()) {
+      return shell;
+    }
+    if (setup) {
+      setup(**shell);
+    }
+    if (Status status = RunAndWait(**shell); !status.ok()) {
+      (*shell)->Shutdown();
+      return status;
+    }
+    return shell;
+  }
+
+  // 宿主的启动窗口: Run 之前绑定为视图 0(示例 bundle 在顶层就使用 viewports.get(0))。
+  std::function<void(Shell&)> AttachStartupView() {
+    return [this](Shell& shell) { shell.AttachView(&startup_delegate_, &startup_surface_); };
+  }
+
   std::shared_ptr<EventLoop> platform_loop_;
   ThreadHost threads_;
   TaskRunners runners_;
+  FakeSurface startup_surface_;
+  RecordingShellDelegate startup_delegate_;
 };
 
 TEST_F(ShellTest, CreateWithoutBundleSucceedsAndShutsDown) {
-  auto shell = Shell::Create(runners_, Settings{});
+  auto shell = Launch(Settings{});
   ASSERT_TRUE(shell.ok()) << shell.status();
   (*shell)->Shutdown();
   EXPECT_TRUE((*shell)->is_shut_down());
@@ -92,7 +113,7 @@ TEST_F(ShellTest, CreateRejectsIncompleteRunners) {
 TEST_F(ShellTest, MetricsChangeProducesFrameWithTimerVsync) {
   Settings settings;
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
@@ -114,8 +135,8 @@ TEST_F(ShellTest, MetricsChangeProducesFrameWithTimerVsync) {
   EXPECT_EQ(surface.presented.load(), presented);
 }
 
-TEST_F(ShellTest, PlatformVsyncSourceDrivesFramesAndIsDeletedLaterOnDetach) {
-  auto shell = Shell::Create(runners_, Settings{});
+TEST_F(ShellTest, PlatformVsyncSourceDrivesFramesAndIsDeletedLaterOnReplace) {
+  auto shell = Launch(Settings{});
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
@@ -126,7 +147,8 @@ TEST_F(ShellTest, PlatformVsyncSourceDrivesFramesAndIsDeletedLaterOnDetach) {
     destroyed_on_platform = runners_.platform->RunsTasksOnCurrentThread();
   });
   FakeVsyncSource* raw_source = source.get();
-  (*shell)->AttachView(&delegate, &surface, std::move(source));
+  (*shell)->SetVsyncSource(std::move(source));
+  (*shell)->AttachView(&delegate, &surface);
 
   (*shell)->OnMetricsChanged(Metrics(320, 240));
   // vsync 请求经 platform 线程转发: 需要驱动 platform 循环。
@@ -137,10 +159,10 @@ TEST_F(ShellTest, PlatformVsyncSourceDrivesFramesAndIsDeletedLaterOnDetach) {
   // 回调在调用方(platform)线程执行, 由 PlatformVsyncWaiter 再投递回 ui 线程。
   EXPECT_FALSE(raw_source->callback_off_thread.load());
 
-  // 在 platform 任务中解绑: VsyncSource 不在调用栈内析构, 而是在本轮安全点。
+  // 在 platform 任务中换掉来源: VsyncSource 不在调用栈内析构, 而是在本轮安全点。
   int destroyed_inside_task = -1;
   runners_.platform->PostTask([&] {
-    (*shell)->DetachView();
+    (*shell)->SetVsyncSource(nullptr);
     destroyed_inside_task = destroyed;
   });
   Pump();
@@ -150,17 +172,17 @@ TEST_F(ShellTest, PlatformVsyncSourceDrivesFramesAndIsDeletedLaterOnDetach) {
   (*shell)->Shutdown();
 }
 
-TEST_F(ShellTest, DetachAfterSourceGoneFallsBackToTimer) {
+TEST_F(ShellTest, ClearingVsyncSourceFallsBackToTimer) {
   Settings settings;
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
-  (*shell)->AttachView(&delegate, &surface, MakeObject<FakeVsyncSource>());
-  (*shell)->DetachView();
+  (*shell)->SetVsyncSource(MakeObject<FakeVsyncSource>());
+  (*shell)->SetVsyncSource(nullptr);
   Pump();  // source 析构
-  // 重新绑定(无平台 vsync): 帧由定时器驱动, 不依赖已析构的 source。
+  // 没有平台 vsync: 帧由定时器驱动, 不依赖已析构的 source。
   (*shell)->AttachView(&delegate, &surface);
   (*shell)->OnMetricsChanged(Metrics(64, 64));
   EXPECT_TRUE(PumpUntil([&] { return surface.presented.load() >= 1; }));
@@ -170,7 +192,7 @@ TEST_F(ShellTest, DetachAfterSourceGoneFallsBackToTimer) {
 TEST_F(ShellTest, SuspendedAppStopsFramesUntilResumed) {
   Settings settings;
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
@@ -190,7 +212,7 @@ TEST_F(ShellTest, SuspendedAppStopsFramesUntilResumed) {
 TEST_F(ShellTest, HiddenViewIsNotDrawnWhileOthersAre) {
   Settings settings;
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   ASSERT_TRUE(shell.ok());
   FakeSurface a_surface, b_surface;
   RecordingShellDelegate a, b;
@@ -218,7 +240,7 @@ TEST_F(ShellTest, HiddenViewIsNotDrawnWhileOthersAre) {
 TEST_F(ShellTest, FirstPresentedFrameIsReportedOncePerAttach) {
   Settings settings;
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
@@ -232,22 +254,52 @@ TEST_F(ShellTest, FirstPresentedFrameIsReportedOncePerAttach) {
   (*shell)->Shutdown();
 }
 
-// 宿主不建启动窗口: 引擎里没有隐式视图, 视图全部来自之后绑定的窗口。
-TEST_F(ShellTest, NoImplicitViewUntilTheHostAttachesOne) {
+// 引擎里没有预置的视图: 视图全部来自宿主的绑定, 可以在 Run 之前(启动窗口), 也可以在之后。
+TEST_F(ShellTest, ViewsComeOnlyFromTheHostBeforeOrAfterRun) {
   Settings settings;
-  settings.implicit_view = false;
   settings.refresh_rate = 240;
   auto shell = Shell::Create(runners_, settings);
   ASSERT_TRUE(shell.ok());
-  FakeSurface surface;
-  RecordingShellDelegate delegate;
-  (*shell)->AttachView(4, &delegate, &surface);
+  FakeSurface early_surface, late_surface;
+  RecordingShellDelegate early, late;
+  (*shell)->AttachView(4, &early, &early_surface);
   (*shell)->OnMetricsChanged(4, Metrics(64, 64));
-  EXPECT_TRUE(WaitFor([&] { return surface.presented.load() >= 1; }));
+  // 运行时启动之前不出帧。
+  EXPECT_FALSE(WaitFor([&] { return early_surface.acquired.load() > 0; }, std::chrono::milliseconds(60)));
+  ASSERT_TRUE(RunAndWait(**shell).ok());
+  EXPECT_TRUE(WaitFor([&] { return early_surface.presented.load() >= 1; }));
+  (*shell)->AttachView(7, &late, &late_surface);
+  (*shell)->OnMetricsChanged(7, Metrics(32, 32));
+  EXPECT_TRUE(WaitFor([&] { return late_surface.presented.load() >= 1; }));
+  EXPECT_EQ((*shell)->attached_views(), (std::vector<platform::ViewId>{4, 7}));
+  (*shell)->Shutdown();
+}
+
+// Create 不执行 bundle、不等待其他线程;没有 Run 也能正常关闭。
+TEST_F(ShellTest, CreateDoesNotStartTheRuntime) {
+  Settings settings;
+  settings.bundle_path = "/definitely/not/here/bundle.js";
+  auto shell = Shell::Create(runners_, settings);
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  (*shell)->RequestHotRestart();  // Run 之前无效
   (*shell)->Shutdown();
 }
 
 #if MOMO_HAS_JS_RUNTIME
+
+// 宿主通道(Create 之后、Run 之前注册): 记录 JS 发来的方法调用(channel:method)。
+std::function<void(Shell&)> RecordCalls(const std::string& channel,
+                                        std::vector<std::string>* calls,
+                                        std::shared_ptr<TaskRunner> runner) {
+  return [channel, calls, runner](Shell& shell) {
+    shell.hub()->SetNativeHandler(channel, runner, [calls](MessageBytes message, MessageReply reply) {
+      StatusOr<MethodCall> call = DecodeMethodCall(message);
+      calls->push_back(call.ok() ? call->method + ":" + call->args.Find("title")->AsString().value_or("")
+                                 : "<bad>");
+      reply.Send(EncodeSuccessEnvelope(EncodableValue()));
+    });
+  };
+}
 
 int Channel(uint32_t argb, int shift) { return static_cast<int>((argb >> shift) & 0xFF); }
 
@@ -260,7 +312,7 @@ TEST_F(ShellTest, ProcessExitIsHandedToTheHost) {
   Settings settings;
   settings.bundle_path = bundle;
   std::optional<int> code;
-  auto shell = Shell::Create(runners_, settings, nullptr, [&](int c) { code = c; });
+  auto shell = Launch(settings, nullptr, [&](int c) { code = c; });
   ASSERT_TRUE(shell.ok()) << shell.status();
   EXPECT_TRUE(PumpUntil([&] { return code.has_value(); }));
   EXPECT_EQ(code.value_or(-1), 3);
@@ -272,11 +324,9 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
   Settings settings;
   settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings, AttachStartupView());
   ASSERT_TRUE(shell.ok()) << shell.status();
-  FakeSurface surface;
-  RecordingShellDelegate delegate;
-  (*shell)->AttachView(&delegate, &surface);
+  FakeSurface& surface = startup_surface_;
   (*shell)->OnMetricsChanged(Metrics(800, 600));  // dpr 2: 逻辑 400x300
 
   ASSERT_TRUE(PumpUntil([&] { return surface.presented.load() >= 3; })) << "example keeps animating";
@@ -292,31 +342,34 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
   (*shell)->Shutdown();
 }
 
-// bundle 不存在不会提前检查: 执行入口时才发现, 作为加载失败返回。
-TEST_F(ShellTest, CreateFailsForMissingBundle) {
+// bundle 不存在不会提前检查: 执行入口时才发现, 作为运行时启动失败报告给 Run 的回调。
+TEST_F(ShellTest, RunFailsForMissingBundle) {
   Settings settings;
   settings.bundle_path = "/definitely/not/here/bundle.js";
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   EXPECT_EQ(shell.status().code(), StatusCode::kNotFound);
 }
 
-TEST_F(ShellTest, BundleErrorsFailCreateWithJsMessage) {
+TEST_F(ShellTest, BundleErrorsFailRunWithJsMessage) {
   const auto bundle = std::filesystem::temp_directory_path() / "momo_bad_bundle.js";
   std::ofstream(bundle) << "import { viewports } from 'momo:ui';\nviewports.get(0).render(42);\n";
   Settings settings;
   settings.bundle_path = bundle;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings, AttachStartupView());
   ASSERT_FALSE(shell.ok());
   EXPECT_NE(shell.status().message().find("must be a Scene"), std::string::npos) << shell.status();
   std::filesystem::remove(bundle);
 }
 
-// 宿主在 on_created 里注册的通道处理器先于 JS bundle 就位: bundle 顶层发出的调用不会落空。
-TEST_F(ShellTest, HostChannelsRegisteredInOnCreatedSeeTopLevelCalls) {
+// 宿主在 Run 之前注册的通道处理器先于 JS bundle 就位: bundle 顶层发出的调用不会落空。
+TEST_F(ShellTest, HostChannelsRegisteredBeforeRunSeeTopLevelCalls) {
   Settings settings;
   settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
   std::vector<std::string> calls;
-  auto shell = Shell::Create(runners_, settings, RecordCalls("momo/window", &calls, runners_.platform));
+  auto shell = Launch(settings, [&](Shell& shell) {
+    AttachStartupView()(shell);
+    RecordCalls("momo/window", &calls, runners_.platform)(shell);
+  });
   ASSERT_TRUE(shell.ok()) << shell.status();
   EXPECT_TRUE(PumpUntil([&] { return !calls.empty(); }));
   EXPECT_EQ(calls, (std::vector<std::string>{"setTitle:Momo · hello_frame"}));
@@ -324,7 +377,8 @@ TEST_F(ShellTest, HostChannelsRegisteredInOnCreatedSeeTopLevelCalls) {
 }
 
 // 扩展的生命周期事件与 JS 运行时的更替严格有序: Starting 早于该运行时发出的任何消息, Stopped 时它已经
-// 销毁(其平台视图也已 dispose), 热重启的 Stopped/Starting 之间没有 JS 在运行。
+// 销毁(其平台视图也已 dispose), 热重启的 Stopped/Starting 之间没有 JS 在运行。首次启动、热重启、关闭
+// 走同一条链路, 代数连续。
 std::vector<std::string>* g_turnover_log = nullptr;
 
 bool InitTurnoverExtension(uint32_t version, MomoExtension* out) {
@@ -351,8 +405,11 @@ TEST_F(ShellTest, ExtensionsAreToldAboutRuntimeTurnover) {
   std::vector<std::string> log;
   g_turnover_log = &log;
   // bundle 顶层会调用 momo/window setTitle: 作为"这个运行时发出的消息"记进同一份日志。
-  auto shell = Shell::Create(runners_, settings, RecordCalls("momo/window", &log, runners_.platform), nullptr,
-                             {{"test.turnover", &InitTurnoverExtension}});
+  auto shell = Launch(settings, [&](Shell& shell) {
+    AttachStartupView()(shell);
+    RecordCalls("momo/window", &log, runners_.platform)(shell);
+    ASSERT_TRUE(shell.extensions().AddExtension("test.turnover", &InitTurnoverExtension).ok());
+  });
   ASSERT_TRUE(shell.ok()) << shell.status();
   const auto messages = [&] { return std::count(log.begin(), log.end(), "setTitle:Momo · hello_frame"); };
   ASSERT_TRUE(PumpUntil([&] { return messages() == 1; }));
@@ -364,6 +421,118 @@ TEST_F(ShellTest, ExtensionsAreToldAboutRuntimeTurnover) {
                      "stopped#1/1", "starting#2/1", "setTitle:Momo · hello_frame",
                      "stopped#2/2", "detach"}));
   g_turnover_log = nullptr;
+}
+
+// Run 之前绑定的视图在 bundle 顶层就可见(尺寸已就位);启动窗口不需要引擎预置"隐式视图"。
+TEST_F(ShellTest, ViewsAttachedBeforeRunAreVisibleToTopLevelCode) {
+  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_views_at_start.mjs";
+  std::ofstream(bundle) << R"JS(
+    import { viewports } from 'momo:ui';
+    import { send } from 'momo:services';
+    const seen = [...viewports.keys()].map((id) => `${id}:${viewports.get(id).physicalSize.width}`);
+    send('test/report', new TextEncoder().encode(seen.join(',')));
+  )JS";
+  Settings settings;
+  settings.bundle_path = bundle;
+  auto shell = Shell::Create(runners_, settings);
+  ASSERT_TRUE(shell.ok());
+  std::string report;
+  (*shell)->hub()->SetNativeHandler("test/report", runners_.platform,
+                                    [&](MessageBytes message, MessageReply) {
+                                      report.assign(message.begin(), message.end());
+                                    });
+  FakeSurface a_surface, b_surface;
+  RecordingShellDelegate a, b;
+  (*shell)->AttachView(0, &a, &a_surface);
+  (*shell)->OnMetricsChanged(0, Metrics(800, 600));
+  (*shell)->AttachView(3, &b, &b_surface);
+  (*shell)->OnMetricsChanged(3, Metrics(320, 200));
+  ASSERT_TRUE(RunAndWait(**shell).ok());
+  EXPECT_TRUE(PumpUntil([&] { return !report.empty(); }));
+  EXPECT_EQ(report, "0:800,3:320");
+  (*shell)->Shutdown();
+  std::filesystem::remove(bundle);
+}
+
+// 热重启后的 bundle 有错: 结果报告给回调, 引擎退回占位驱动, 全部视图继续出帧;修复后可再次重启。
+TEST_F(ShellTest, FailedHotRestartFallsBackToPlaceholderForAllViews) {
+  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_hot_restart.mjs";
+  std::ofstream(bundle) << "globalThis.ok = true;\n";
+  Settings settings;
+  settings.bundle_path = bundle;
+  settings.refresh_rate = 240;
+  auto shell = Shell::Create(runners_, settings);
+  ASSERT_TRUE(shell.ok());
+  FakeSurface a_surface, b_surface;
+  RecordingShellDelegate a, b;
+  (*shell)->AttachView(0, &a, &a_surface);
+  (*shell)->OnMetricsChanged(0, Metrics(100, 100));
+  (*shell)->AttachView(1, &b, &b_surface);
+  (*shell)->OnMetricsChanged(1, Metrics(100, 100));
+  ASSERT_TRUE(RunAndWait(**shell).ok());
+
+  std::ofstream(bundle) << "throw new Error('broken on purpose');\n";
+  std::optional<Status> restarted;
+  (*shell)->RequestHotRestart([&](Status status) { restarted = std::move(status); });
+  ASSERT_TRUE(PumpUntil([&] { return restarted.has_value(); }));
+  EXPECT_FALSE(restarted->ok());
+  EXPECT_NE(restarted->message().find("broken on purpose"), std::string::npos) << *restarted;
+  const int a_before = a_surface.presented.load(), b_before = b_surface.presented.load();
+  (*shell)->OnMetricsChanged(0, Metrics(120, 100));
+  (*shell)->OnMetricsChanged(1, Metrics(120, 100));
+  EXPECT_TRUE(WaitFor([&] {
+    return a_surface.presented.load() > a_before && b_surface.presented.load() > b_before;
+  }));
+
+  std::ofstream(bundle) << "globalThis.ok = true;\n";
+  restarted.reset();
+  (*shell)->RequestHotRestart([&](Status status) { restarted = std::move(status); });
+  ASSERT_TRUE(PumpUntil([&] { return restarted.has_value(); }));
+  EXPECT_TRUE(restarted->ok()) << *restarted;
+  (*shell)->Shutdown();
+  std::filesystem::remove(bundle);
+}
+
+// 扩展加载错误是可查询的状态: JS 任何时候(包括热重启之后的新运行时)都能经 momo/extensions getErrors 问到。
+bool InitRejectingExtension(uint32_t, MomoExtension*) { return false; }
+
+TEST_F(ShellTest, ExtensionLoadErrorsCanBeQueriedByEveryRuntime) {
+  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_ext_errors.mjs";
+  // 手写 StandardMethodCodec: 方法名(string)+ 参数(null);回复的信封原样转发给测试解码。
+  std::ofstream(bundle) << R"JS(
+    import { send } from 'momo:services';
+    const name = new TextEncoder().encode('getErrors');
+    const call = new Uint8Array([7, name.length, ...name, 0]);
+    const reply = await send('momo/extensions', call);
+    send('test/report', reply);
+  )JS";
+  Settings settings;
+  settings.bundle_path = bundle;
+  std::vector<std::vector<std::string>> reports;
+  auto shell = Launch(settings, [&](Shell& shell) {
+    EXPECT_FALSE(shell.extensions().AddExtension("test.broken", &InitRejectingExtension).ok());
+    shell.hub()->SetNativeHandler("test/report", runners_.platform, [&](MessageBytes message, MessageReply) {
+      StatusOr<EncodableValue> value = DecodeEnvelope(message);
+      std::vector<std::string> errors;
+      if (value.ok() && value->Is<EncodableList>()) {
+        for (const EncodableValue& item : *value->GetIf<EncodableList>()) {
+          errors.push_back(item.AsString().value_or("?"));
+        }
+      } else {
+        errors.push_back("<bad reply>");
+      }
+      reports.push_back(std::move(errors));
+    });
+  });
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  ASSERT_TRUE(PumpUntil([&] { return reports.size() == 1; }));
+  (*shell)->RequestHotRestart();
+  ASSERT_TRUE(PumpUntil([&] { return reports.size() == 2; }));
+  ASSERT_EQ(reports[0].size(), 1u);
+  EXPECT_EQ(reports[0][0].rfind("test.broken: ", 0), 0u) << reports[0][0];
+  EXPECT_EQ(reports[1], reports[0]) << "the next runtime gets the same answer";
+  (*shell)->Shutdown();
+  std::filesystem::remove(bundle);
 }
 
 #endif  // MOMO_HAS_JS_RUNTIME
@@ -398,7 +567,7 @@ class FakeHost final {
 TEST_F(ShellTest, SecondViewGetsItsOwnFramesAndIsRemovedOnDetach) {
   Settings settings;
   settings.refresh_rate = 240;
-  auto shell = Shell::Create(runners_, settings);
+  auto shell = Launch(settings);
   ASSERT_TRUE(shell.ok());
   FakeHost host;
   host.shell = shell->get();
@@ -425,24 +594,28 @@ TEST_F(ShellTest, SecondViewGetsItsOwnFramesAndIsRemovedOnDetach) {
   (*shell)->Shutdown();
 }
 
-// 视图 0 解绑后帧时钟改用其他视图的 VsyncSource;全部解绑后回退定时器。
-TEST_F(ShellTest, VsyncSourceFallsBackToAnotherView) {
-  auto shell = Shell::Create(runners_, Settings{});
+// 帧时钟是应用级的: 视图 0 解绑后, 同一个 VsyncSource 继续驱动其余视图出帧。
+TEST_F(ShellTest, VsyncSourceOutlivesDetachedViews) {
+  auto shell = Launch(Settings{});
   ASSERT_TRUE(shell.ok());
   FakeSurface a_surface, b_surface;
   RecordingShellDelegate a, b;
-  auto source_a = MakeObject<FakeVsyncSource>();
-  auto source_b = MakeObject<FakeVsyncSource>();
-  FakeVsyncSource* raw_b = source_b.get();
-  (*shell)->AttachView(0, &a, &a_surface, std::move(source_a));
-  (*shell)->AttachView(3, &b, &b_surface, std::move(source_b));
+  int destroyed = 0;
+  auto source = MakeObject<FakeVsyncSource>([&] { destroyed++; });
+  FakeVsyncSource* raw = source.get();
+  (*shell)->SetVsyncSource(std::move(source));
+  (*shell)->AttachView(0, &a, &a_surface);
+  (*shell)->AttachView(3, &b, &b_surface);
   (*shell)->OnMetricsChanged(3, Metrics(100, 100));
   (*shell)->DetachView(0);
-  // 视图 3 的来源接管帧时钟: 它的 vsync 能驱动视图 3 出帧。
-  EXPECT_TRUE(PumpUntil([&] { return raw_b->requests.load() > 0; }));
+  Pump();
+  EXPECT_EQ(destroyed, 0);
+  EXPECT_TRUE(PumpUntil([&] { return raw->requests.load() > 0; }));
   EXPECT_TRUE(WaitFor([&] { return b_surface.presented.load() >= 1; }, std::chrono::milliseconds(3000),
                       platform_loop_.get()));
   (*shell)->Shutdown();
+  Pump();
+  EXPECT_EQ(destroyed, 1);
 }
 
 }  // namespace

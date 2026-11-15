@@ -4,7 +4,6 @@
 
 #include "base/logging.h"
 #include "base/task_util.h"
-#include "base/waitable_event.h"
 #include "engine/common/standard_codec.h"
 #include "engine/shell/rasterizer.h"
 
@@ -13,35 +12,31 @@ namespace momo::engine {
 // ---------------------------------------------------------------------------
 // 创建与关闭
 
-StatusOr<std::unique_ptr<Shell>> Shell::Create(
-    const TaskRunners& task_runners, const Settings& settings,
-    const std::function<void(Shell&)>& on_created, std::function<void(int)> on_exit_requested,
-    std::vector<std::pair<std::string, MomoExtInitFn>> in_process_extensions) {
+StatusOr<std::unique_ptr<Shell>> Shell::Create(const TaskRunners& task_runners,
+                                               const Settings& settings,
+                                               std::function<void(int)> on_exit_requested) {
   if (!task_runners.IsValid()) {
     return InvalidArgumentError("Shell::Create requires all four task runners");
   }
   MOMO_DCHECK_RUNS_ON(task_runners.platform);
   std::unique_ptr<Shell> shell(new Shell(task_runners, settings));
   Shell* raw = shell.get();
+  WeakPtr<Shell> weak = raw->weak_this_;
 
-  // raster 与 ui 并行初始化, platform 线程汇合等待。
-  WaitableEvent raster_ready;
-  WeakPtr<Shell> weak_shell = raw->weak_this_;
-  task_runners.raster->PostTask([raw, weak_shell, &raster_ready] {
+  // raster 与 ui 两侧各自在自己的线程上构造;不等待——之后对它们的访问都是排在后面的任务。
+  // 捕获 raw 安全: Shutdown 在两条线程上都同步汇合, Shell 之后才析构。
+  task_runners.raster->PostTask([raw, weak] {
     raw->rasterizer_ = std::make_unique<Rasterizer>();
     // raster 线程回调, 投递回 platform 交给视图的宿主。
-    raw->rasterizer_->SetFirstFrameCallback([weak_shell](platform::ViewId view) {
-      PostToObject(weak_shell, [view](Shell& self) {
+    raw->rasterizer_->SetFirstFrameCallback([weak](platform::ViewId view) {
+      PostToObject(weak, [view](Shell& self) {
         if (Delegate* delegate = self.DelegateOf(view)) delegate->OnFirstFramePresented();
       });
     });
-    raster_ready.Signal();
   });
-  WaitableEvent ui_ready;
-  Status ui_status;
-  raw->RegisterPlatformViewChannel();
+  raw->RegisterEngineChannels();
 
-  // 扩展: manifest 声明的动态库 + 进程内扩展, on_attach 在本(platform)线程(docs/07 §5)。
+  // 扩展: manifest 声明的动态库, on_attach 在本(platform)线程(docs/07 §5)。
   ExtensionHost::Environment env;
   env.runners = task_runners;
   env.hub = raw->hub_;
@@ -53,64 +48,30 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(
     Delegate* delegate = raw->DelegateOf(view_id);
     return delegate != nullptr ? delegate->GetNativeWindowHandle() : nullptr;
   };
-  WeakPtr<Shell> weak = raw->weak_this_;
-  env.request_frame = [weak] {
-    PostToObject(weak, [](Shell& self) {
-      self.PostToEngine([](Engine& engine) { engine.ScheduleFrameFromHost(); });
-    });
-  };
-  // 两个回调都在 platform 线程(注册方)上执行: 纹理新帧经 TextureRegistry 投递过来,
-  // request_frame 由 ExtensionHost 投递过来。
-  raw->textures_->SetFrameListener(task_runners.platform,
-                                   [request = env.request_frame](int64_t) { request(); });
+  env.js_glue = ui::GetExtensionJsGlue();
   raw->extensions_ = std::make_unique<ExtensionHost>(std::move(env));
   if (Status status = raw->extensions_->LoadFromManifest(); !status.ok()) {
     MOMO_LOG(ERROR) << "Extensions manifest: " << status;
   }
-  for (auto& [id, init] : in_process_extensions) {
-    raw->extensions_->AddExtension(id, init).IgnoreError();  // 失败记入 errors()
-  }
-
-  // 宿主的通道处理器先于 JS bundle 就位。
-  if (on_created) {
-    on_created(*raw);
-  }
 
   ui::AppHost host;
-  host.ui_runner = task_runners.ui;
   host.io_runner = task_runners.io;
   host.hub = raw->hub_;
   host.extensions = raw->extensions_.get();
   host.textures = raw->textures_;
   if (on_exit_requested) {
     // ui 线程(JS 调用栈内)调用: 投递到 platform, 由宿主做有序关闭(它会与 ui 线程同步汇合, 不能在这里等)。
-    host.request_exit = [weak = raw->weak_this_, cb = std::move(on_exit_requested)](int code) {
+    host.request_exit = [weak, cb = std::move(on_exit_requested)](int code) {
       PostToObject(weak, [cb, code](Shell&) { cb(code); });
     };
   }
-  // 首个 JS 运行时即将创建(扩展已全部 attach, ui 线程还没有 JS)。
-  raw->extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonLaunch);
-  task_runners.ui->PostTask([raw, &settings, &host, &ui_status, &ui_ready] {
-    Engine::Delegate& delegate = *raw;  // 私有基类: 在成员上下文内转换
-    auto engine = Engine::Create(settings, delegate, raw->MakeVsyncWaiter({}), host);
-    if (engine.ok()) {
-      raw->engine_ = std::move(engine).value();
-    } else {
-      ui_status = engine.status();
-    }
-    ui_ready.Signal();
+  // Engine 归属 ui 线程: 在那里构造(没有 JS 运行时;Run 时才创建)。
+  task_runners.ui->PostTask([raw, settings, host = std::move(host)] {
+    raw->engine_ = std::make_unique<Engine>(
+        settings,
+        [raw](std::shared_ptr<LayerTreePipeline> pipeline) { raw->OnEngineDraw(std::move(pipeline)); },
+        raw->MakeVsyncWaiter({}), host);
   });
-  raster_ready.Wait();
-  ui_ready.Wait();
-
-  if (!ui_status.ok()) {
-    shell->Shutdown();
-    return ui_status;
-  }
-  // 扩展加载错误经 momo/extensions 通道报给 JS(bundle 已执行, handler 已可注册;docs/07 §5)。
-  for (const std::string& error : shell->extensions_->errors()) {
-    shell->hub_->SendToJs("momo/extensions", EncodeStandard(EncodableValue(error)));
-  }
   return shell;
 }
 
@@ -133,24 +94,86 @@ void Shell::Shutdown() {
   shut_down_ = true;
   InvalidateWeakPtrs();
   hub_->SetNativeHandler("momo/platform_views", nullptr, nullptr);
-  // 1) ui: 销毁 Engine(JS 运行时 → Animator)。此前投递到 ui 的任务按 FIFO 已执行完毕, 之后不再投递。
-  //    JS 运行时必须在线程 join 前同步销毁(docs/01 §4), 所以这里同步汇合。
+  hub_->SetNativeHandler("momo/extensions", nullptr, nullptr);
+  // 1) JS 运行时: 与 hot restart 相同的拆除顺序(运行时销毁 → 平台视图 → RuntimeStopped)。
+  StopRuntime(kMomoLifecycleReasonShutdown);
+  // 2) ui: 销毁 Engine(Animator)。此前投递到 ui 的任务按 FIFO 已执行完毕, 之后不再投递。
+  //    必须在线程 join 前同步销毁(docs/01 §4), 所以这里同步汇合。
   PostTaskAndWait(*task_runners_.ui, [this] { engine_.reset(); });
-  // 平台视图: JS 已不在, 先移出窗口再交给扩展释放(必须早于扩展 on_detach)。
-  DisposeAllPlatformViews();
-  // 扩展: 先告知 JS 运行时已销毁, 再 on_detach(platform 线程, 线程 join 之前;docs/08 §5)。
+  // 3) 扩展 on_detach(platform 线程, 线程 join 之前;docs/08 §5)。
   if (extensions_) {
-    extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonShutdown);
     extensions_->DetachAll();
   }
-  textures_->SetFrameListener(nullptr, nullptr);
   // 释放 VsyncSource(DeleteLater, platform 事件循环安全点析构)。
   delegates_.clear();
-  active_vsync_ = nullptr;
-  vsync_sources_.clear();
-  // 2) raster: 释放 LayerTree 与 GPU 资源(含解绑 surface)。ui 已停, 不会再有新的 Draw 投递。
+  vsync_source_.reset();
+  // 4) raster: 释放 LayerTree 与 GPU 资源(含解绑 surface)。ui 已停, 不会再有新的 Draw 投递。
   PostTaskAndWait(*task_runners_.raster, [this] { rasterizer_.reset(); });
   MOMO_LOG(INFO) << "Shell shut down.";
+}
+
+// ---------------------------------------------------------------------------
+// JS 运行时的启动与停止
+
+void Shell::Run(RunCallback done) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  MOMO_DCHECK(runtime_generation_ == 0) << "Shell::Run may only be called once";
+  if (shut_down_ || runtime_started_) {
+    return;
+  }
+  StartRuntime(kMomoLifecycleReasonLaunch, std::move(done));
+}
+
+void Shell::RequestHotRestart(RunCallback done) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  if (shut_down_ || !runtime_started_) {
+    return;
+  }
+  MOMO_LOG(INFO) << "Hot restart.";
+  StopRuntime(kMomoLifecycleReasonHotRestart);
+  if (!done) {
+    done = [](Status status) {
+      if (!status.ok()) MOMO_LOG(ERROR) << "Hot restart failed: " << status;
+    };
+  }
+  StartRuntime(kMomoLifecycleReasonHotRestart, std::move(done));
+}
+
+void Shell::StartRuntime(MomoLifecycleReason reason, RunCallback done) {
+  MOMO_DCHECK(!runtime_started_);
+  runtime_started_ = true;
+  const uint64_t generation = ++runtime_generation_;
+  // 此刻没有 JS 运行时: 扩展先得知新一代即将开始, 它发来的消息一定晚于这个事件。
+  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, reason, generation);
+  // 捕获 this 安全: 同 PostToEngine。结果经弱引用回到 platform(Shell 已关闭则丢弃)。
+  task_runners_.ui->PostTask(
+      [this, generation, weak = weak_this_, done = std::move(done)]() mutable {
+        if (engine_ == nullptr) {
+          return;
+        }
+        Status status = engine_->StartRuntime(generation);
+        if (done) {
+          PostToObject(weak, [done = std::move(done), status = std::move(status)](Shell&) mutable {
+            done(std::move(status));
+          });
+        }
+      });
+}
+
+void Shell::StopRuntime(MomoLifecycleReason reason) {
+  if (!runtime_started_) {
+    return;
+  }
+  runtime_started_ = false;
+  // 1) ui: 销毁运行时。同步汇合: 返回后没有 JS 在运行(排在前面、尚未执行的 StartRuntime 也已执行完),
+  //    引擎不再出帧、不再执行扩展帧回调, 旧运行时在途的通道消息已作废。
+  PostTaskAndWait(*task_runners_.ui, [this] {
+    if (engine_) engine_->StopRuntime();
+  });
+  // 2) 旧运行时创建的平台视图: 先移出窗口再交给扩展释放(JS 已不在, 不会与扩展的 JS 函数并发)。
+  DisposeAllPlatformViews();
+  // 3) 扩展清理属于这一代运行时的状态。
+  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, reason, runtime_generation_);
 }
 
 std::unique_ptr<VsyncWaiter> Shell::MakeVsyncWaiter(WeakPtr<platform::VsyncSource> source) const {
@@ -176,41 +199,26 @@ std::vector<platform::ViewId> Shell::attached_views() const {
   return out;
 }
 
-void Shell::UpdateVsyncSource() {
-  platform::VsyncSource* chosen = nullptr;
-  auto main = vsync_sources_.find(platform::kImplicitViewId);
-  if (main != vsync_sources_.end() && main->second) {
-    chosen = main->second.get();
-  } else {
-    for (const auto& [view, source] : vsync_sources_) {
-      if (source) {
-        chosen = source.get();
-        break;
-      }
-    }
+void Shell::SetVsyncSource(ObjectPtr<platform::VsyncSource> source) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  if (shut_down_) {
+    return;  // source 随参数释放(DeleteLater)
   }
-  if (chosen == active_vsync_) {
-    return;
-  }
-  active_vsync_ = chosen;
-  // ui 只持弱引用, 每次请求都回到 platform 线程判活, 无需与 platform 同步销毁。
-  WeakPtr<platform::VsyncSource> weak =
-      chosen != nullptr ? WeakPtr<platform::VsyncSource>(chosen) : WeakPtr<platform::VsyncSource>();
+  // 旧来源 DeleteLater(即使身处其回调栈中也安全);ui 只持弱引用, 每次请求都回到 platform 线程判活,
+  // 在途请求判活失败后作废, 无需与 platform 同步销毁。
+  vsync_source_ = std::move(source);
+  WeakPtr<platform::VsyncSource> weak = vsync_source_ ? WeakPtr<platform::VsyncSource>(vsync_source_.get())
+                                                      : WeakPtr<platform::VsyncSource>();
   PostToEngine([this, weak](Engine& engine) { engine.SetVsyncWaiter(MakeVsyncWaiter(weak)); });
 }
 
-void Shell::AttachView(platform::ViewId view_id, Delegate* delegate,
-                       platform::RenderSurface* surface, ObjectPtr<platform::VsyncSource> vsync) {
+void Shell::AttachView(platform::ViewId view_id, Delegate* delegate, platform::RenderSurface* surface) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   if (shut_down_ || delegate == nullptr) {
     return;
   }
   MOMO_DCHECK(delegates_.count(view_id) == 0) << "View " << view_id << " is already attached";
   delegates_[view_id] = delegate;
-  if (vsync) {
-    vsync_sources_[view_id] = std::move(vsync);
-  }
-  UpdateVsyncSource();
   // 已创建的平台视图: 补交给新窗口(由合成帧决定它最终出现在哪个窗口)。
   for (const PlatformViewRegistry::View& view : platform_views_->views()) {
     delegate->OnPlatformViewCreated(view.id, view.native);
@@ -236,21 +244,8 @@ void Shell::DetachView(platform::ViewId view_id) {
   for (const PlatformViewRegistry::View& view : platform_views_->views()) {
     delegate->OnPlatformViewDisposed(view.id);
   }
-  // 2) 解绑 delegate, 释放 VsyncSource —— DeleteLater, 即使身处其回调栈中也安全;
-  //    帧时钟改用其他视图的来源(或定时器), ui 侧在途请求判活失败后作废。
+  // 2) 解绑 delegate(帧时钟是应用级的, 不随视图解绑而变)。
   delegates_.erase(view_id);
-  auto source = vsync_sources_.find(view_id);
-  if (source != vsync_sources_.end()) {
-    if (source->second.get() == active_vsync_) {
-      active_vsync_ = nullptr;
-    }
-    vsync_sources_.erase(source);
-  }
-  UpdateVsyncSource();
-  if (active_vsync_ == nullptr && vsync_sources_.empty()) {
-    // UpdateVsyncSource 在"无变化"时不投递: 显式切回定时器。
-    PostToEngine([this](Engine& engine) { engine.SetVsyncWaiter(MakeVsyncWaiter({})); });
-  }
   PostToEngine([view_id](Engine& engine) { engine.RemoveView(view_id); });
   // 3) raster 停止使用 surface 并丢弃该视图的帧。surface 归窗口所有且被 raster 跨线程使用(唯一例外),
   //    窗口在本调用返回后就会销毁, 所以必须同步汇合。
@@ -326,38 +321,6 @@ void Shell::DisposeAllPlatformViews() {
   });
 }
 
-void Shell::RequestHotRestart() {
-  // 旧 JS 创建的平台视图随运行时一起作废(新 bundle 从头创建, id 可能复用)。
-  DisposeAllPlatformViews();
-  if (shut_down_) {
-    return;
-  }
-  // 旧运行时销毁后 ui 线程停住, 在这里(platform 线程)同步告知扩展, 然后放行 ui 线程创建新运行时:
-  // 扩展清理旧运行时的状态时没有 JS 在运行, 新运行时发来的消息一定晚于这两个事件。
-  struct Handoff {
-    WaitableEvent runtime_destroyed;
-    WaitableEvent resume;
-  };
-  auto handoff = std::make_shared<Handoff>();
-  task_runners_.ui->PostTask([this, handoff] {
-    if (engine_ == nullptr) {
-      handoff->runtime_destroyed.Signal();
-      return;
-    }
-    const Status status = engine_->HotRestart([&] {
-      handoff->runtime_destroyed.Signal();
-      handoff->resume.Wait();
-    });
-    if (!status.ok()) {
-      MOMO_LOG(ERROR) << "Hot restart failed: " << status;
-    }
-  });
-  handoff->runtime_destroyed.Wait();
-  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonHotRestart);
-  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonHotRestart);
-  handoff->resume.Signal();
-}
-
 void Shell::SetAppSuspended(bool suspended) {
   PostToEngine([suspended](Engine& engine) { engine.SetAppSuspended(suspended); });
 }
@@ -369,6 +332,10 @@ void Shell::SetAppSuspended(bool suspended) {
 //   focus   {id: int}
 // 平台视图表归引擎(扩展经 C ABI 注册工厂, 合成帧按 LayerTree 中的位置切片), 所以这个通道由 Shell 处理;
 // 原生视图挂进哪个窗口由宿主决定(Shell::Delegate 的平台视图回调)。
+//
+// 扩展通道(momo/extensions, JS→引擎):
+//   getErrors  → string[]   加载失败的扩展("<id>: <原因>");全部成功为空数组
+// 这是可查询的状态而不是事件: 任何时刻、任何一代 JS 运行时都能问到同样的结果。
 
 namespace {
 
@@ -382,23 +349,37 @@ void ReplyTo(MessageReply& reply, StatusOr<EncodableValue> result) {
 
 }  // namespace
 
-void Shell::RegisterPlatformViewChannel() {
-  WeakPtr<Shell> weak = weak_this_;
-  hub_->SetNativeHandler(
-      "momo/platform_views", task_runners_.platform,
-      [weak](MessageBytes message, MessageReply reply) {
-        StatusOr<MethodCall> call = DecodeMethodCall(message);
-        if (!call.ok()) {
-          ReplyTo(reply, call.status());
-          return;
-        }
-        Shell* self = weak.get();
-        if (self == nullptr || self->shut_down_) {
-          ReplyTo(reply, UnavailableError("engine is shutting down"));
-          return;
-        }
-        ReplyTo(reply, self->HandlePlatformViewCall(*call));
-      });
+void Shell::RegisterEngineChannels() {
+  using Handler = StatusOr<EncodableValue> (Shell::*)(const MethodCall&);
+  const auto bind = [this](const char* channel, Handler handler) {
+    hub_->SetNativeHandler(channel, task_runners_.platform,
+                           [weak = weak_this_, handler](MessageBytes message, MessageReply reply) {
+                             StatusOr<MethodCall> call = DecodeMethodCall(message);
+                             if (!call.ok()) {
+                               ReplyTo(reply, call.status());
+                               return;
+                             }
+                             Shell* self = weak.get();
+                             if (self == nullptr || self->shut_down_) {
+                               ReplyTo(reply, UnavailableError("engine is shutting down"));
+                               return;
+                             }
+                             ReplyTo(reply, (self->*handler)(*call));
+                           });
+  };
+  bind("momo/platform_views", &Shell::HandlePlatformViewCall);
+  bind("momo/extensions", &Shell::HandleExtensionsCall);
+}
+
+StatusOr<EncodableValue> Shell::HandleExtensionsCall(const MethodCall& call) {
+  if (call.method == "getErrors") {
+    EncodableList errors;
+    for (std::string& error : extensions_->errors()) {
+      errors.emplace_back(std::move(error));
+    }
+    return EncodableValue(std::move(errors));
+  }
+  return UnimplementedError("momo/extensions: unknown method " + call.method);
 }
 
 StatusOr<EncodableValue> Shell::HandlePlatformViewCall(const MethodCall& call) {
