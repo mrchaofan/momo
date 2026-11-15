@@ -431,7 +431,7 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | `--assets=<dir>` | 资源目录，默认 `<Resources>/assets` |
 | `--title=<text>` | 初始窗口标题 |
 | `--width=<px>` / `--height=<px>` | 初始窗口尺寸（逻辑像素） |
-| `--dev` | 开发模式：启用 Inspector、bundle 缺失也能启动 |
+| `--dev` | 开发模式：启用 Inspector |
 | `--experimental-hot-restart` | 实验性，默认关闭（隐含 `--dev`）：bundle 修改后 hot restart |
 | `--inspect-port=<n>` | Inspector 端口（默认 9229，`-1` 关闭） |
 | `--inspect-brk` | 执行 bundle 前等待调试器连接 |

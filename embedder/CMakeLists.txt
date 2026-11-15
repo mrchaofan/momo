@@ -190,6 +190,8 @@ if(MOMO_BUILD_TESTS)
     common/pointer_dispatcher_unittests.cc
     common/window_channel_unittests.cc)
   target_link_libraries(momo_embedder_unittests PRIVATE momo_embedder_common GTest::gtest_main)
+  # 仅测试用: bundle 的加载失败只在有 JS 运行时的构建里发生。
+  target_compile_definitions(momo_embedder_unittests PRIVATE MOMO_HAS_JS_RUNTIME=$<BOOL:${MOMO_HAVE_V8}>)
   gtest_discover_tests(momo_embedder_unittests)
 
   add_executable(momo_embedder_windows_portable_unittests windows/win_portable_unittests.cc)

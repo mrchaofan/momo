@@ -152,16 +152,12 @@ Status Application::LaunchEngine() {
   settings.inspector_wait = options_.config.inspector_wait;
   settings.implicit_view = options_.config.startup_window;
   AssetResolver resolver(options_.resources_dir);
-  StatusOr<ResolvedAssets> assets = resolver.Resolve(options_.config);
-  if (assets.ok()) {
-    settings.bundle_path = assets->bundle_path;
-    settings.assets_dir = assets->assets_dir;
-    settings.extensions_dir = assets->extensions_dir;
-  } else if (options_.config.dev_mode) {
-    MOMO_LOG(WARNING) << assets.status() << " (--dev: starting without a JS bundle)";
-  } else {
-    return assets.status();
-  }
+  // bundle: --bundle 给了就用它, 否则用应用包内的默认 bundle。是否存在不在这里检查: 加载失败(不存在、
+  // 语法错误、顶层抛出)都由引擎在执行入口时报告, 启动随之失败, 进程以非零退出码有序退出。
+  MOMO_ASSIGN_OR_RETURN(ResolvedAssets assets, resolver.Resolve(options_.config));
+  settings.bundle_path = assets.bundle_path;
+  settings.assets_dir = assets.assets_dir;
+  settings.extensions_dir = assets.extensions_dir;
   // V8 code cache: 用户缓存目录(Mac ~/Library/Caches/<app>/v8, Win %LOCALAPPDATA%\<app>\v8)。
   // --dev 下 bundle 频繁变化, 缓存反复失效, 不启用。
   if (!options_.config.dev_mode) {

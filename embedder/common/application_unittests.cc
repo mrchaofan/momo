@@ -87,9 +87,9 @@ class ApplicationTest : public ::testing::Test {
     std::vector<std::string> questions;
   };
   std::unique_ptr<Application> LaunchWithFakeJs(FakeJs& js, AppConfig config = {}) {
-    config.dev_mode = true;
-    config.inspector_port = -1;
-    auto app = MakeApp(std::move(config), [](Application::Options& o) { o.hot_restart_poll = {}; });
+    // 这个 bundle 不导入 momo:services: 真实的 JS 端点不会安装, 由下面的假 JS 充当 JS 侧。
+    std::ofstream(resources_ / "bundle.js") << "// test bundle: the test plays the JS side\n";
+    auto app = MakeApp(std::move(config));
     EXPECT_TRUE(app->Launch().ok());
     app->shell()->hub()->SetJsEndpoint(
         app->task_runners().platform,
@@ -408,6 +408,9 @@ TEST_F(ApplicationTest, RepeatedTerminateRequestsAreCoalesced) {
   EXPECT_EQ(native_->quit_count(), 1);
 }
 
+#if MOMO_HAS_JS_RUNTIME
+// bundle 不存在不会提前检查: 加载时才发现。启动失败, 有序清理, 退出码非零——无论是包内默认 bundle 还是
+// --bundle 指定的, 也无论是否 --dev。
 TEST_F(ApplicationTest, MissingBundleFailsLaunchAndCleansUp) {
   auto app = MakeApp();
   Status status = app->Launch();
@@ -420,16 +423,19 @@ TEST_F(ApplicationTest, MissingBundleFailsLaunchAndCleansUp) {
   EXPECT_EQ(native_->run_count(), 0);
 }
 
-TEST_F(ApplicationTest, MissingBundleInDevModeStartsEmptyEngine) {
+TEST_F(ApplicationTest, MissingExplicitBundleFailsLaunchEvenInDevMode) {
+  WriteBundle();  // 包内的默认 bundle 存在, 但命令行指定了另一个
   AppConfig config;
   config.dev_mode = true;
+  config.inspector_port = -1;
+  config.bundle_path = resources_ / "nope.js";
   auto app = MakeApp(config);
-  ASSERT_TRUE(app->Launch().ok());
-  EXPECT_EQ(app->state(), State::kRunning);
-  ASSERT_NE(app->shell(), nullptr);
-  app->Terminate();
+  EXPECT_EQ(app->Launch().code(), StatusCode::kNotFound);
   EXPECT_EQ(app->state(), State::kTerminating);
+  EXPECT_EQ(app->Run(), 1);
+  EXPECT_EQ(state_->windows_destroyed, 1);
 }
+#endif  // MOMO_HAS_JS_RUNTIME
 
 TEST_F(ApplicationTest, WindowCreationFailureFailsLaunch) {
   WriteBundle();

@@ -36,9 +36,16 @@ TEST_F(AssetResolverTest, DefaultsToResourcesLayout) {
   EXPECT_TRUE(assets->bundle_path.is_absolute());
 }
 
-TEST_F(AssetResolverTest, MissingBundleIsNotFound) {
-  AssetResolver resolver(root_ / "Resources");
-  EXPECT_EQ(resolver.Resolve({}).status().code(), StatusCode::kNotFound);
+// bundle 只定位、不预先检查: 不存在(或不是文件)要到加载时才失败。
+TEST_F(AssetResolverTest, BundleIsLocatedButNotChecked) {
+  auto packaged = AssetResolver(root_ / "Resources").Resolve({});
+  ASSERT_TRUE(packaged.ok()) << packaged.status();
+  EXPECT_EQ(packaged->bundle_path, (root_ / "Resources" / "bundle.js").lexically_normal());
+  AppConfig config;
+  config.bundle_path = root_ / "nope.js";
+  auto given = AssetResolver(root_ / "Resources").Resolve(config);
+  ASSERT_TRUE(given.ok()) << given.status();
+  EXPECT_EQ(given->bundle_path.filename(), "nope.js");
 }
 
 TEST_F(AssetResolverTest, ExplicitPathsOverrideDefaults) {
@@ -59,11 +66,6 @@ TEST_F(AssetResolverTest, ExplicitMissingAssetsDirIsNotFound) {
   config.assets_dir = root_ / "nope";
   EXPECT_EQ(AssetResolver(root_ / "Resources").Resolve(config).status().code(),
             StatusCode::kNotFound);
-}
-
-TEST_F(AssetResolverTest, BundleMustBeAFile) {
-  std::filesystem::create_directories(root_ / "Resources" / "bundle.js");
-  EXPECT_EQ(AssetResolver(root_ / "Resources").Resolve({}).status().code(), StatusCode::kNotFound);
 }
 
 }  // namespace

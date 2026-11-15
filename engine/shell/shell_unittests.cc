@@ -83,13 +83,6 @@ TEST_F(ShellTest, CreateWithoutBundleSucceedsAndShutsDown) {
   (*shell)->Shutdown();  // 幂等
 }
 
-TEST_F(ShellTest, CreateFailsForMissingBundle) {
-  Settings settings;
-  settings.bundle_path = "/definitely/not/here/bundle.js";
-  auto shell = Shell::Create(runners_, settings);
-  EXPECT_EQ(shell.status().code(), StatusCode::kNotFound);
-}
-
 TEST_F(ShellTest, CreateRejectsIncompleteRunners) {
   TaskRunners partial = runners_;
   partial.io = nullptr;
@@ -297,6 +290,14 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
   EXPECT_NEAR(Channel(mid, 8), 0x27, 6) << std::hex << mid;
   EXPECT_NEAR(Channel(mid, 0), 0xB0, 6) << std::hex << mid;
   (*shell)->Shutdown();
+}
+
+// bundle 不存在不会提前检查: 执行入口时才发现, 作为加载失败返回。
+TEST_F(ShellTest, CreateFailsForMissingBundle) {
+  Settings settings;
+  settings.bundle_path = "/definitely/not/here/bundle.js";
+  auto shell = Shell::Create(runners_, settings);
+  EXPECT_EQ(shell.status().code(), StatusCode::kNotFound);
 }
 
 TEST_F(ShellTest, BundleErrorsFailCreateWithJsMessage) {
