@@ -281,7 +281,7 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 
 按优先级排列，供接手后挑选：
 
-1. **CI**：目前只有本地构建。建议先在 macOS arm64 上跑 `ctest` 和 `npm test`，再加 TSan 任务。
+1. **CI**：目前只有发布流程（`.github/workflows/release.yml`，见 docs/09 §6），它不跑测试。建议先在 macOS arm64 上跑 `ctest` 和 `npm test`，再加 TSan 任务。
 2. **Windows**：平台层、D3D12 后端、`node_bindings_win.cc`、libnode 的 Windows 构建脚本都已写好，但从未在 Windows 上编译运行。第一步是在 Windows 上跑 `ctest`（含 `momo_embedder_windows_unittests`）并手动验证窗口、拖动、隐藏标题栏、多 DPI、IME；之后补平台视图（子 HWND + 覆盖层合成）。
 3. **真机验证**：沙箱跳过的 9 项测试，以及 Metal 回退、IME 候选窗位置、多显示器切换，需要在真机上定期手动验证。
 4. **raster cache**：设计中有，但没有实现，每帧完整重放所有 DisplayList。

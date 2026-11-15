@@ -4,7 +4,7 @@
 
 - CMake ≥ 3.24 + Ninja;Windows: clang-cl(与 Skia/V8 预编译产物 ABI 匹配性最好)或 MSVC;macOS: Xcode clang,最低部署 macOS 13.5(Node 26 / libnode 的要求)。
 - C++20;全局 `-fno-exceptions -fno-rtti`(MSVC `/EHs-c- /GR-`),warning-as-error。
-- 尚未提供 `CMakePresets.json` 与 CI(规划:`win-x64-*`、`mac-arm64-*`、`headless-test`),目前直接用 `cmake -S . -B out/debug -G Ninja`。
+- 尚未提供 `CMakePresets.json`,直接用 `cmake -S . -B out/debug -G Ninja`。CI 目前只有发布流程(§6),没有跑测试的日常 CI(§5)。
 
 ## 2. 第三方依赖策略
 
@@ -75,8 +75,41 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 - C++ 单元测试:gtest;engine 可在 headless(软件后端 + mock platform)下全量跑。
 - 框架测试:同一组 `framework/test/*_test.ts` 既在 Node + mock `momo:ui` 下跑(`npm test`),也由 `momo_headless`(真实引擎 + 软件光栅)运行(CTest `FrameworkTests.EngineHeadless`)。
 - Golden 像素测试:软件光栅化 PNG 比对(双平台跑同一组,保证一致性)。
-- CI 尚未建立(规划:win-x64 / mac-arm64 × debug(ASan)/ release;TSan 每日任务);ASan/TSan 构建可在本地用 `-DMOMO_ENABLE_ASAN=ON` / `-DMOMO_ENABLE_TSAN=ON` 生成(此时 V8 不可用, 见 §2.1)。
+- 跑测试的 CI 尚未建立(规划:win-x64 / mac-arm64 × debug(ASan)/ release;TSan 每日任务;发布流程见 §6,它不跑 `ctest`);ASan/TSan 构建可在本地用 `-DMOMO_ENABLE_ASAN=ON` / `-DMOMO_ENABLE_TSAN=ON` 生成(此时 V8 不可用, 见 §2.1)。
 
 ## 6. 打包与分发
 
-`momo-cli build` 面向应用开发者:拉预编译的 engine 运行时 + 用户 JS/资源/扩展 → 产出 .app / 目录(后续 MSIX/DMG)。即应用开发者**无需本机编译 C++**,只有扩展作者需要工具链——这是 npm 式开发体验的关键。
+`momo-cli build` 面向应用开发者:预编译的 engine 运行时 + 用户 JS/资源/扩展 → 产出 .app / 目录(后续 MSIX/DMG)。即应用开发者**无需本机编译 C++**,只有扩展作者需要工具链——这是 npm 式开发体验的关键。
+
+### 6.1 发布产物
+
+预编译运行时作为 GitHub Release 的附件发布,命名与布局参照 Electron(`<p>` 是 Node 的 `process.platform-process.arch`:`darwin-arm64`、`win32-x64`):
+
+| 产物 | 内容 |
+|---|---|
+| `momo-v<version>-<p>.zip` | 运行时。macOS:`Momo.app`;Windows:`Momo.exe`、`libnode.dll`、`icudtl.dat`、`bundle.js`(默认 bundle)。另有 `version` 文件。解压后直接传给 `momo build --runtime=` |
+| `momo-headless-v<version>-<p>.zip` | `momo_headless` + libnode:无窗口运行 bundle 的测试运行器 |
+| `momo-ext-sdk-v<version>.zip` | 扩展 SDK:`include/`、`lib/cmake/MomoExtSdk/`、`types/`(与平台无关) |
+| `momo-framework-v<version>.tgz` | `@momo/framework` 的 npm 包(与平台无关) |
+| `SHASUMS256.txt` | 以上全部文件的 SHA256 |
+
+- **版本号**只有一个来源:`framework/packages/momo/package.json` 的 `version`。CMake 读它(`MOMO_VERSION`,写进 `Momo.app` 的 Info.plist),打包脚本读它,发布 tag 必须是 `v<version>`。
+- **包的内容**由 CMake 安装组件决定:`runtime`、`headless`(`embedder/CMakeLists.txt`)、`sdk`(`extensions/CMakeLists.txt`)。`tools/package_release.py` 对每个组件执行 `cmake --install --component` → ad-hoc 签名(macOS)→ 压缩,自己不描述布局。安装时 rpath 只保留包内路径(`@executable_path/../Frameworks`)。
+- macOS 二进制是 **ad-hoc 签名**,没有 Developer ID 签名与公证;不带调试符号包。
+
+```bash
+cmake -S . -B out/release -G Ninja -DCMAKE_BUILD_TYPE=Release -DMOMO_BUILD_TESTS=OFF -DMOMO_BUILD_EXAMPLES=OFF
+cmake --build out/release
+python3 tools/package_release.py --build-dir out/release --out out/dist --platform-independent
+```
+
+### 6.2 发布流程(`.github/workflows/release.yml`)
+
+1. 把 `framework/packages/momo/package.json`(以及 workspace 根的 `framework/package.json`)的 `version` 改为新版本并合入 `main`。
+2. 推送 tag `v<version>`(带 `-` 的版本,如 `v0.5.0-beta.1`,发为 prerelease)。
+3. CI 在 `macos-15`(arm64)与 `windows-2022`(x64)上各自:校验 tag 与版本一致 → `fetch_deps.py` → Release 构建 → 打包 → **用解压出的 headless 包**跑 `embedder/headless/testdata/smoke.js`(验证包自带全部运行期依赖)。全部成功后汇总产物、生成 `SHASUMS256.txt`、创建 GitHub Release。
+
+- 手动触发,或改动发布链路(workflow、`package_release.py`、`build_libnode.py`、`fetch_deps.py`、`cmake/`)的 PR 与 `main` 提交,走同一套构建与打包,但产物只作为 workflow artifact 上传,不创建 Release。
+- libnode 从源码构建,在托管 runner 上以小时计,所以安装结果按 Node 版本 + `build_libnode.py` 内容缓存。tag 触发的运行只能读到默认分支上建立的缓存,由 `main` 上的运行预热;缓存 7 天无人访问会被回收,之后第一次运行会重新构建。
+- 发布构建关闭 `MOMO_WARNINGS_AS_ERRORS`,不构建也不运行单元测试。
+- Windows 任务用 Visual Studio 生成器;**该任务尚未在 GitHub runner 上运行验证**(macOS 的打包与冒烟已在本地验证)。
