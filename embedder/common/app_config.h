@@ -3,11 +3,12 @@
 // AppConfig: 启动配置(bundle 路径、窗口参数、--dev)。纯数据 + 命令行解析, 无平台 API。
 //
 // 支持的参数(均为 --key=value 形式, 未知参数忽略, 以兼容 macOS 的 -psn_/-NS* 等系统参数):
-//   --bundle=<path>     JS bundle 路径(缺省: <resources>/bundle.js)
+//   --bundle=<path>     JS bundle 路径。缺省用应用包内的默认 bundle(<resources>/bundle.js, 打包后的应用)。
+//                       bundle 不存在不会提前检查: 加载时失败, 进程以非零退出码退出
 //   --assets=<dir>      资源目录(缺省: <resources>/assets)
 //   --title=<text>      窗口标题
 //   --width=<px> --height=<px>  初始窗口逻辑尺寸
-//   --dev               开发模式: 开 Node inspector(默认端口 9229)、缺少 bundle 时以空引擎启动而非报错
+//   --dev               开发模式: 开 Node inspector(默认端口 9229)
 //   --experimental-hot-restart  实验性, 默认关闭(隐含 --dev): bundle 文件变化时 hot restart——销毁 JS 运行时并
 //                       重新执行 bundle, 不保留 JS 状态
 //   --inspect-port=<n>  inspector 端口(0 = 系统分配;-1 = 不启动 inspector)

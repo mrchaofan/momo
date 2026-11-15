@@ -9,31 +9,11 @@
 
 namespace momo::engine {
 
-namespace {
-
-Status CheckBundle(const Settings& settings) {
-  // Shell 的契约: 指定的 bundle 不存在即 NotFound, 与驱动实现(是否链接 V8)无关。
-  std::error_code ec;
-  if (!settings.bundle_path.empty() && !std::filesystem::is_regular_file(settings.bundle_path, ec)) {
-    return NotFoundError("JS bundle is not a readable file: " + settings.bundle_path.string());
-  }
-  return Status::Ok();
-}
-
-// bundle 检查 + 创建驱动(JS 运行时)。启动与热重启共用。
-StatusOr<std::unique_ptr<ui::AppDriver>> CreateDriver(const Settings& settings, ui::WindowClient& client,
-                                                      const ui::AppHost& host) {
-  MOMO_RETURN_IF_ERROR(CheckBundle(settings));
-  return ui::CreateAppDriver(settings, client, host);
-}
-
-}  // namespace
-
 StatusOr<std::unique_ptr<Engine>> Engine::Create(const Settings& settings, Delegate& delegate,
                                                  std::unique_ptr<VsyncWaiter> waiter,
                                                  const ui::AppHost& host) {
   std::unique_ptr<Engine> engine(new Engine(settings, delegate, std::move(waiter), host));
-  MOMO_ASSIGN_OR_RETURN(engine->driver_, CreateDriver(settings, *engine, engine->host_));
+  MOMO_ASSIGN_OR_RETURN(engine->driver_, ui::CreateAppDriver(settings, *engine, engine->host_));
   return engine;
 }
 
@@ -63,9 +43,9 @@ Status Engine::HotRestart(const std::function<void()>& runtime_destroyed) {
   if (runtime_destroyed) {
     runtime_destroyed();
   }
-  auto driver = CreateDriver(settings_, *this, host_);
+  auto driver = ui::CreateAppDriver(settings_, *this, host_);
   if (!driver.ok()) {
-    // 新 bundle 有错: 退回占位驱动, 保持引擎可用(--dev 下修复后可再次重启)。
+    // 新 bundle 加载失败(不存在或有错): 退回占位驱动, 保持引擎可用(修复后可再次重启)。
     driver_ = std::make_unique<ui::PlaceholderDriver>(static_cast<ui::WindowClient&>(*this));
     driver_->OnMetricsChanged(platform::kImplicitViewId);
     return driver.status();

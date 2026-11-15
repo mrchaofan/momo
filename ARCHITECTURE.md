@@ -496,7 +496,7 @@ void Application::Terminate(int code) {                  // 幂等
 
 ### 3.9 开发模式
 
-- `--dev`：bundle 缺失可以启动。`--experimental-hot-restart`（实验性，默认关闭，隐含 `--dev`）：每 500ms 检查 bundle 修改时间，变化即 hot restart（ui 线程销毁 JS 运行时、重新执行 bundle；新 bundle 出错时退回占位驱动，修好后可再次重启）。不保留 JS 状态。
+- bundle：`--bundle=<path>` 给了就用它，否则用应用包内的默认 bundle（`<resources>/bundle.js`）。不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。`--experimental-hot-restart`（实验性，默认关闭，隐含 `--dev`）：每 500ms 检查 bundle 修改时间，变化即 hot restart（ui 线程销毁 JS 运行时、重新执行 bundle；新 bundle 出错时退回占位驱动，修好后可再次重启）。不保留 JS 状态。
 - `--dev` 同时启用 Node 的 inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。
 - 非 `--dev` 时启用 V8 code cache（`~/Library/Caches/dev.momo.app/v8`）。
 

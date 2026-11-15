@@ -25,7 +25,8 @@ class AssetResolver {
 
   explicit AssetResolver(std::filesystem::path resources_dir);
 
-  // bundle 不存在返回 NotFound;显式指定的 assets 目录不存在返回 NotFound。
+  // bundle: 命令行给了 --bundle 就用它, 否则用应用包内的默认 bundle(<resources>/bundle.js)。这里只定位,
+  // 不检查它是否存在(加载时才会发现)。显式指定的 assets 目录不存在返回 NotFound。
   StatusOr<ResolvedAssets> Resolve(const AppConfig& config) const;
 
   const std::filesystem::path& resources_dir() const { return resources_dir_; }

@@ -22,10 +22,8 @@ StatusOr<ResolvedAssets> AssetResolver::Resolve(const AppConfig& config) const {
   ResolvedAssets out;
   std::error_code ec;
 
+  // 只定位, 不检查 bundle 是否存在: 不存在是加载时的失败(JS 运行时执行入口时报告), 同 Electron。
   out.bundle_path = MakeAbsolute(config.bundle_path.value_or(resources_dir_ / kBundleFileName));
-  if (!std::filesystem::is_regular_file(out.bundle_path, ec)) {
-    return NotFoundError("JS bundle not found: " + out.bundle_path.string());
-  }
 
   if (config.assets_dir) {
     out.assets_dir = MakeAbsolute(*config.assets_dir);
