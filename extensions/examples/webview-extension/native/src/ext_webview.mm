@@ -13,7 +13,7 @@
 // 命令通道 "momo.webview"(JS → 原生, JSON, platform 线程), 回复 {"result": <any>} 或 {"error": <string>}:
 //   视图命令 {"id": <viewId>, "method", ...}:
 //       loadUrl {url} | loadHtml {html, baseUrl?} | goBack | goForward | reload | stop |
-//       evaluateJavaScript {script} | getState
+//       evaluateJavaScript {script}
 //   会话命令 {"session": <会话键>, "method", ...}:
 //       cookies.get {url?} → [cookie] | cookies.set {cookie} | cookies.delete {name, url?, domain?, path?} |
 //       session.clearData {kinds?: ["cookies"|"cache"|"storage"]} | session.dispose
@@ -554,8 +554,7 @@ class WebViewExtension final : public momo::ext::Extension {
       ReplyError(token, @"unknown view id");
       return;
     }
-    MomoWebViewEntry* entry = it->second;
-    WKWebView* web = entry.webView;
+    WKWebView* web = it->second.webView;
     if ([method isEqualToString:@"loadUrl"]) {
       NSURL* url = [NSURL URLWithString:StringField(call, @"url") ?: @""];
       if (url == nil || url.scheme == nil) {
@@ -574,9 +573,6 @@ class WebViewExtension final : public momo::ext::Extension {
       [web reload];
     } else if ([method isEqualToString:@"stop"]) {
       [web stopLoading];
-    } else if ([method isEqualToString:@"getState"]) {
-      ReplyResult(token, StateOf(entry));
-      return;
     } else if ([method isEqualToString:@"evaluateJavaScript"]) {
       // 异步结果: 在主线程回调里应答(reply token 可延后、恰好一次)。
       [web evaluateJavaScript:StringField(call, @"script") ?: @""
