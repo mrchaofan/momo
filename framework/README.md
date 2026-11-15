@@ -12,7 +12,7 @@ packages/momo/src/
 ├── painting/    # text_painter.ts、decoration.ts、image_provider.ts、borders.ts、colors.ts
 ├── rendering/   # object.ts(RenderObject/PipelineOwner)、box.ts、flex.ts、stack.ts、
 │                #   padding.ts、paragraph.ts、image.ts、proxy_box.ts、view.ts、layer.ts
-├── views/       # framework.ts(View/Element/BuildOwner)、binding.ts(runApp)、basic.ts、
+├── views/       # framework.ts(View/Element/BuildOwner)、binding.ts(ViewsBinding)、root_view.ts(runApp / runView / RootView)、basic.ts、
 │                #   container.ts、text.ts、image.ts、gesture_detector.ts、focus.ts、
 │                #   scroll/*.ts、inherited.ts
 ├── material/    # (M6)button.ts、text_field.ts、dialog.ts、theme.ts
@@ -31,12 +31,11 @@ npm install                      # esbuild + typescript(devDependencies)
 npx tsc --noEmit                 # 类型检查(strict;含 test/ 与 examples/counter、examples/todo)
 npm test                         # 构建并运行全部测试(Node + mock momo:ui/momo:services)
 node out/test/node_main.mjs <过滤子串>   # 只跑名称包含子串的测试(先 npm run build:tests)
-npm run build                    # 框架单文件 bundle → out/momo_framework.js(momo:* 保持外部导入)
 
 # 示例 → 单文件 ESM bundle(只保留 `import ... from "momo:*"`)
-node scripts/build_example.mjs ../examples/counter/src/main.ts ../examples/counter/dist/main.js
-node scripts/build_example.mjs ../examples/todo/src/main.ts    ../examples/todo/dist/main.js
-#   可选 --minify / --no-sourcemap;npm run build:examples 一次构建两个示例
+node ../tools/momo-cli/momo.mjs bundle ../examples/counter   # → ../examples/counter/dist/bundle.js
+node ../tools/momo-cli/momo.mjs bundle ../examples/todo
+#   可选 --out=<dir> / --minify(压缩且不带 sourcemap)
 ```
 
 - 工作区:`framework/package.json` 为 npm workspace 根;发布包为 `packages/momo`(`@momo/framework`,

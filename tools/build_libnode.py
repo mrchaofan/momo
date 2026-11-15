@@ -2,15 +2,16 @@
 """从源码构建 libnode(Node.js 共享库)并安装到 third_party/prebuilt/node/(docs/09 §2)。
 
 Node 官方不发布 libnode 二进制, 所以按 cmake/deps.lock.json 的 node 条目从源码构建:
-  下载源码包 → SHA256 校验 → 构建 → 安装头文件(Node 的 tools/install.py --headers-only)与库 → 写戳记。
+  下载源码包(fetch_deps.py 的下载器: 分块并行、断点续传、支持离线镜像)→ SHA256 校验 → 构建 → 安装头文件(Node 的 tools/install.py --headers-only)与库 → 写戳记。
     macOS:   configure(--shared --without-npm --ninja)→ ninja libnode → libnode.<模块版本>.dylib
-    Windows: vcbuild.bat release x64 dll nonpm(需要 Visual Studio 2022 + ClangCL 组件, 见 Node 的
+    Windows: vcbuild.bat release <arch> dll nonpm(需要 Visual Studio 2022 + ClangCL 组件, 见 Node 的
              BUILDING.md)→ libnode.dll + 导入库 libnode.lib
 
 用法:
   python3 tools/build_libnode.py               # 已安装且版本一致时跳过
   python3 tools/build_libnode.py --force
   python3 tools/build_libnode.py --jobs 8 --work-dir /tmp/libnode
+  python3 tools/build_libnode.py --mirror DIR  # 离线镜像: 从 DIR/node-v<版本>.tar.xz 取源码包, 不联网
 
 要求: Python 3.10+(Node 的 configure 要求);macOS: ninja、Xcode 命令行工具;Windows: Visual Studio 2022。
 产物:
@@ -23,32 +24,20 @@ Node 官方不发布 libnode 二进制, 所以按 cmake/deps.lock.json 的 node 
 
 import argparse
 import glob
-import hashlib
-import json
 import os
 import shutil
 import subprocess
 import sys
 import tarfile
-import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOCK_PATH = os.path.join(ROOT, "cmake", "deps.lock.json")
-DOWNLOAD_DIR = os.path.join(ROOT, "third_party", ".downloads")
-DEST = os.path.join(ROOT, "third_party", "prebuilt", "node")
-STAMP_NAME = ".momo_dep.json"
+import fetch_deps
+from fetch_deps import ROOT
+
+DEST = os.path.join(fetch_deps.PREBUILT_DIR, "node")
 
 
 def log(msg):
     print(f"[build_libnode] {msg}", flush=True)
-
-
-def sha256_of(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
 
 
 def find_python():
@@ -71,7 +60,10 @@ def find_python():
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--force", action="store_true", help="rebuild even if installed")
-    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8)
+    parser.add_argument("--jobs", type=int, default=os.cpu_count() or 8, help="parallel compile jobs (ninja)")
+    parser.add_argument("--mirror", help="offline mirror directory holding the source archive")
+    parser.add_argument("--download-jobs", type=int, default=fetch_deps.DEFAULT_JOBS,
+                        help="parallel connections for the source archive download")
     parser.add_argument("--work-dir", default=os.path.join(ROOT, "third_party", ".build", "node"),
                         help="source tree and build output (large: ~6 GB)")
     args = parser.parse_args()
@@ -79,31 +71,23 @@ def main():
     windows = sys.platform.startswith("win")
     if sys.platform != "darwin" and not windows:
         sys.exit("build_libnode: only macOS and Windows are supported")
-    with open(LOCK_PATH, encoding="utf-8") as f:
-        dep = json.load(f)["deps"]["node"]
+    dep = fetch_deps.load_lock()["deps"]["node"]
     version, source = dep["version"], dep["source_archive"]
+    platform_key = fetch_deps.host_platform()
     # Windows 用 vcbuild.bat 的参数(configure 由它调用;dll = --shared, nonpm = --without-npm)。
-    configure_flags = ["release", "x64", "dll", "nonpm"] if windows else dep["configure_flags"]
-    stamp = {"name": "node", "version": version, "platform": "windows-x64" if windows else "macos-arm64",
-             "sha256": source["sha256"], "configure_flags": configure_flags}
+    configure_flags = (["release", platform_key.split("-")[1], "dll", "nonpm"] if windows
+                       else dep["configure_flags"])
+    stamp = fetch_deps.make_stamp("node", version, platform_key, source["sha256"],
+                                  configure_flags=configure_flags)
+    if not args.force and fetch_deps.stamp_matches(DEST, stamp):
+        log(f"node {version} already installed")
+        return
 
-    stamp_path = os.path.join(DEST, STAMP_NAME)
-    if not args.force and os.path.exists(stamp_path):
-        with open(stamp_path, encoding="utf-8") as f:
-            if json.load(f) == stamp:
-                log(f"node {version} already installed")
-                return
-
-    # 1. 源码包(缓存于 third_party/.downloads/)。
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    archive = os.path.join(DOWNLOAD_DIR, os.path.basename(source["url"]))
-    if not os.path.exists(archive) or sha256_of(archive) != source["sha256"]:
-        log(f"downloading {source['url']}")
-        urllib.request.urlretrieve(source["url"], archive + ".part")
-        os.replace(archive + ".part", archive)
-    digest = sha256_of(archive)
-    if digest != source["sha256"]:
-        sys.exit(f"build_libnode: sha256 mismatch for {archive}: {digest}")
+    # 1. 源码包(缓存于 third_party/.downloads/, SHA256 校验)。
+    try:
+        archive = fetch_deps.obtain_archive("node", source, args.mirror, args.download_jobs)
+    except Exception as e:  # noqa: BLE001
+        sys.exit(f"build_libnode: {e}")
 
     # 2. 解压(源码树按版本区分;已有则复用, 增量构建)。
     os.makedirs(args.work_dir, exist_ok=True)
@@ -151,8 +135,7 @@ def main():
             if not os.path.exists(built):
                 sys.exit(f"build_libnode: {built} not found")
             shutil.copy2(built, os.path.join(DEST, "lib", name))
-        with open(stamp_path, "w", encoding="utf-8") as f:
-            json.dump(stamp, f, indent=2)
+        fetch_deps.write_stamp(DEST, stamp)
         log(f"installed {os.path.join(DEST, 'lib', 'libnode.dll')}")
         return
     libs = glob.glob(os.path.join(src, "out", "Release", "libnode.*.dylib"))
@@ -163,8 +146,7 @@ def main():
     subprocess.run(["install_name_tool", "-id", f"@rpath/{os.path.basename(lib)}", lib], check=True)
     subprocess.run(["codesign", "--force", "--sign", "-", lib], check=True, capture_output=True)
 
-    with open(stamp_path, "w", encoding="utf-8") as f:
-        json.dump(stamp, f, indent=2)
+    fetch_deps.write_stamp(DEST, stamp)
     log(f"installed {lib}")
 
 

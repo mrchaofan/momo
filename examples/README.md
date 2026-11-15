@@ -17,8 +17,8 @@ out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/hello_fr
 View 示例是独立 npm 工程，依赖 `@momo/framework`：
 
 ```bash
-node framework/scripts/build_example.mjs examples/counter/src/main.ts examples/counter/dist/main.js
-out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/counter/dist/main.js
+node tools/momo-cli/momo.mjs bundle examples/counter                  # → examples/counter/dist/bundle.js
+out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/counter/dist/bundle.js
 node tools/momo-cli/momo.mjs build examples/counter --out=out/apps     # 打包成 .app
 ```
 
