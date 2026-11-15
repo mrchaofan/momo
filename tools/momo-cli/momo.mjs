@@ -1,15 +1,20 @@
 #!/usr/bin/env node
 // momo — Momo 应用/扩展开发者命令行(docs/07 §7、docs/09 §4-6)。
 //
+//   momo bundle <app-dir> [--out=<dir>] [--native-dir=<dir>] [--minify]
+//       只出应用 bundle, 不装配运行时(开发循环用: Momo --dev --bundle=<out>/bundle.js):
+//       1) esbuild 打应用 bundle → <out>/bundle.js(momo:* / ext:* 保持外部导入;@momo/framework 解析到
+//          框架源码;默认带内联 sourcemap, --minify 时压缩且不带)
+//       2) 扫描依赖中的 package.json "momo.extension" 声明 → <out>/extensions/{extensions.manifest,
+//          当前平台的原生库};打印每个扩展申请的 capabilities(构建期可见性, docs/07 §6)
+//       <out> 默认为 <app-dir>/dist。
 //   momo build <app-dir> [--out=<dir>] [--runtime=<Momo.app>] [--native-dir=<dir>] [--name=<App>]
 //              [--minify] [--dmg]
-//       1) esbuild 打应用 bundle(momo:* / ext:* 保持外部导入;@momo/framework 解析到框架源码)
-//       2) 扫描依赖中的 package.json "momo.extension" 声明 → 生成 extensions.manifest,
-//          拷贝当前平台的原生库;打印每个扩展申请的 capabilities(构建期可见性, docs/07 §6)
-//       3) macOS: 复制预编译运行时 Momo.app → <out>/<Name>.app, 放入 Resources/{bundle.js, assets/,
-//          extensions/};Windows: 运行时目录(--runtime, 含 Momo.exe 与 libnode.dll)→ <out>/<Name>/
-//          {<Name>.exe, *.dll, bundle.js, assets/, extensions/}(exe 同级即资源目录, docs/09 §4);
-//          其他平台: 输出目录布局 <out>/<name>/{bundle.js, assets/, extensions/}
+//       装配可分发的应用: 运行时 + `momo bundle` 的产物 + assets/。
+//       macOS: 复制预编译运行时 Momo.app → <out>/<Name>.app, 放入 Resources/{bundle.js, assets/,
+//       extensions/};Windows: 运行时目录(--runtime, 含 Momo.exe 与 libnode.dll)→ <out>/<Name>/
+//       {<Name>.exe, *.dll, bundle.js, assets/, extensions/}(exe 同级即资源目录, docs/09 §4);
+//       其他平台: 输出目录布局 <out>/<name>/{bundle.js, assets/, extensions/}
 //       --dmg(macOS): 再用 hdiutil 产出 <Name>.dmg
 //   momo ext create <dir> --id=<acme.thing> [--name=<thing>]   扩展脚手架(C ABI 模板 + JS 门面)
 //   momo ext verify <library> [--package=<package.json>]        ABI 符号检查 + manifest 声明校验
@@ -19,7 +24,6 @@
 // momo.name 应用名, momo.icon 应用图标 .icns(macOS)), 可选 assets/ 目录。
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -92,6 +96,17 @@ function findFile(root, basename) {
   return null;
 }
 
+const KNOWN_CAPABILITIES = new Set(["filesystem", "network", "window", "texture", "platform-view", "camera", "microphone", "clipboard"]);
+
+/** 校验 package.json 的 momo.extension 声明, 返回问题列表(空 = 合法)。bundle/build/manifest 与 ext verify 共用。 */
+export function extensionDeclarationProblems(ext) {
+  const problems = [];
+  if (!/^[a-z0-9]+(\.[a-z0-9_-]+)+$/i.test(ext.id || "")) problems.push(`momo.extension.id must be reverse-DNS (got '${ext.id}')`);
+  if (ext.specifier && !/^ext:[\w-]+$/.test(ext.specifier)) problems.push("momo.extension.specifier must be 'ext:<name>'");
+  for (const c of ext.capabilities || []) if (!KNOWN_CAPABILITIES.has(c)) problems.push(`unknown capability '${c}'`);
+  return problems;
+}
+
 /** 返回 [{id, specifier, capabilities, packageDir, packageName, library(源路径), entry(JS 门面)}]。 */
 export function collectExtensions(appDir, nativeDir) {
   const pkg = readJson(path.join(appDir, "package.json"));
@@ -106,8 +121,8 @@ export function collectExtensions(appDir, nativeDir) {
     const depPkg = readJson(path.join(dir, "package.json"));
     const ext = depPkg.momo && depPkg.momo.extension;
     if (ext) {
-      if (!/^[a-z0-9]+(\.[a-z0-9_-]+)+$/i.test(ext.id || "")) fail(`${name}: momo.extension.id must be reverse-DNS (got '${ext.id}')`);
-      if (ext.specifier && !/^ext:[\w-]+$/.test(ext.specifier)) fail(`${name}: specifier must be 'ext:<name>'`);
+      const problems = extensionDeclarationProblems(ext);
+      if (problems.length) fail(`${name}: ${problems.join("; ")}`);
       const declared = ext.native && ext.native[key];
       let library = declared ? path.resolve(dir, declared) : null;
       if (library && !fs.existsSync(library)) {
@@ -143,12 +158,18 @@ export function manifestFor(extensions) {
 }
 
 // ---------------------------------------------------------------------------
-// build
+// bundle
 
-async function bundleApp(appDir, outFile, extensions, minify) {
+function defaultNativeDir(flags) {
+  return flags["native-dir"] ? path.resolve(flags["native-dir"]) : path.join(repoRoot, "out/debug/extensions");
+}
+
+/** 应用的 JS 部分 → <outDir>/bundle.js 与(有扩展时)<outDir>/extensions/{extensions.manifest, 原生库}。 */
+async function writeBundle(appDir, outDir, { nativeDir, minify }) {
   const pkg = readJson(path.join(appDir, "package.json"));
   const entry = path.resolve(appDir, pkg.main || "src/main.ts");
   if (!fs.existsSync(entry)) fail(`entry not found: ${entry}`);
+  const extensions = collectExtensions(appDir, nativeDir);
   const { baseOptions, momoExternal, momoFrameworkAlias } = await import(pathToFileURL(frameworkScripts).href);
   const esbuildPath = path.join(repoRoot, "framework/node_modules/esbuild/lib/main.js");
   if (!fs.existsSync(esbuildPath)) fail("esbuild not installed: run `npm install` in framework/");
@@ -163,15 +184,43 @@ async function bundleApp(appDir, outFile, extensions, minify) {
       }
     },
   };
+  fs.mkdirSync(outDir, { recursive: true });
   await esbuild.build({
     ...baseOptions,
     entryPoints: [entry],
-    outfile: outFile,
+    outfile: path.join(outDir, "bundle.js"),
     minify: !!minify,
     sourcemap: minify ? false : "inline",
     plugins: [momoExternal, momoFrameworkAlias, localPackages],
   });
+
+  const extDir = path.join(outDir, "extensions");
+  fs.rmSync(extDir, { recursive: true, force: true });
+  if (extensions.length > 0) {
+    fs.mkdirSync(extDir, { recursive: true });
+    console.log("extensions:");
+    for (const ext of extensions) {
+      if (!ext.library) {
+        console.warn(`  ! ${ext.id}: no native library for ${platformKey()} (${ext.declared || "not declared"}) — JS only`);
+        continue;
+      }
+      fs.copyFileSync(ext.library, path.join(extDir, path.basename(ext.library)));
+      const caps = ext.capabilities.length ? ext.capabilities.join(", ") : "none";
+      console.log(`  ${ext.id} (${ext.specifier ?? "no JS module"}) capabilities: ${caps}`);
+    }
+    fs.writeFileSync(path.join(extDir, "extensions.manifest"), JSON.stringify(manifestFor(extensions), null, 2));
+  }
 }
+
+async function bundle({ positional, flags }) {
+  const appDir = path.resolve(positional[0] || ".");
+  const outDir = path.resolve(flags.out || path.join(appDir, "dist"));
+  await writeBundle(appDir, outDir, { nativeDir: defaultNativeDir(flags), minify: flags.minify });
+  console.log(`built ${path.relative(process.cwd(), path.join(outDir, "bundle.js"))}`);
+}
+
+// ---------------------------------------------------------------------------
+// build
 
 function copyDir(from, to) {
   if (!fs.existsSync(from)) return;
@@ -183,8 +232,6 @@ async function build({ positional, flags }) {
   const pkg = readJson(path.join(appDir, "package.json"));
   const appName = flags.name || (pkg.momo && pkg.momo.name) || pkg.name.replace(/^@.*\//, "");
   const outDir = path.resolve(flags.out || path.join(appDir, "dist"));
-  const nativeDir = flags["native-dir"] ? path.resolve(flags["native-dir"]) : path.join(repoRoot, "out/debug/extensions");
-  const extensions = collectExtensions(appDir, nativeDir);
 
   fs.mkdirSync(outDir, { recursive: true });
   let resources;
@@ -235,25 +282,8 @@ async function build({ positional, flags }) {
     resources = bundleRoot;
   }
   fs.mkdirSync(resources, { recursive: true });
-  await bundleApp(appDir, path.join(resources, "bundle.js"), extensions, flags.minify);
+  await writeBundle(appDir, resources, { nativeDir: defaultNativeDir(flags), minify: flags.minify });
   copyDir(path.join(appDir, "assets"), path.join(resources, "assets"));
-
-  const extDir = path.join(resources, "extensions");
-  fs.rmSync(extDir, { recursive: true, force: true });
-  if (extensions.length > 0) {
-    fs.mkdirSync(extDir, { recursive: true });
-    console.log("extensions:");
-    for (const ext of extensions) {
-      if (!ext.library) {
-        console.warn(`  ! ${ext.id}: no native library for ${platformKey()} (${ext.declared || "not declared"}) — JS only`);
-        continue;
-      }
-      fs.copyFileSync(ext.library, path.join(extDir, path.basename(ext.library)));
-      const caps = ext.capabilities.length ? ext.capabilities.join(", ") : "none";
-      console.log(`  ${ext.id} (${ext.specifier ?? "no JS module"}) capabilities: ${caps}`);
-    }
-    fs.writeFileSync(path.join(extDir, "extensions.manifest"), JSON.stringify(manifestFor(extensions), null, 2));
-  }
   if (process.platform === "darwin") {
     // 修改了包内容: 重新 ad-hoc 签名(否则 Gatekeeper/代码签名校验失败)。
     try {
@@ -302,12 +332,7 @@ function verify({ positional, flags }) {
     const pkg = readJson(path.resolve(flags.package));
     const ext = pkg.momo && pkg.momo.extension;
     if (!ext) problems.push("package.json has no momo.extension");
-    else {
-      if (!/^[a-z0-9]+(\.[a-z0-9_-]+)+$/i.test(ext.id || "")) problems.push("momo.extension.id must be reverse-DNS");
-      if (ext.specifier && !/^ext:[\w-]+$/.test(ext.specifier)) problems.push("momo.extension.specifier must be 'ext:<name>'");
-      const known = new Set(["filesystem", "network", "window", "texture", "platform-view", "camera", "microphone", "clipboard"]);
-      for (const c of ext.capabilities || []) if (!known.has(c)) problems.push(`unknown capability '${c}'`);
-    }
+    else problems.push(...extensionDeclarationProblems(ext));
   }
   if (problems.length) {
     for (const p of problems) console.error(`  ✗ ${p}`);
@@ -345,20 +370,22 @@ function create({ positional, flags }) {
 
 // ---------------------------------------------------------------------------
 
-const [command, sub, ...rest] = process.argv.slice(2);
-if (command === "build") {
-  await build(parseArgs([sub, ...rest].filter((x) => x !== undefined)));
+const [command, ...rest] = process.argv.slice(2);
+if (command === "bundle") {
+  await bundle(parseArgs(rest));
+} else if (command === "build") {
+  await build(parseArgs(rest));
 } else if (command === "manifest") {
-  const args = parseArgs([sub, ...rest].filter((x) => x !== undefined));
-  const appDir = path.resolve(args.positional[0] || ".");
-  const nativeDir = args.flags["native-dir"] ? path.resolve(args.flags["native-dir"]) : path.join(repoRoot, "out/debug/extensions");
-  console.log(JSON.stringify(manifestFor(collectExtensions(appDir, nativeDir)), null, 2));
-} else if (command === "ext" && sub === "verify") {
-  verify(parseArgs(rest));
-} else if (command === "ext" && sub === "create") {
-  create(parseArgs(rest));
+  const { positional, flags } = parseArgs(rest);
+  const appDir = path.resolve(positional[0] || ".");
+  console.log(JSON.stringify(manifestFor(collectExtensions(appDir, defaultNativeDir(flags))), null, 2));
+} else if (command === "ext" && rest[0] === "verify") {
+  verify(parseArgs(rest.slice(1)));
+} else if (command === "ext" && rest[0] === "create") {
+  create(parseArgs(rest.slice(1)));
 } else {
-  console.log(fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1, 22).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
+  // 文件头注释(第 2 行起, 到第一个非注释行为止)即用法说明。
+  const header = fs.readFileSync(fileURLToPath(import.meta.url), "utf8").split("\n").slice(1);
+  console.log(header.slice(0, header.findIndex((l) => !l.startsWith("//"))).map((l) => l.replace(/^\/\/ ?/, "")).join("\n"));
   process.exit(command ? 1 : 0);
 }
-void os;

@@ -9,6 +9,7 @@
     "@momo-examples/ext-webview": "file:../../extensions/examples/webview-extension"
   },
   "scripts": {
+    "bundle": "node ../../tools/momo-cli/momo.mjs bundle .",
     "build": "node ../../tools/momo-cli/momo.mjs build ."
   }
 }
