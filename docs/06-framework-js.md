@@ -16,7 +16,7 @@ framework/
 │   ├── painting/      # TextPainter、Decoration、图片封装(ImageProvider/缓存)、边框圆角等值对象
 │   ├── rendering/     # RenderObject/RenderBox 布局协议、命中测试、Layer 组织、常用 render 对象
 │   ├── views/         # View/Element 体系、StatefulView、基础组件(布局/滚动/文本/图片)、RootView
-│   │                  #   binding.ts: runApp / runView、ViewsBinding(连接 scheduler/gestures/rendering)
+│   │                  #   binding.ts: ViewsBinding(连接 scheduler/gestures/rendering);root_view.ts: runApp / runView、RootView
 │   ├── material/      # (后期)成品控件: Button/TextField/Dialog/Theme, 桌面交互规范
 │   └── services/      # MessageChannel 封装、剪贴板、菜单、快捷键、生命周期
 └── test/              # 基于 headless engine 的框架测试(golden + 逻辑)
@@ -36,9 +36,13 @@ framework/
 
 ```
 onBeginFrame: Ticker 推进动画
-onDrawFrame : buildOwner.flushBuild → pipeline.flushLayout → flushCompositingBits
-              → flushPaint(生成 Picture) → scene = 合成 Layer → viewport.render(scene)
+onDrawFrame : buildOwner.flushBuild → 每个窗口: pipeline.flushLayout → flushCompositingBits
+              → flushPaint(生成 Picture) → 画面有变化时 scene = 合成 Layer → viewport.render(scene)
 ```
+
+渲染树没有脏节点的窗口不重复合成与提交(引擎保留着它上一次提交的画面)。没有脏节点也提交的情况:首帧、尺寸/缩放变化、重新可见、画面里有外部纹理,以及不是框架请求的帧(引擎自己发起的帧:新视图、重新可见、扩展的帧回调)。
+
+延迟任务 `SchedulerBinding.scheduleDelayed(ms, fn)` 由定时器驱动(`SchedulerBinding.timerHost`:生产是宿主的 `setTimeout`,测试注入假时钟),等待期间不请求帧;回调在帧外执行,其中的 `setState` 等照常请求帧。光标闪烁、双击超时、长按 deadline 都走它,所以空闲的应用(包括有输入框聚焦时)不出帧。
 
 ### 应用与窗口(`services/app.ts`、`services/widget.ts`、`views/root_view.ts`)
 
@@ -47,11 +51,11 @@ view/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`/`
 - `app`:应用。`quit()`(经 `before-quit` / 每个窗口的 `close` / `will-quit`, 任一可取消)、`exit(code)`(不询问)、`hide` / `show` / `focus`;事件 `window-all-closed`(最后一个窗口关闭, 应用**不会**自动退出)、`activate`(点击 Dock 图标)、`did-become-active` / `did-resign-active`、`state-changed`(`launching` / `running` / `suspended` / `terminating`;suspended = 应用被隐藏, 不出帧)、`quit`。
 - `Widget`:一个原生窗口。`Widget.create({ title, width, height, x, y, minWidth, minHeight, resizable, nonActivating, show })` 打开(宿主的 `momo/window`), `Widget.fromId(0)` 是启动窗口;方法 `close`(先触发可取消的 `close`)/ `destroy`、`show` / `hide` / `focus` / `minimize` / `maximize` / `restore`、`setTitle`、`setMinimumSize`、`setPosition`、`setResizable`、`setAlwaysOnTop`、`setTitleBar`、`startDrag`、`startMoveLoop`…;事件 `closed`、`focus` / `blur`、`show` / `hide`、`minimize` / `maximize` / `restore`、`move` / `resize`、`controls-changed`、`ready-to-show`(以 `show: false` 创建的窗口第一帧画好后)。窗口关闭后对象作废。
 - 可取消事件是 `HostEvent`:`preventDefault()` 取消, `waitUntil(promise)` 异步决定。
-- `RootView({ widget, child })`:把 child 渲染进窗口:为它建立自己的 `RenderView` + `PipelineOwner`,向 `ViewsBinding.registerView` 登记;每帧共用一次 build,各窗口分别 layout/paint/合成并 `viewport.render`(不可见的窗口跳过)。每个窗口有自己的 `MediaQuery`、`Overlay`(对话框、菜单只出现在本窗口)、默认快捷键与根焦点作用域(挂在焦点树根下,与其他窗口并列;窗口获得系统焦点时恢复其上次的焦点)。RootView 不打开也不关闭窗口。
+- `RootView({ widget, child })`:把 child 渲染进窗口:为它建立自己的 `RenderView` + `PipelineOwner`,向 `ViewsBinding.registerView` 登记;每帧共用一次 build,各窗口分别 layout/paint,画面有变化的合成并 `viewport.render`(不可见的窗口跳过)。窗口渲染只有这一条实现(启动窗口也是)。每个窗口有自己的 `MediaQuery`、`Overlay`(对话框、菜单只出现在本窗口)、默认快捷键与根焦点作用域(挂在焦点树根下,与其他窗口并列;窗口获得系统焦点时恢复其上次的焦点)。RootView 不打开也不关闭窗口;窗口关闭后留在树里的 RootView 照常构建,只是不再布局、绘制与提交。
 - `ViewAnchor({ child, views })`:child 在原处正常渲染;views(各窗口的 RootView)挂在 element 树的这里(继承此处的 InheritedView 与状态),但渲染到各自的窗口。
 - `WidgetScope.of(context)` 取子树所在的窗口;`Title({ title, child })` 声明窗口标题(`MaterialApp({ title })` 用它)。
 - 外观由窗口内容里的 `WindowChrome({ hiddenTitleBar, titleBarHeight, resizeBorder })` 声明;隐藏标题栏后系统窗口控制按钮占用的区域由宿主报告, 经 `MediaQuery.windowControls` 提供(自绘标题栏据此避让, 不写死平台尺寸);`MediaQueryData.windowControlsPadding` 把它换算成标题栏左右留白(按钮在左半边计入 left, 在右半边计入 right), 应用不必判断平台。拖动窗口只有能力、没有框架内置区域: `Widget.startDrag(sequenceId)` 以进行中的按下序列(`PointerDownEvent.sequenceId`)开始系统拖动, 哪里可拖由应用决定(examples/webview 的 `WindowDragArea`)。
-- 入口:`runApp(view)` 把根渲染进隐式视图 0;`runView(view)` 不绑定视图, 每个窗口(含启动窗口)的内容由 RootView 渲染(所有窗口对等)。任何窗口都可以关闭。
+- 入口:`runView(view)` 挂载根 view, 根不绑定任何窗口, 每个窗口(含启动窗口)的内容由 RootView 渲染(所有窗口对等);`runApp(app)` 是单窗口的常用写法, 等于 `runView(new RootView({ widget: Widget.fromId(0), child: app }))`(启动窗口已关闭时 app 照常构建, 不渲染到任何窗口)。任何窗口都可以关闭。
 - 指针事件按来源窗口命中测试;每个 `PointerEvent` 带 `viewId`(同 Flutter), 光标等都按它找窗口, 没有"当前视图"这种全局状态。
 - 子树可以用 `GlobalKey` 在窗口之间移动并保留 State;含平台视图的子树移动时原生视图换窗口而不重建(MomoBrowser 的"移到新窗口")。
 
@@ -82,10 +86,10 @@ view/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`/`
 
 ## 6. 与 JS 生态的关系
 
-- 框架以 npm 包形式发布(`@momo/framework`),应用用 esbuild 打 bundle;**不依赖任何浏览器/Node API**,全局只存在引擎注入的 `momo:*` 模块——framework/ 的 lint 规则禁止引用 `window.document`、`fetch` 等。
+- 框架以 npm 包形式发布(`@momo/framework`),应用用 esbuild 打 bundle;**不依赖任何浏览器/Node API**(唯一的例外是 scheduler 的延迟任务用运行时的 `setTimeout`),全局只存在引擎注入的 `momo:*` 模块——framework/ 的 lint 规则禁止引用 `window.document`、`fetch` 等。
 - `services` 提供的网络/文件等能力由扩展包填充(如 `ext:fetch`),框架核心不内置 IO。
 
 ## 7. 测试
 
-- 逻辑测试:headless engine(软件后端)+ 测试驱动的 `platformDispatcher`,可模拟 vsync 和指针序列(对标 flutter_test 的 WidgetTester;这里是 `ViewTester`)。
+- 逻辑测试:headless engine(软件后端)+ 测试驱动的 `platformDispatcher`,可模拟 vsync 和指针序列(对标 flutter_test 的 WidgetTester;这里是 `ViewTester`)。时间是假时钟(`test/fake_clock.ts`, 装在 `SchedulerBinding.timerHost` 上):`pump(ms)` 推进时间、执行到期的延迟任务, 再出一帧。
 - Golden 测试:软件光栅化输出 PNG 比对,保证双端像素一致性回归。

@@ -1,7 +1,7 @@
 import {
   Center, EditableText, FocusNode, MethodCall, SizedBox, TextEditingController, TextEditingValue, TextRange, TextSelection,
   TextStyle, LogicalKeyboardKey, PhysicalKeyboardKey, KeyModifier, Offset, Align, Alignment, debugOverrideTargetPlatform,
-  type View, Column,
+  type View, Column, SchedulerBinding,
 } from "../packages/momo/src/index";
 import { expect, group } from "./harness";
 import { Kind } from "./tester";
@@ -203,7 +203,7 @@ group("EditableText", () => {
     void TextEditingValue;
   });
 
-  testViews("cursor blinks via frame callbacks", async (t) => {
+  testViews("cursor blinks on a timer; no frames are requested between blinks", async (t) => {
     const c = new TextEditingController({ text: "x" });
     const n = new FocusNode();
     t.recordMethodCalls("momo/textinput");
@@ -212,6 +212,8 @@ group("EditableText", () => {
     await t.pump();
     const state = t.allElements().map((e) => (e as { state?: unknown }).state).find((s): s is { cursorCurrentlyVisible: boolean } => typeof s === "object" && s !== null && "cursorCurrentlyVisible" in s)!;
     expect.isTrue(state.cursorCurrentlyVisible);
+    await t.pumpAndSettle();
+    expect.isFalse(SchedulerBinding.instance.hasScheduledFrame, "a focused field does not keep the app animating");
     await t.pumpFor(560);
     expect.isFalse(state.cursorCurrentlyVisible);
     await t.pumpFor(520);

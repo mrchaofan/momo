@@ -1,4 +1,4 @@
-// 向子树提供"所在的窗口"(Widget): 隐式视图 0 的窗口由 runApp 的根提供, 其他窗口由 RootView 提供。
+// 向子树提供"所在的窗口"(Widget): 由渲染该窗口的 RootView 提供(runApp 的根就是启动窗口的 RootView)。
 import type { Key } from "../foundation/key";
 import type { Widget } from "../services/widget";
 import { InheritedView, type BuildContext, type View } from "./framework";

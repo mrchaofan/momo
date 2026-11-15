@@ -2,10 +2,11 @@
 // 只依赖框架公开的 momo:ui 回调与 messenger,因此在 mock 宿主和真实引擎宿主下都可用。
 import { viewports, platformDispatcher } from "momo:ui";
 import { currentHost } from "./harness";
+import { fakeClock } from "./fake_clock";
 import {
   Element, GlobalKey, Key, Offset, Rect, RenderBox, RichText, SchedulerBinding, Size, StandardMethodCodec, MethodCall,
   ViewsBinding, defaultBinaryMessenger, keysEqual, runApp, paragraphCache, type Type, type View, HardwareKeyboard,
-  FocusManager, imageCache, TextInput, Widget,
+  FocusManager, imageCache, TextInput, Widget, type RenderView,
 } from "../packages/momo/src/index";
 
 /** 指针设备类型码(与 momo:ui 指针包一致)。 */
@@ -36,8 +37,6 @@ export interface PointerOptions {
 /** 测试驱动器。 */
 export class ViewTester {
   readonly binding: ViewsBinding;
-  /** 假时钟(毫秒)。 */
-  now = 1000;
   #dpr = 1;
 
   constructor(size: Size = new Size(800, 600), devicePixelRatio = 1) {
@@ -48,6 +47,24 @@ export class ViewTester {
 
   get devicePixelRatio(): number {
     return this.#dpr;
+  }
+
+  /**
+   * 假时钟(毫秒): 帧时间戳、指针时间戳与延迟任务(SchedulerBinding.scheduleDelayed)共用。直接赋值只改时间;
+   * 到期的延迟任务在下一次 pump 时执行。
+   */
+  get now(): number {
+    return fakeClock.now;
+  }
+  set now(value: number) {
+    fakeClock.now = value;
+  }
+
+  /** 启动窗口(视图 0)的渲染树根(runApp 的 RootView 登记的)。 */
+  get renderView(): RenderView {
+    const host = this.binding.viewHosts.get(0);
+    if (host === undefined) throw new Error("no RootView renders view 0 (call pumpView first)");
+    return host.renderView;
   }
 
   /** 设置视图逻辑尺寸。 */
@@ -67,9 +84,9 @@ export class ViewTester {
     await this.pump(durationMs);
   }
 
-  /** 时钟前进 durationMs 并出一帧。 */
+  /** 时钟前进 durationMs(到期的延迟任务按到期顺序执行)并出一帧。 */
   async pump(durationMs = 0): Promise<void> {
-    this.now += durationMs;
+    fakeClock.advance(durationMs);
     await this.flushMicrotasks();
     platformDispatcher.onBeginFrame?.(this.now);
     await this.flushMicrotasks();
