@@ -149,11 +149,17 @@ export class Shortcuts extends StatelessView {
   readonly shortcuts: ReadonlyMap<ShortcutActivator, Intent>;
   readonly child: View;
   readonly debugLabel: string | undefined;
-  constructor(o: { key?: Key | null; shortcuts: ReadonlyMap<ShortcutActivator, Intent>; child: View; debugLabel?: string }) {
+  /** 焦点树中的父节点(缺省为 view 树中最近的 Focus;见 FocusOptions.parentNode)。 */
+  readonly parentNode: FocusNode | null;
+  constructor(o: {
+    key?: Key | null; shortcuts: ReadonlyMap<ShortcutActivator, Intent>; child: View; debugLabel?: string;
+    parentNode?: FocusNode | null;
+  }) {
     super(o.key);
     this.shortcuts = o.shortcuts;
     this.child = o.child;
     this.debugLabel = o.debugLabel;
+    this.parentNode = o.parentNode ?? null;
   }
 
   /** 处理按键(也供测试直接调用)。 */
@@ -174,6 +180,7 @@ export class Shortcuts extends StatelessView {
       debugLabel: this.debugLabel ?? "Shortcuts",
       canRequestFocus: false,
       skipTraversal: true,
+      parentNode: this.parentNode,
       onKeyEvent: (_node: FocusNode, event: KeyEvent) => this.handleKeypress(context, event),
       child: this.child,
     });

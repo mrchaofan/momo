@@ -63,7 +63,7 @@ group("platform views", () => {
       expect.deepEqual(ops[pv]!.args, [id, 10, 20, 300, 200]);
       // 红色方块的 picture 在平台视图之后加入场景(合成时进入视图之上的 overlay)。
       expect.isTrue(ops.slice(pv + 1).some((o) => o.op === "addPicture"), "content painted after the view");
-      expect.isTrue(t.binding.renderView.rootLayer !== null);
+      expect.isTrue(t.renderView.rootLayer !== null);
       void PlatformViewLayer;
 
       // 移除 view → dispose。
