@@ -5,6 +5,9 @@
 #include <optional>
 #include <utility>
 
+#include "base/event_loop.h"
+#include "base/logging.h"
+
 namespace momo::embedder {
 
 std::shared_ptr<PresentQueue> PresentQueue::Create(Wake wake) {
@@ -84,6 +87,29 @@ bool PresentQueue::WaitForFrame(Size size, TimeDelta timeout, const std::functio
       }
     }
   }
+}
+
+void PresentQueue::SynchronizeResize(Size size, const std::function<void()>& notify_metrics) {
+  if (resize_waiting_ || !has_presented()) {
+    notify_metrics();
+    return;
+  }
+  const std::shared_ptr<PresentQueue> keep = shared_from_this();
+  resize_waiting_ = true;
+  // 先把新尺寸交给引擎, 再等它画出这个尺寸的帧: 系统回调返回后才显示新尺寸的窗口, 窗口与内容同时变化。
+  notify_metrics();
+  // 引擎出下一帧要经过 platform 线程的任务(vsync 请求与回调、平台视图呈现): 不执行它们会互等。
+  EventLoop* loop = EventLoop::Current();
+  const bool got_frame = WaitForFrame(size, kLiveResizeFrameWait, [loop] {
+    if (loop != nullptr) {
+      loop->RunDueTasksNested();
+    }
+    return true;
+  });
+  if (!got_frame) {
+    MOMO_LOG(VERBOSE) << "Live resize: no frame of the new size within the timeout; content is stretched.";
+  }
+  resize_waiting_ = false;
 }
 
 }  // namespace momo::embedder

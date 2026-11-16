@@ -100,6 +100,28 @@ TEST_F(PresentQueueTest, TimesOutWithoutAFrame) {
   EXPECT_LT(waited, 1s);
 }
 
+// 拖拽缩放同步: 先把新尺寸交给引擎, 再等到它的帧。
+TEST_F(PresentQueueTest, SynchronizeResizeNotifiesThenWaitsForTheFrame) {
+  // 还没出过帧: 等待只会超时, 所以只通知。
+  int notified = 0;
+  const auto start = std::chrono::steady_clock::now();
+  queue_->SynchronizeResize({200, 160}, [&] { ++notified; });
+  EXPECT_EQ(notified, 1);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 50ms) << "no wait before the first frame";
+
+  queue_->NotePresented({100, 80});
+  std::thread raster;
+  queue_->SynchronizeResize({200, 160}, [&] {
+    ++notified;
+    raster = PostLater({200, 160}, 7, 20ms);  // 引擎收到新尺寸后画出这一帧
+    // 等待期间执行的任务又改变了窗口尺寸: 嵌套的调用只通知, 由外层的等待覆盖。
+    queue_->SynchronizeResize({210, 160}, [&] { ++notified; });
+  });
+  raster.join();
+  EXPECT_EQ(notified, 3);
+  EXPECT_EQ(presented_, (std::vector<int>{7})) << "the frame was presented inside the call";
+}
+
 // 等待期间窗口被销毁(pump 返回 false): 立即返回;队列由等待方自己持有, 不悬空。
 TEST_F(PresentQueueTest, StopsWaitingWhenTheOwnerIsDestroyedInThePump) {
   PresentQueue* raw = queue_.get();

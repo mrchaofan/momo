@@ -53,6 +53,12 @@ class PresentQueue final : public std::enable_shared_from_this<PresentQueue> {
   // pump 返回 false 表示调用方已在其中被销毁: 立即返回 false。
   bool WaitForFrame(Size size, TimeDelta timeout, const std::function<bool()>& pump);
 
+  // platform 线程: 窗口尺寸在系统回调里变成了 size 时调用(拖拽缩放同步的全部步骤, 两个平台的窗口共用):
+  // 调用 notify_metrics 把新尺寸交给引擎, 再就地等这个尺寸的帧呈现, 上限 kLiveResizeFrameWait;等待期间
+  // 执行本线程 EventLoop 的到期任务(只执行任务, 不析构对象)。还没出过帧(等待只会超时)、或正处在另一次等待
+  // 里(等待期间执行的任务又改了窗口尺寸, 由外层的等待覆盖)时只通知, 不等待。
+  void SynchronizeResize(Size size, const std::function<void()>& notify_metrics);
+
   // 已入队、尚未执行完的帧数(raster 线程据此保持两种呈现方式之间的帧顺序)。
   int pending() const { return pending_.load(std::memory_order_acquire); }
   // 是否已呈现过帧(还没有时等待只会超时)。
@@ -76,6 +82,7 @@ class PresentQueue final : public std::enable_shared_from_this<PresentQueue> {
   std::atomic<bool> wake_pending_{false};
   std::atomic<int> pending_{0};
   std::atomic<uint64_t> presented_size_{0};  // 最近一次呈现的帧尺寸
+  bool resize_waiting_ = false;              // SynchronizeResize 正在等待(仅 platform 线程)
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(PresentQueue);
 };

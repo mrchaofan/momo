@@ -1138,25 +1138,8 @@ void MacWindow::FocusPlatformView(int64_t view_id) { [platform_views_ focusViewI
 void MacWindow::BlurPlatformView(int64_t view_id) { [platform_views_ blurViewId:view_id]; }
 
 void MacWindow::SynchronizeLiveResize() {
-  // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖。
-  if (resize_waiting_ || !presents_->has_presented()) {  // 还没出过帧时等待只会超时
-    NotifyMetricsChanged();
-    return;
-  }
-  resize_waiting_ = true;
-  // 先把新尺寸交给引擎(windowDidResize 随后的重复通知由 WindowController 去重), 再等它画出这个尺寸的帧。
-  NotifyMetricsChanged();
-  EventLoop* loop = EventLoop::Current();
-  const bool got_frame = presents_->WaitForFrame(physical_size(), kLiveResizeFrameWait, [loop] {
-    if (loop != nullptr) {
-      loop->RunDueTasksNested();
-    }
-    return true;
-  });
-  if (!got_frame) {
-    MOMO_LOG(VERBOSE) << "Live resize: no frame of the new size within the timeout; content is stretched.";
-  }
-  resize_waiting_ = false;
+  // windowDidResize 随后的重复通知由 WindowController 去重。
+  presents_->SynchronizeResize(physical_size(), [this] { NotifyMetricsChanged(); });
 }
 
 void MacWindow::NotifyMetricsChanged() { delegate_->OnMetricsChanged(metrics()); }
