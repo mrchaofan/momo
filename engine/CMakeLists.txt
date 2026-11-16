@@ -1,6 +1,6 @@
 # engine/: 每个模块一个静态库 momo_engine_<module>(docs/02 §1)。基础设施(线程/任务/对象/Status…)在顶层 base/。
 # 模块依赖(单向, 无环; A → B 表示 A 依赖 B):
-#   shell → {ui, native_host};ui → {runtime, text, assets} → graphics → base
+#   shell → {ui, native_host};ui → {runtime, text, assets} → graphics → platform → base
 #   native_host → {common, graphics};各模块按需 → platform(纯接口)/ common(Settings、TaskRunners、消息通道)
 
 if(NOT MOMO_HAVE_SKIA)
@@ -8,7 +8,7 @@ if(NOT MOMO_HAVE_SKIA)
 endif()
 
 # ---- momo_engine_platform: engine 对宿主(embedder)的平台契约, 纯接口 + POD(docs/03) ----
-# RenderSurface、VsyncSource、输入事件、IME、PlatformServices、ViewportMetrics、SystemCursor。
+# RenderSurface、VsyncSource、输入事件、ViewportMetrics、视图 id、平台视图的合成布局。
 # engine 只认识这些接口;embedder 实现它们并注入。零平台 include、零三方依赖。
 add_library(momo_engine_platform INTERFACE)
 target_link_libraries(momo_engine_platform INTERFACE momo_base)
@@ -28,11 +28,12 @@ add_library(momo_engine_graphics STATIC
   graphics/display_list.cc
   graphics/layer.cc
   graphics/path.cc
+  graphics/render_backend.cc
   graphics/texture.cc
   graphics/skia/image.cc
   graphics/skia/skia_conversions.cc
   graphics/software_rasterizer.cc)
-target_link_libraries(momo_engine_graphics PUBLIC momo_base PRIVATE momo::skia)
+target_link_libraries(momo_engine_graphics PUBLIC momo_base momo_engine_platform PRIVATE momo::skia)
 if(APPLE)
   # Ganesh Metal 后端(docs/05 §4 MetalBackend);Skia target 已带 SK_METAL 与 Metal/QuartzCore 框架。
   target_sources(momo_engine_graphics PRIVATE graphics/gpu/metal_rasterizer.mm)
@@ -95,7 +96,6 @@ add_library(momo_engine_shell STATIC
   shell/animator.cc
   shell/engine.cc
   shell/rasterizer.cc
-  shell/render_backend.cc
   shell/shell.cc
   shell/thread_host.cc
   shell/vsync_waiter.cc)

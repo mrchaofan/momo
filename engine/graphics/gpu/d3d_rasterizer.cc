@@ -84,7 +84,7 @@ Status DrawIntoResource(GrDirectContext* context, void* resource, DrawFn&& draw)
   }
   auto* d3d_resource = static_cast<ID3D12Resource*>(resource);
   const D3D12_RESOURCE_DESC desc = d3d_resource->GetDesc();
-  // 以资源实际尺寸为准(调用方给出的 size 仅作期望)。
+  // 以资源的实际尺寸为准。
   const int width = static_cast<int>(desc.Width);
   const int height = static_cast<int>(desc.Height);
   if (width <= 0 || height <= 0) {
@@ -120,23 +120,17 @@ Status DrawIntoResource(GrDirectContext* context, void* resource, DrawFn&& draw)
 
 }  // namespace
 
-Status D3DRasterizer::Draw(LayerTree& tree, void* resource, Size size, uint32_t clear_color) {
-  (void)size;
-  return DrawIntoResource(impl_->context.get(), resource, [&](SkCanvas* canvas) {
-    canvas->clear(static_cast<SkColor>(clear_color));
-    if (tree.root() != nullptr) {
-      PrerollContext preroll;
-      tree.root()->Preroll(preroll);
-      PaintContext paint{canvas};
-      tree.root()->Paint(paint);
-    }
-  });
+Status D3DRasterizer::Draw(LayerTree& tree, const platform::SurfaceFrame& frame) {
+  MOMO_ASSIGN_OR_RETURN(void* resource, GpuTarget(frame));
+  return DrawIntoResource(impl_->context.get(), resource,
+                          [&](SkCanvas* canvas) { PaintLayerTree(tree, canvas, 0x00000000); });
 }
 
-Status D3DRasterizer::DrawSlice(const Composition& composition, size_t slice, void* resource, Point origin,
-                                uint32_t clear_color) {
+Status D3DRasterizer::DrawSlice(const Composition& composition, size_t slice,
+                                const platform::SurfaceFrame& frame, Point origin) {
+  MOMO_ASSIGN_OR_RETURN(void* resource, GpuTarget(frame));
   return DrawIntoResource(impl_->context.get(), resource, [&](SkCanvas* canvas) {
-    DrawCompositionSlice(composition, slice, canvas, origin, clear_color);
+    DrawCompositionSlice(composition, slice, canvas, origin, 0x00000000);
   });
 }
 

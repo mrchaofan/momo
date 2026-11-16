@@ -5,6 +5,7 @@
 
 #include "engine/graphics/display_list.h"
 #include "engine/graphics/image.h"
+#include "engine/graphics/layer_tree.h"
 #include "engine/graphics/paint.h"
 #include "engine/graphics/path.h"
 #include "include/core/SkCanvas.h"
@@ -44,6 +45,9 @@ struct PaintContext {
 
   SkCanvas* leaf() const { return leaf_canvas != nullptr ? leaf_canvas : canvas; }
 };
+
+// 先清为 clear_color(0xAARRGGBB), 再 Preroll + Paint 整棵树(各后端画一帧都是这一步)。
+void PaintLayerTree(LayerTree& tree, SkCanvas* canvas, uint32_t clear_color);
 
 SkPaint ToSkPaint(const Paint& paint);
 SkPath ToSkPath(const Path& path);

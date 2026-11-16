@@ -62,14 +62,6 @@ StatusOr<std::unique_ptr<MetalRasterizer>> MetalRasterizer::Create(void* mtl_dev
   return std::unique_ptr<MetalRasterizer>(new MetalRasterizer(std::move(impl)));
 }
 
-Status MetalRasterizer::Draw(LayerTree& tree, void* drawable, Size size, uint32_t clear_color) {
-  if (drawable == nullptr) {
-    return InvalidArgumentError("MetalRasterizer: null drawable");
-  }
-  id<CAMetalDrawable> metal_drawable = (__bridge id<CAMetalDrawable>)drawable;
-  return DrawToTexture(tree, (__bridge void*)metal_drawable.texture, size, clear_color);
-}
-
 namespace {
 
 // 把 id<MTLTexture> 包装为 SkSurface, 在其画布上执行 draw 并提交到 queue(不 present)。
@@ -83,7 +75,7 @@ Status DrawIntoTexture(GrDirectContext* context, void* mtl_texture, DrawFn&& dra
   }
   @autoreleasepool {
     id<MTLTexture> texture = (__bridge id<MTLTexture>)mtl_texture;
-    // 以纹理实际尺寸为准(调用方给出的 size 仅作期望;二者不一致时内容按左上角对齐裁剪)。
+    // 以纹理的实际尺寸为准。
     const int width = static_cast<int>(texture.width);
     const int height = static_cast<int>(texture.height);
     if (width <= 0 || height <= 0) {
@@ -107,33 +99,27 @@ Status DrawIntoTexture(GrDirectContext* context, void* mtl_texture, DrawFn&& dra
 
 }  // namespace
 
-Status MetalRasterizer::DrawToTexture(LayerTree& tree, void* mtl_texture, Size size,
-                                      uint32_t clear_color) {
-  (void)size;
-  return DrawIntoTexture(impl_->context.get(), mtl_texture, [&](SkCanvas* canvas) {
-    canvas->clear(static_cast<SkColor>(clear_color));
-    if (tree.root() != nullptr) {
-      PrerollContext preroll;
-      tree.root()->Preroll(preroll);
-      PaintContext paint{canvas};
-      tree.root()->Paint(paint);
-    }
-  });
+Status MetalRasterizer::DrawToTexture(LayerTree& tree, void* mtl_texture, uint32_t clear_color) {
+  return DrawIntoTexture(impl_->context.get(), mtl_texture,
+                         [&](SkCanvas* canvas) { PaintLayerTree(tree, canvas, clear_color); });
 }
 
-Status MetalRasterizer::DrawSlice(const Composition& composition, size_t slice, void* drawable,
-                                  Point origin, uint32_t clear_color) {
-  if (drawable == nullptr) {
-    return InvalidArgumentError("MetalRasterizer: null drawable");
-  }
-  id<CAMetalDrawable> metal_drawable = (__bridge id<CAMetalDrawable>)drawable;
-  return DrawIntoTexture(impl_->context.get(), (__bridge void*)metal_drawable.texture,
+Status MetalRasterizer::Draw(LayerTree& tree, const platform::SurfaceFrame& frame) {
+  MOMO_ASSIGN_OR_RETURN(void* drawable, GpuTarget(frame));
+  return DrawToTexture(tree, (__bridge void*)((__bridge id<CAMetalDrawable>)drawable).texture);
+}
+
+Status MetalRasterizer::DrawSlice(const Composition& composition, size_t slice,
+                                  const platform::SurfaceFrame& frame, Point origin) {
+  MOMO_ASSIGN_OR_RETURN(void* drawable, GpuTarget(frame));
+  return DrawIntoTexture(impl_->context.get(),
+                         (__bridge void*)((__bridge id<CAMetalDrawable>)drawable).texture,
                          [&](SkCanvas* canvas) {
-                           DrawCompositionSlice(composition, slice, canvas, origin, clear_color);
+                           DrawCompositionSlice(composition, slice, canvas, origin, 0x00000000);
                          });
 }
 
-void MetalRasterizer::WaitUntilScheduled() {
+void MetalRasterizer::PrepareForExternalPresent() {
   @autoreleasepool {
     // 同一 queue 上的命令缓冲按提交顺序调度: 空命令缓冲被调度时, 之前提交的都已调度。
     id<MTLCommandBuffer> marker = [impl_->queue commandBuffer];

@@ -2,10 +2,10 @@
 
 // Rasterizer: raster 线程侧的根, 持有各视图 RenderSurface 的使用权与 GPU 后端(docs/05)。
 // 从 Pipeline 消费 FrameItem(一帧里各视图的 LayerTree)→ 按 LayerTree::view_id 找到视图 →
-// AcquireFrame → RenderBackend::Draw → present。
+// AcquireFrame → graphics::RenderBackend::Draw → present。
 // 含平台视图的帧(且 surface 支持)改走合成路径: Composition::Build 分片 → AcquireCompositionFrame →
-// RenderBackend::DrawComposition → CompositionFrame::present(docs/05 §9)。
-// 后端在 Setup 时按 surface 的种类与设备选取(render_backend.h);GPU 后端创建失败时调用
+// graphics::RenderBackend::DrawComposition → CompositionFrame::present(docs/05 §9)。
+// 后端在 Setup 时按 surface 的种类与设备选取(graphics/render_backend.h);GPU 后端创建失败时调用
 // surface->FallBackToSoftware() 并改用软件后端(docs/05 §4 逐级回退)。
 // 多视图: 每个视图一份状态(surface、最近一帧、合成状态), 视图之间互不影响;后端按设备共享——surface 报告
 // 同一 GPU 设备与队列(gpu_context())的视图共用一个后端, 即整个应用一份 GrDirectContext(一份着色器/字形/
@@ -26,7 +26,7 @@
 #include "engine/platform/render_surface.h"
 #include "engine/platform/view.h"
 #include "engine/shell/animator.h"
-#include "engine/shell/render_backend.h"
+#include "engine/graphics/render_backend.h"
 
 namespace momo::engine {
 
@@ -63,14 +63,14 @@ class Rasterizer final : public Object {
 
   platform::RenderSurface* surface(platform::ViewId view_id) const;
   // 视图当前使用的后端(未绑定 surface 或后端创建失败时为空)。
-  const RenderBackend* backend(platform::ViewId view_id) const;
+  const graphics::RenderBackend* backend(platform::ViewId view_id) const;
   const graphics::LayerTree* last_layer_tree(platform::ViewId view_id) const;
   const Stats& stats() const { return stats_; }
 
  private:
   struct ViewState {
     platform::RenderSurface* surface = nullptr;
-    std::shared_ptr<RenderBackend> backend;  // 与 surface 同时有效;与同设备的其他视图共用
+    std::shared_ptr<graphics::RenderBackend> backend;  // 与 surface 同时有效;与同设备的其他视图共用
     std::unique_ptr<graphics::LayerTree> last_layer_tree;
     bool logged_acquire_failure = false;
     bool logged_no_platform_views = false;
@@ -90,7 +90,7 @@ class Rasterizer final : public Object {
   const ViewState* Find(platform::ViewId view_id) const;
   // 给视图选定后端: 已有同设备的后端则共用, 否则新建;GPU 后端建不出来时让 surface 回退软件。
   void SelectBackend(ViewState& view);
-  StatusOr<std::shared_ptr<RenderBackend>> AcquireBackend(platform::RenderSurface& surface);
+  StatusOr<std::shared_ptr<graphics::RenderBackend>> AcquireBackend(platform::RenderSurface& surface);
   // 画进视图的 surface;本次 Setup 后第一次呈现成功时报告 on_first_frame_。
   void DrawAndReport(platform::ViewId view_id, ViewState& view, graphics::LayerTree& layer_tree);
   void DrawToSurface(ViewState& view, graphics::LayerTree& layer_tree);
@@ -100,7 +100,7 @@ class Rasterizer final : public Object {
   std::map<platform::ViewId, ViewState> views_;
   // 在用的后端(视图持有强引用;没有视图使用的条目在下次选取时清掉)。后端自己持有设备的引用, 所以键里的
   // 指针在条目有效期间不会被别的设备复用。
-  std::map<BackendKey, std::weak_ptr<RenderBackend>> backends_;
+  std::map<BackendKey, std::weak_ptr<graphics::RenderBackend>> backends_;
   Stats stats_;
   std::function<void(platform::ViewId)> on_first_frame_;
 

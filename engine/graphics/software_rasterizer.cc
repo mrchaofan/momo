@@ -34,14 +34,18 @@ Status RasterizeLayerTree(LayerTree& tree, const PixelBuffer& target, uint32_t c
   if (canvas == nullptr) {
     return InternalError("RasterizeLayerTree: cannot wrap pixel buffer");
   }
+  PaintLayerTree(tree, canvas.get(), clear_color);
+  return Status::Ok();
+}
+
+void PaintLayerTree(LayerTree& tree, SkCanvas* canvas, uint32_t clear_color) {
   canvas->clear(static_cast<SkColor>(clear_color));
   if (tree.root() != nullptr) {
     PrerollContext preroll;
     tree.root()->Preroll(preroll);
-    PaintContext paint{canvas.get()};
+    PaintContext paint{canvas};
     tree.root()->Paint(paint);
   }
-  return Status::Ok();
 }
 
 uint32_t OwnedPixelBuffer::GetColor(int x, int y) const {

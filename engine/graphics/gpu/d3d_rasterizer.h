@@ -21,21 +21,23 @@
 #include "base/status.h"
 #include "engine/graphics/composition.h"
 #include "engine/graphics/layer_tree.h"
+#include "engine/graphics/render_backend.h"
 
 namespace momo::engine::graphics {
 
-class D3DRasterizer {
+class D3DRasterizer final : public RenderBackend {
  public:
   // device: ID3D12Device*;queue: ID3D12CommandQueue*(DIRECT, 须属于该 device)。内部各自 AddRef。
   static StatusOr<std::unique_ptr<D3DRasterizer>> Create(void* device, void* queue);
-  ~D3DRasterizer();
+  ~D3DRasterizer() override;
 
-  // 把整棵树画进 resource(ID3D12Resource*, BGRA8/RGBA8 后台缓冲, 状态 PRESENT)并等待完成(不 present)。
-  // clear_color: 0xAARRGGBB(默认全透明, 与软件后端一致)。
-  Status Draw(LayerTree& tree, void* resource, Size size, uint32_t clear_color = 0x00000000);
-  // 平台视图合成的一片(docs/05 §9): resource 像素 (0,0) 对应设备坐标 origin。
-  Status DrawSlice(const Composition& composition, size_t slice, void* resource, Point origin,
-                   uint32_t clear_color = 0x00000000);
+  // RenderBackend。frame.gpu_target 是 ID3D12Resource*(BGRA8/RGBA8 后台缓冲, 状态 PRESENT): 画完即已转回
+  // PRESENT 状态并等待 GPU 完成, surface 的 present 可以直接 Present。
+  platform::SurfaceKind kind() const override { return platform::SurfaceKind::kDirect3D; }
+  Status Draw(LayerTree& tree, const platform::SurfaceFrame& frame) override;
+  // 平台视图合成的一片(docs/05 §9): 后台缓冲像素 (0,0) 对应设备坐标 origin。
+  Status DrawSlice(const Composition& composition, size_t slice, const platform::SurfaceFrame& frame,
+                   Point origin) override;
 
  private:
   struct Impl;
