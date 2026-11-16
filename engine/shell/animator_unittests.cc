@@ -24,7 +24,7 @@ class RecordingDelegate final : public Animator::Delegate {
       }
     }
   }
-  void OnAnimatorDraw(std::shared_ptr<LayerTreePipeline> pipeline) override { draws++; }
+  void OnAnimatorDraw() override { draws++; }
 
   Animator* animator = nullptr;
   bool render_on_begin = true;
@@ -38,7 +38,8 @@ class AnimatorTest : public ::testing::Test {
   AnimatorTest() : ui_(std::make_shared<ManualTaskRunner>()) {
     auto waiter = std::make_unique<FakeVsyncWaiter>(ui_, &await_count_);
     waiter_ = waiter.get();
-    animator_ = std::make_unique<Animator>(delegate_, ui_, std::move(waiter));
+    animator_ = std::make_unique<Animator>(delegate_, ui_, std::move(waiter),
+                                           LayerTreePipeline::Create(Animator::kPipelineDepth));
     delegate_.animator = animator_.get();
   }
 

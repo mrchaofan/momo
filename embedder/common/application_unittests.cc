@@ -264,10 +264,9 @@ TEST_F(ApplicationTest, ClosingTheLastWindowKeepsTheAppRunning) {
   FakeJs js;
   auto app = LaunchWithFakeJs(js);
   Application* raw = app.get();
-  bool close_result = true;
   State after = State::kNotRunning;
   size_t windows_after = 1;
-  PostToPlatform(*app, [&] { close_result = state_->window->delegate()->OnCloseRequested(); });
+  PostToPlatform(*app, [&] { state_->window->delegate()->OnCloseRequested(); });
   raw->task_runners().platform->PostDelayedTask(
       [&, raw] {
         after = raw->state();
@@ -276,7 +275,6 @@ TEST_F(ApplicationTest, ClosingTheLastWindowKeepsTheAppRunning) {
       },
       std::chrono::milliseconds(100));
   EXPECT_EQ(app->Run(), 0);
-  EXPECT_FALSE(close_result) << "native close must be intercepted";
   EXPECT_EQ(after, State::kRunning);
   EXPECT_EQ(windows_after, 0u);
   EXPECT_TRUE(Contains(js.questions, "momo/window:closeRequested"));
@@ -593,7 +591,7 @@ TEST_F(ApplicationTest, JsCreatedWindowsOpenCloseAndShutDown) {
                  MockWindow* second = state_->windows[1];
                  title = second->spec().title;
                  // 用户点第二个窗口的关闭按钮(JS 未拦截): 只关闭它。
-                 EXPECT_FALSE(second->delegate()->OnCloseRequested()) << "always intercepted";
+                 second->delegate()->OnCloseRequested();
                });
              });
   // 关闭需要往返 ui 线程: 稍后检查, 然后再开一个窗口并直接退出应用。

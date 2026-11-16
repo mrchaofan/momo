@@ -95,7 +95,7 @@ class RecordingDelegate final : public WindowDelegate {
   void OnMetricsChanged(const platform::ViewportMetrics&) override {}
   void OnPointerPacket(platform::PointerDataPacket) override {}
   void OnKeyData(const platform::KeyData&) override {}
-  bool OnCloseRequested() override { return true; }
+  void OnCloseRequested() override {}
   void OnFocusChanged(bool) override {}
   void OnWindowStateChanged(const momo::embedder::WindowStateFlags& s) override { states.push_back(s); }
   std::vector<momo::embedder::WindowStateFlags> states;
@@ -119,7 +119,7 @@ class PointerRecordingDelegate final : public WindowDelegate {
     }
   }
   void OnKeyData(const platform::KeyData&) override {}
-  bool OnCloseRequested() override { return true; }
+  void OnCloseRequested() override {}
   void OnFocusChanged(bool) override {}
   void OnWindowStateChanged(const momo::embedder::WindowStateFlags& s) override { states.push_back(s); }
   std::vector<momo::embedder::WindowStateFlags> states;

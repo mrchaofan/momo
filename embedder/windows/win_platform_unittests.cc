@@ -108,7 +108,7 @@ class RecordingDelegate final : public WindowDelegate {
   void OnMetricsChanged(const platform::ViewportMetrics&) override {}
   void OnPointerPacket(platform::PointerDataPacket) override {}
   void OnKeyData(const platform::KeyData&) override {}
-  bool OnCloseRequested() override { return false; }
+  void OnCloseRequested() override {}
   void OnFocusChanged(bool) override {}
   void OnWindowStateChanged(const WindowStateFlags&) override {}
   void OnTextInput(const momo::embedder::TextInputEvent& event) override { events.push_back(event); }

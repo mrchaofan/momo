@@ -27,6 +27,7 @@
 #include "base/status.h"
 #include "base/task_runner.h"
 #include "embedder/common/host_channel.h"
+#include "embedder/common/platform_app.h"
 #include "engine/common/message_channel_hub.h"
 
 namespace momo::embedder {
@@ -38,11 +39,10 @@ class AppChannel final {
    public:
     virtual void Quit() = 0;
     virtual void Exit(int exit_code) = 0;
-    virtual Status HideApp() = 0;
-    virtual Status ShowApp() = 0;
-    virtual Status FocusApp(bool steal) = 0;
-    // {state, active, capabilities}
-    virtual engine::EncodableValue GetAppState() = 0;
+    // JS 可见的生命周期状态名(launching / running / suspended / terminating)。
+    virtual std::string_view app_state_name() const = 0;
+    // 应用是否是前台应用。
+    virtual bool app_active() const = 0;
 
    protected:
     ~Host() = default;
@@ -50,8 +50,9 @@ class AppChannel final {
 
   static constexpr const char kName[] = "momo/app";
 
+  // 生命周期与退出交给 host;应用级的平台能力(隐藏、显示、激活)直接调用 platform_app。两者都必须比本对象活得久。
   AppChannel(std::shared_ptr<engine::MessageChannelHub> hub, std::shared_ptr<TaskRunner> platform_runner,
-             Host* host);
+             Host* host, PlatformApp& platform_app);
 
   // ---- 宿主 → JS ----
   void NotifyState(std::string_view state);

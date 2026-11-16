@@ -15,6 +15,7 @@
 #include <memory>
 #include <vector>
 
+#include "base/closure.h"
 #include "base/macros.h"
 #include "base/object.h"
 #include "base/status.h"
@@ -30,13 +31,12 @@ namespace momo::engine {
 
 class Engine final : public Object, private ui::WindowClient, private Animator::Delegate {
  public:
-  // 有新帧入队(ui 线程调用): Shell 据此投递 raster 线程消费。
-  using DrawCallback = std::function<void(std::shared_ptr<LayerTreePipeline>)>;
 
   // host: 驱动可用的引擎设施(消息通道、io runner、扩展、纹理);其中的指针成员须比 Engine 活得久。
   // 构造时成为纹理新帧与扩展帧回调的帧请求端(都在 ui 线程), 析构时注销。
-  Engine(const Settings& settings, DrawCallback on_draw, std::unique_ptr<VsyncWaiter> waiter,
-         const ui::AppHost& host);
+  // pipeline: 与 raster 共用的帧管道;on_draw: 有新帧入队(ui 线程调用), Shell 据此让 raster 线程消费。
+  Engine(const Settings& settings, std::shared_ptr<LayerTreePipeline> pipeline, Closure on_draw,
+         std::unique_ptr<VsyncWaiter> waiter, const ui::AppHost& host);
   ~Engine() override;
 
   // ---- JS 运行时 ----
@@ -71,11 +71,9 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
 
   // Animator::Delegate
   void OnAnimatorBeginFrame(TimePoint frame_start, TimePoint) override;
-  void OnAnimatorDraw(std::shared_ptr<LayerTreePipeline> pipeline) override {
-    on_draw_(std::move(pipeline));
-  }
+  void OnAnimatorDraw() override { on_draw_(); }
 
-  const DrawCallback on_draw_;
+  Closure on_draw_;
   Settings settings_;
   ui::AppHost host_;
   struct ViewState {

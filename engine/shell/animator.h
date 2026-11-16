@@ -37,8 +37,8 @@ class Animator final : public Object {
    public:
     // 一帧开始: 期间可调用 Animator::Render 提交本帧。
     virtual void OnAnimatorBeginFrame(TimePoint frame_start, TimePoint frame_target) = 0;
-    // 有新帧(FrameItem)入队: 由 Shell 投递 raster 线程消费。
-    virtual void OnAnimatorDraw(std::shared_ptr<LayerTreePipeline> pipeline) = 0;
+    // 有新帧(FrameItem)入队了 Pipeline: 该让 raster 线程消费了。
+    virtual void OnAnimatorDraw() = 0;
 
    protected:
     ~Delegate() = default;
@@ -53,8 +53,9 @@ class Animator final : public Object {
 
   static constexpr size_t kPipelineDepth = 2;  // 排队 1 + 正在绘制 1
 
+  // pipeline: 与消费方(raster)共用的帧管道, 深度 kPipelineDepth。
   Animator(Delegate& delegate, std::shared_ptr<TaskRunner> ui_runner,
-           std::unique_ptr<VsyncWaiter> waiter);
+           std::unique_ptr<VsyncWaiter> waiter, std::shared_ptr<LayerTreePipeline> pipeline);
   ~Animator() override;
 
   // 替换 vsync 来源(视图绑定/解绑时)。正在等待的请求转到新 waiter。

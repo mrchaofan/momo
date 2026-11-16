@@ -6,12 +6,12 @@
 
 namespace momo::engine {
 
-Engine::Engine(const Settings& settings, DrawCallback on_draw, std::unique_ptr<VsyncWaiter> waiter,
-               const ui::AppHost& host)
+Engine::Engine(const Settings& settings, std::shared_ptr<LayerTreePipeline> pipeline, Closure on_draw,
+               std::unique_ptr<VsyncWaiter> waiter, const ui::AppHost& host)
     : on_draw_(std::move(on_draw)),
       settings_(settings),
       host_(host),
-      animator_(*this, task_runner(), std::move(waiter)) {
+      animator_(*this, task_runner(), std::move(waiter), std::move(pipeline)) {
   // 外部纹理有新帧时出一帧: 通知由 TextureRegistry 投递到本线程, 可能在 Engine 析构后才执行, 经 WeakPtr 判活。
   if (host_.textures) {
     host_.textures->SetFrameListener(task_runner(), [weak = WeakPtr<Engine>(this)](int64_t) {

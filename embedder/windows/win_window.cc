@@ -1141,10 +1141,8 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
 
     // ---- 窗口与应用的生命周期 ----
     case WM_CLOSE:
-      // embedder 总是拦截(返回 false), 询问 JS 后再异步销毁窗口;放行时只隐藏, HWND 由析构销毁。
-      if (delegate_->OnCloseRequested()) {
-        ::ShowWindow(hwnd_, SW_HIDE);
-      }
+      // 不交给 DefWindowProc(它会销毁 HWND): embedder 询问 JS 后再异步销毁窗口。
+      delegate_->OnCloseRequested();
       return 0;
     case WM_ACTIVATE:
       active_ = LOWORD(wparam) != WA_INACTIVE;

@@ -133,6 +133,8 @@ class Shell final : public Object {
 
   // platform 线程 → ui 线程, Engine 存在时执行。
   void PostToEngine(MoveOnlyFunction<void(Engine&)> task);
+  // 任意线程 → raster 线程, Rasterizer 存在时执行。
+  void PostToRasterizer(MoveOnlyFunction<void(Rasterizer&)> task);
   Delegate* DelegateOf(platform::ViewId view) const;
   // source 未绑定时为回退定时器。
   std::unique_ptr<VsyncWaiter> MakeVsyncWaiter(WeakPtr<platform::VsyncSource> source) const;
@@ -141,8 +143,6 @@ class Shell final : public Object {
   void RegisterPlatformViewChannel();
   StatusOr<EncodableValue> HandlePlatformViewCall(const MethodCall& call);
 
-  // ui 线程(Engine 的 on_draw): 把新帧投递给 raster。
-  void OnEngineDraw(std::shared_ptr<LayerTreePipeline> pipeline);
 
   const TaskRunners task_runners_;
   const double refresh_rate_;

@@ -47,8 +47,8 @@ class WindowDelegate {
   virtual void OnMetricsChanged(const platform::ViewportMetrics& metrics) = 0;
   virtual void OnPointerPacket(platform::PointerDataPacket packet) = 0;
   virtual void OnKeyData(const platform::KeyData& data) = 0;
-  // 返回 false 拦截关闭(embedder 总是先拦截, 询问 JS 后再异步关闭)。
-  virtual bool OnCloseRequested() = 0;
+  // 用户请求关闭窗口。平台窗口不要自己关闭: embedder 询问 JS 后再异步关闭它。
+  virtual void OnCloseRequested() = 0;
   virtual void OnFocusChanged(bool focused) = 0;
   // 窗口状态变化(显示/隐藏、最小化、最大化、全屏)。不可见(shown() 为 false)的视图不出帧。
   virtual void OnWindowStateChanged(const WindowStateFlags& state) = 0;

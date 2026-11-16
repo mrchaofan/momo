@@ -694,7 +694,7 @@ void Engine::OnAnimatorBeginFrame(start, target) {
 }
 ```
 
-`Animator` 负责"什么时候出帧"与**背压**。它和 Rasterizer 之间是一个深度为 2 的 `Pipeline<unique_ptr<LayerTree>>`（排队 1 + 正在绘制 1）：
+`Animator` 负责"什么时候出帧"与**背压**。它和 Rasterizer 之间是一个深度为 2 的 `Pipeline<unique_ptr<FrameItem>>`（排队 1 + 正在绘制 1；一个 `FrameItem` 是一帧里各视图提交的层树）：
 
 ```cpp
 // 伪代码（engine/shell/animator.cc）
@@ -711,16 +711,21 @@ void Animator::BeginFrame(start, target) {
     stats_.frames_skipped++; AwaitVsync(); return;         // （丢 build，不丢最新画面）
   }
   frame_scheduled_ = false;
-  delegate_.OnAnimatorBeginFrame(start, target);           // 期间 JS 会调用 view.render → Render()
-  continuation_ = {};                                      // 本帧没有提交：归还槽位
+  current_ = make_unique<FrameItem>();                     // 本帧各视图提交的层树
+  delegate_.OnAnimatorBeginFrame(start, target);           // 期间 JS 对各视图调用 view.render → Render()
+  if (current_->layer_trees.empty()) { continuation_ = {}; return; }   // 本帧没有提交：归还槽位
+  continuation_.Complete(move(current_));                  // 一帧整体入队
+  delegate_.OnAnimatorDraw();                              // → Engine 的 on_draw → Shell::PostToRasterizer(Draw)
 }
 
 void Animator::Render(unique_ptr<LayerTree> tree) {
-  if (!continuation_) { stats_.renders_dropped++; return; }   // 帧外调用或一帧内调用两次
-  continuation_.Complete(move(tree));                      // 入队
-  delegate_.OnAnimatorDraw(pipeline_);                     // → Shell::OnEngineDraw → raster PostTask(Draw)
+  if (!continuation_) { stats_.renders_dropped++; return; }   // 帧外调用
+  if (本帧里这个视图已经提交过) { stats_.renders_dropped++; return; }
+  current_->layer_trees.push_back(move(tree));
 }
 ```
+
+帧管道（`Pipeline<unique_ptr<FrameItem>>`，深度 2）由 `Shell` 创建：生产端交给 `Animator`，消费端在投给 raster 的任务里，两边共用这一个对象，不随每帧传递。
 
 `VsyncWaiter` 有两种实现，`Animator` 不关心是哪一种：
 

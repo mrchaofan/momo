@@ -148,10 +148,8 @@ class Application final : public Object,
   void OnAllWindowsClosed() override;
 
   // AppChannel::Host
-  Status HideApp() override;
-  Status ShowApp() override;
-  Status FocusApp(bool steal) override;
-  engine::EncodableValue GetAppState() override;
+  std::string_view app_state_name() const override { return StateName(state_); }
+  bool app_active() const override { return active_; }
 
   // MenuChannel::Host
   PlatformWindow* FindWindow(engine::platform::ViewId view) override;
