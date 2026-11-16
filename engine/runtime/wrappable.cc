@@ -22,10 +22,6 @@ void Wrappable::Wrap(v8::Isolate* isolate, v8::Local<v8::Object> object) {
   runtime_->TrackWrappable(this);
 }
 
-v8::Local<v8::Object> Wrappable::GetWrapper(v8::Isolate* isolate) const {
-  return wrapper_.Get(isolate);
-}
-
 Wrappable* Wrappable::UnwrapAny(v8::Local<v8::Value> value) {
   if (value.IsEmpty() || !value->IsObject()) {
     return nullptr;

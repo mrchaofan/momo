@@ -140,11 +140,6 @@ std::optional<Rect> Composition::slice_bounds(size_t slice) const {
   return slice < impl_->slices.size() ? impl_->slices[slice].bounds : std::nullopt;
 }
 
-const std::vector<Rect>& Composition::slice_leaf_rects(size_t slice) const {
-  static const std::vector<Rect> kEmpty;
-  return slice < impl_->slices.size() ? impl_->slices[slice].leaf_rects : kEmpty;
-}
-
 std::optional<Rect> Composition::VisibleFrame(size_t view_index) const {
   if (view_index >= views_.size()) {
     return std::nullopt;

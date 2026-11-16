@@ -67,7 +67,7 @@ void WinTextInput::SetCaretRect(Rect physical_rect) {
   UpdateImePosition();
 }
 
-void WinTextInput::SetEditingState(const TextEditingState& state) { state_ = state; }
+void WinTextInput::SetEditingState(const TextEditingState&) {}
 
 void WinTextInput::Emit(const TextInputEvent& event) {
   if (active_ && delegate_ != nullptr) {

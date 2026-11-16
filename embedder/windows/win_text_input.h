@@ -19,7 +19,7 @@
 //     Ctrl+字母等产生的 WM_CHAR)忽略。
 //   - 编辑键(退格/Delete/方向键/Home/End/回车/Tab/全选等)只以 KeyData 送达框架, 本对象**不**为它们发
 //     kCommand(embedder/common/text_input.h 契约: 否则框架执行两次)。Windows 端目前没有发 kCommand 的来源。
-//   - SetEditingState: 记录(供日后的重新转换 IMR_RECONVERTSTRING 使用;当前未实现)。
+//   - SetEditingState: 不使用(IMM32 的组合串由系统维护, 本对象不需要框架的编辑状态)。
 // 线程约定: 只在 platform 线程使用。生命周期: 由 WinWindow 拥有, HWND 比本对象活得久。
 
 #include <string>
@@ -42,9 +42,6 @@ class WinTextInput final : public TextInputConnection {
   void SetCaretRect(Rect physical_rect) override;
   void SetEditingState(const TextEditingState& state) override;
 
-  bool active() const { return active_; }
-  bool composing() const { return composing_; }
-
   // WndProc 转发的 WM_IME_* 消息。返回 true 表示已处理(*result 为 WndProc 返回值),
   // false 表示交给 DefWindowProc。
   bool HandleImeMessage(UINT message, WPARAM wparam, LPARAM lparam, LRESULT* result);
@@ -65,7 +62,6 @@ class WinTextInput final : public TextInputConnection {
   bool caret_created_ = false;
   wchar_t pending_high_surrogate_ = 0;
   Rect caret_rect_;            // 物理像素, 相对客户区左上角
-  TextEditingState state_;
 };
 
 }  // namespace momo::embedder::windows

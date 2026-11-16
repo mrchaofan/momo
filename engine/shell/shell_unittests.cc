@@ -85,7 +85,7 @@ class ShellTest : public ::testing::Test {
 
   // 宿主的启动窗口: Run 之前绑定为视图 0(示例 bundle 在顶层就使用 viewports.get(0))。
   std::function<void(Shell&)> AttachStartupView() {
-    return [this](Shell& shell) { shell.AttachView(&startup_delegate_, &startup_surface_); };
+    return [this](Shell& shell) { shell.AttachView(platform::kImplicitViewId, &startup_delegate_, &startup_surface_); };
   }
 
   std::shared_ptr<EventLoop> platform_loop_;
@@ -116,20 +116,20 @@ TEST_F(ShellTest, MetricsChangeProducesFrameWithTimerVsync) {
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
-  (*shell)->AttachView(&delegate, &surface);  // 无平台 vsync: 定时器回退
+  (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);  // 无平台 vsync: 定时器回退
 
-  (*shell)->OnMetricsChanged(Metrics(800, 600));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(800, 600));
   EXPECT_TRUE(WaitFor([&] { return surface.presented.load() >= 1; }));
   EXPECT_EQ(surface.last_width.load(), 800);
 
   // 相同 metrics 不再出帧;新尺寸再出一帧。
-  (*shell)->OnMetricsChanged(Metrics(800, 600));
-  (*shell)->OnMetricsChanged(Metrics(1024, 600));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(800, 600));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(1024, 600));
   EXPECT_TRUE(WaitFor([&] { return surface.last_width.load() == 1024; }));
 
-  (*shell)->DetachView();
+  (*shell)->DetachView(platform::kImplicitViewId);
   const int presented = surface.presented.load();
-  (*shell)->OnMetricsChanged(Metrics(640, 480));  // 解绑后不再触碰 surface
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(640, 480));  // 解绑后不再触碰 surface
   (*shell)->Shutdown();
   EXPECT_EQ(surface.presented.load(), presented);
 }
@@ -147,9 +147,9 @@ TEST_F(ShellTest, PlatformVsyncSourceDrivesFramesAndIsDeletedLaterOnReplace) {
   });
   FakeVsyncSource* raw_source = source.get();
   (*shell)->SetVsyncSource(std::move(source));
-  (*shell)->AttachView(&delegate, &surface);
+  (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);
 
-  (*shell)->OnMetricsChanged(Metrics(320, 240));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(320, 240));
   // vsync 请求经 platform 线程转发: 需要驱动 platform 循环。
   EXPECT_TRUE(PumpUntil([&] { return surface.presented.load() >= 1; }));
   EXPECT_GE(raw_source->requests.load(), 1);
@@ -182,8 +182,8 @@ TEST_F(ShellTest, ClearingVsyncSourceFallsBackToTimer) {
   (*shell)->SetVsyncSource(nullptr);
   Pump();  // source 析构
   // 没有平台 vsync: 帧由定时器驱动, 不依赖已析构的 source。
-  (*shell)->AttachView(&delegate, &surface);
-  (*shell)->OnMetricsChanged(Metrics(64, 64));
+  (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(64, 64));
   EXPECT_TRUE(PumpUntil([&] { return surface.presented.load() >= 1; }));
   (*shell)->Shutdown();
 }
@@ -195,10 +195,10 @@ TEST_F(ShellTest, SuspendedAppStopsFramesUntilResumed) {
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
-  (*shell)->AttachView(&delegate, &surface);
+  (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);
 
   (*shell)->SetAppSuspended(true);
-  (*shell)->OnMetricsChanged(Metrics(500, 500));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(500, 500));
   EXPECT_FALSE(WaitFor([&] { return surface.acquired.load() > 0; },
                        std::chrono::milliseconds(60)));
 
@@ -243,10 +243,10 @@ TEST_F(ShellTest, FirstPresentedFrameIsReportedOncePerAttach) {
   ASSERT_TRUE(shell.ok());
   FakeSurface surface;
   RecordingShellDelegate delegate;
-  (*shell)->AttachView(&delegate, &surface);
-  (*shell)->OnMetricsChanged(Metrics(64, 64));
+  (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(64, 64));
   EXPECT_TRUE(PumpUntil([&] { return delegate.first_frames == 1; }));
-  (*shell)->OnMetricsChanged(Metrics(128, 64));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(128, 64));
   EXPECT_TRUE(PumpUntil([&] { return surface.presented.load() >= 2; }));
   Pump();
   EXPECT_EQ(delegate.first_frames, 1);
@@ -325,7 +325,7 @@ TEST_F(ShellTest, HelloFrameExampleRendersPixels) {
   auto shell = Launch(settings, AttachStartupView());
   ASSERT_TRUE(shell.ok()) << shell.status();
   FakeSurface& surface = startup_surface_;
-  (*shell)->OnMetricsChanged(Metrics(800, 600));  // dpr 2: 逻辑 400x300
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(800, 600));  // dpr 2: 逻辑 400x300
 
   ASSERT_TRUE(PumpUntil([&] { return surface.presented.load() >= 3; })) << "example keeps animating";
 
@@ -490,8 +490,8 @@ TEST_F(ShellTest, SecondViewGetsItsOwnFramesAndIsRemovedOnDetach) {
   host.shell = shell->get();
   FakeSurface main_surface;
   RecordingShellDelegate main_delegate;
-  (*shell)->AttachView(&main_delegate, &main_surface);
-  (*shell)->OnMetricsChanged(Metrics(800, 600));
+  (*shell)->AttachView(platform::kImplicitViewId, &main_delegate, &main_surface);
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(800, 600));
   EXPECT_TRUE(WaitFor([&] { return main_surface.presented.load() >= 1; }));
 
   // 宿主创建并以 id 1 绑定第二个视图(JS 经宿主的 momo/window create 走的就是这条路径)。
@@ -506,7 +506,7 @@ TEST_F(ShellTest, SecondViewGetsItsOwnFramesAndIsRemovedOnDetach) {
   host.CloseView(1);
   EXPECT_EQ((*shell)->attached_views(), (std::vector<platform::ViewId>{0}));
   const int main_before = main_surface.presented.load();
-  (*shell)->OnMetricsChanged(Metrics(1024, 600));
+  (*shell)->OnMetricsChanged(platform::kImplicitViewId, Metrics(1024, 600));
   EXPECT_TRUE(WaitFor([&] { return main_surface.presented.load() > main_before; }));
   (*shell)->Shutdown();
 }

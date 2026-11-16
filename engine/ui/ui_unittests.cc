@@ -248,7 +248,7 @@ TEST_F(UiBindingsTest, MetricsReachTheView) {
       << "window management is not part of momo:ui";
 
   client_.current = {{800, 600}, 2.0};
-  bindings_->MetricsChanged();
+  bindings_->MetricsChanged(platform::kImplicitViewId);
   EXPECT_EQ(Eval("metricsCalls"), "1");
   EXPECT_EQ(Eval("view.physicalSize.width + '@' + view.devicePixelRatio"), "800@2");
 }
@@ -289,7 +289,7 @@ TEST_F(UiBindingsTest, PointerPacketsCarrySequenceIdsAndGestures) {
   packet[0].gesture_kind = platform::PointerGestureKind::kPressure;
   packet[0].gesture_value = 0.5;
   packet[0].gesture_stage = 2;
-  bindings_->PointerPacket(packet);
+  bindings_->PointerPacket(platform::kImplicitViewId, packet);
   EXPECT_EQ(Eval("log.join(' ')"), "17:9007199254740991:2:6:0.5:2");
 }
 
@@ -317,18 +317,18 @@ TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
   packet[1].phase = platform::PointerPhase::kUp;
   packet[1].physical_x = 11;
   packet[1].physical_y = 21;
-  bindings_->PointerPacket(packet);
+  bindings_->PointerPacket(platform::kImplicitViewId, packet);
 
   platform::KeyData key;
   key.physical_key = 0x00070004;
   key.character = "a";
   key.modifiers = platform::kModifierShift;
-  EXPECT_TRUE(bindings_->KeyData(key));
+  EXPECT_TRUE(bindings_->KeyData(platform::kImplicitViewId, key));
   key.character = "b";
-  EXPECT_FALSE(bindings_->KeyData(key));
+  EXPECT_FALSE(bindings_->KeyData(platform::kImplicitViewId, key));
 
   client_.is_focused = true;
-  bindings_->FocusChanged(true);
+  bindings_->FocusChanged(platform::kImplicitViewId, true);
   EXPECT_EQ(Eval("log.join(' ')"),
             "p1@10,20b1 p3@11,21b0 k:down:70004:a:1 k:down:70004:b:1 f:true:true");
 }

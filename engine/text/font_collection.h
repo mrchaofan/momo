@@ -23,8 +23,6 @@ class FontCollection {
 
   // 注册内嵌字体(TTF/OTF/TTC 字节)。family 为空时取字体自身的族名。返回注册的族名。
   StatusOr<std::string> RegisterFont(const uint8_t* data, size_t size, const std::string& family);
-  // 系统中可用的字体族数量(诊断用)。
-  int system_family_count() const;
 
   Impl& impl() { return *impl_; }
 

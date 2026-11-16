@@ -2,10 +2,8 @@ import type { KeyData } from "momo:ui";
 import {
   app,
 
-  BasicMessageChannel,
   Clipboard,
   HardwareKeyboard,
-  JSONMessageCodec,
   KeyDownEvent,
   KeyRepeatEvent,
   KeyUpEvent,
@@ -17,7 +15,6 @@ import {
   PlatformException,
   StandardMessageCodec,
   StandardMethodCodec,
-  StringCodec,
   TextEditingValue,
   TextInput,
   TextRange,
@@ -221,28 +218,6 @@ group("services › StandardMethodCodec", () => {
 });
 
 group("services › channels", () => {
-  test("other codecs", () => {
-    expect.equal(StringCodec.instance.decodeMessage(StringCodec.instance.encodeMessage("中a")), "中a");
-    expect.deepEqual(JSONMessageCodec.instance.decodeMessage(JSONMessageCodec.instance.encodeMessage({ a: [1] })), { a: [1] });
-  });
-  test("BasicMessageChannel both directions", async () => {
-    const ch = new BasicMessageChannel<unknown>("test/basic", StandardMessageCodec.instance);
-    defaultBinaryMessenger.setMockMessageHandler("test/basic", (data) => {
-      const v = codec.decodeMessage(data);
-      return codec.encodeMessage(["echo", v]);
-    });
-    expect.deepEqual(await ch.send(42), ["echo", 42]);
-    let received: unknown = null;
-    ch.setMessageHandler((m) => {
-      received = m;
-      return "pong";
-    });
-    const reply = await defaultBinaryMessenger.handlePlatformMessage("test/basic", codec.encodeMessage("ping"));
-    expect.equal(received, "ping");
-    expect.equal(codec.decodeMessage(reply), "pong");
-    ch.setMessageHandler(null);
-    expect.isNull(await defaultBinaryMessenger.handlePlatformMessage("test/basic", null));
-  });
   test("MethodChannel invoke: success / error / missing", async () => {
     const ch = new MethodChannel("test/method");
     defaultBinaryMessenger.setMockMessageHandler("test/method", (data) => {

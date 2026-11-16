@@ -55,14 +55,4 @@ bool OptNumber(const Args& args, int index, double fallback, double* out) {
   return ArgNumber(args, index, out);
 }
 
-bool ArgFunction(const Args& args, int index, v8::Local<v8::Function>* out) {
-  if (index >= args.Length() || !args[index]->IsFunction()) {
-    ThrowTypeError(args.GetIsolate(),
-                   "argument " + std::to_string(index + 1) + " must be a function");
-    return false;
-  }
-  *out = args[index].As<v8::Function>();
-  return true;
-}
-
 }  // namespace momo::engine::runtime

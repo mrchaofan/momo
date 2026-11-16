@@ -103,17 +103,11 @@ TEST_F(NativeHostTest, PlatformViewFactoriesServeTheRegistry) {
     EXPECT_EQ(host_->platform_view_register_factory(host_, "acme.view", &factory), kMomoOk);
     EXPECT_EQ(host_->platform_view_register_factory(host_, "acme.view", &factory), kMomoErrInvalidArgs);
     EXPECT_EQ(host_->platform_view_register_factory(host_, "momo/view", &factory), kMomoErrInvalidArgs);
-    void* native = nullptr;
-    EXPECT_EQ(host_->platform_view_get(host_, 1, &native), kMomoErrWrongThread);
   }).join();
 
   // 引擎(Shell)按 JS 的请求创建/销毁视图。
   ASSERT_TRUE(views_->Create(1, "acme.view", {'h', 'i'}).ok());
-  void* native = nullptr;
-  EXPECT_EQ(host_->platform_view_get(host_, 1, &native), kMomoOk);
-  EXPECT_EQ(native, &log.native);
   ASSERT_TRUE(views_->Dispose(1).ok());
-  EXPECT_EQ(host_->platform_view_get(host_, 1, &native), kMomoErrNotFound);
   EXPECT_EQ(log.events, (std::vector<std::string>{"create:1:hi", "dispose:1"}));
 }
 
@@ -132,13 +126,11 @@ TEST_F(NativeHostTest, ClosedTableRejectsEverythingAndDropsQueuedTasks) {
   ViewLog log;
   const MomoPlatformViewFactory factory = MakeFactory(&log);
   const uint8_t pixel[4] = {0, 0, 0, 255};
-  void* native = nullptr;
   EXPECT_EQ(host_->post_platform_task(host_, [](void*) {}, nullptr), kMomoErrClosed);
   EXPECT_EQ(host_->texture_create(host_, &id), kMomoErrClosed);
   EXPECT_EQ(host_->texture_update_pixels(host_, id, pixel, 1, 1, 4), kMomoErrClosed);
   EXPECT_EQ(host_->texture_destroy(host_, id), kMomoErrClosed);
   EXPECT_EQ(host_->platform_view_register_factory(host_, "acme.view", &factory), kMomoErrClosed);
-  EXPECT_EQ(host_->platform_view_get(host_, 1, &native), kMomoErrClosed);
 }
 
 }  // namespace

@@ -109,8 +109,6 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   void SetHoveredPlatformView(int64_t view, const PointerInput& input) override;
   void MoveTo(Point top_left) override;
 
-  HWND hwnd() const { return hwnd_; }
-
   // 按当前的应用菜单更新本窗口的菜单栏(WinMenus 在应用菜单变化时调用)。隐藏了标题栏的窗口没有菜单栏。
   // 菜单栏的有无改变客户区的高度(照常经 WM_SIZE 上报)。
   void UpdateMenuBar();

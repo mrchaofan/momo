@@ -60,7 +60,6 @@
     <rect x="755" y="48" width="225" height="250" rx="10" fill="#f1eef8" stroke="#7a61b8" stroke-width="1.5"/>
     <text x="769" y="72" class="h">io（momo.io）</text>
     <text x="769" y="90" class="p">EventLoop + DefaultMessagePump</text>
-    <text x="769" y="104" class="p">另有 WorkerPool</text>
     <line x1="765" y1="114" x2="970" y2="114" stroke="#7a61b8" stroke-opacity=".4"/>
     <text x="769" y="134" class="i">图片解码（Codec）</text>
     <text x="769" y="154" class="i">资源读取</text>

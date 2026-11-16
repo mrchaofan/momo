@@ -428,7 +428,3 @@ export abstract class ContainerRenderBox<PD extends ContainerBoxParentData = Con
   }
 }
 
-/** 渲染对象是否支持单子节点接口。 */
-export function isSingleChildRenderObject(o: RenderObject): o is RenderObject & { child: RenderObject | null } {
-  return o instanceof RenderBoxWithChild || "child" in o;
-}

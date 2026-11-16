@@ -209,9 +209,9 @@ int Run(const Options& options) {
     if (options.manual_frames) {
       (*shell)->SetVsyncSource(MakeObject<ManualVsyncSource>());
     }
-    (*shell)->AttachView(&delegate, &surface);
-    (*shell)->OnMetricsChanged({{options.width * options.dpr, options.height * options.dpr}, options.dpr});
-    (*shell)->OnFocusChanged(true);
+    (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);
+    (*shell)->OnMetricsChanged(platform::kImplicitViewId, {{options.width * options.dpr, options.height * options.dpr}, options.dpr});
+    (*shell)->OnFocusChanged(platform::kImplicitViewId, true);
     // 通道处理器与视图都已就位: 启动 JS 运行时(ui 线程执行 bundle)。加载/执行失败即结束(退出码 2)。
     (*shell)->Run([&](Status status) {
       if (!status.ok()) {
@@ -238,7 +238,7 @@ int Run(const Options& options) {
                    static_cast<std::streamsize>(png->size()));
       }
     }
-    (*shell)->DetachView();
+    (*shell)->DetachView(platform::kImplicitViewId);
     (*shell)->Shutdown();
     shell->reset();
     threads.Join();

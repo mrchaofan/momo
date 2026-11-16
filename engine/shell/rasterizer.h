@@ -51,10 +51,6 @@ class Rasterizer final : public Object {
   // 视图被移除: 解绑并丢弃其最近一帧。
   void RemoveView(platform::ViewId view_id);
 
-  // 主窗口(视图 0)的兼容入口。
-  void Setup(platform::RenderSurface* surface) { Setup(platform::kImplicitViewId, surface); }
-  void Teardown() { Teardown(platform::kImplicitViewId); }
-
   // 视图(每次 Setup 之后)的第一帧呈现成功时回调(raster 线程)。
   void SetFirstFrameCallback(std::function<void(platform::ViewId)> callback) {
     on_first_frame_ = std::move(callback);
@@ -63,13 +59,12 @@ class Rasterizer final : public Object {
   // 消费 Pipeline 中全部已入队的帧(深度有限, 通常 1 个)。
   void Draw(LayerTreePipeline& pipeline);
   // 重绘视图最近一帧(resize 后 / 首帧预热, docs/05 §5)。没有时返回 false。
-  bool DrawLastLayerTree(platform::ViewId view_id = platform::kImplicitViewId);
+  bool DrawLastLayerTree(platform::ViewId view_id);
 
-  platform::RenderSurface* surface(platform::ViewId view_id = platform::kImplicitViewId) const;
+  platform::RenderSurface* surface(platform::ViewId view_id) const;
   // 视图当前使用的后端(未绑定 surface 或后端创建失败时为空)。
-  const RenderBackend* backend(platform::ViewId view_id = platform::kImplicitViewId) const;
-  const graphics::LayerTree* last_layer_tree(
-      platform::ViewId view_id = platform::kImplicitViewId) const;
+  const RenderBackend* backend(platform::ViewId view_id) const;
+  const graphics::LayerTree* last_layer_tree(platform::ViewId view_id) const;
   const Stats& stats() const { return stats_; }
 
  private:

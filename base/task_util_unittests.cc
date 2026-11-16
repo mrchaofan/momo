@@ -61,22 +61,6 @@ TEST(TaskUtilTest, ReplyWithResultRunsOnReplyThread) {
   EXPECT_TRUE(reply_on_main);
 }
 
-TEST(TaskUtilTest, PostTaskAndReplyOrdersTaskBeforeReply) {
-  Thread worker("test.worker");
-  auto loop = EventLoop::Create();
-  loop->BindToCurrentThread();
-  std::atomic<bool> task_ran{false};
-  bool seen_in_reply = false;
-  PostTaskAndReply(
-      *worker.GetTaskRunner(), [&] { task_ran = true; }, loop->GetTaskRunner(),
-      [&] {
-        seen_in_reply = task_ran.load();
-        loop->Terminate();
-      });
-  loop->Run();
-  EXPECT_TRUE(seen_in_reply);
-}
-
 class Counter final : public Object {
  public:
   int value = 0;

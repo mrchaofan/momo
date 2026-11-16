@@ -226,7 +226,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 | 测试 | 命令 | 覆盖 | 什么时候跑 |
 |---|---|---|---|
-| base 单测 | `ctest -R 'EventLoop\|Object\|Pipeline\|TaskUtil\|WorkerPool'` | 事件循环、延迟析构、背压 | 改 `base/` |
+| base 单测 | `ctest -R 'EventLoop\|Object\|Pipeline\|TaskUtil'` | 事件循环、延迟析构、背压 | 改 `base/` |
 | engine 单测 | `ctest -R 'Shell\|Animator\|Rasterizer\|Hub\|UiBindings\|Golden\|AppLayout'` | Shell 时序、背压、绑定、golden、应用定位 | 改 `engine/` |
 | embedder 单测 | `ctest -R 'Application\|AppConfig\|Mac'` | 启动/关闭顺序（mock 平台）、macOS 实现 | 改 `embedder/` |
 | 扩展 | `ctest -R 'Extension'` | 宿主能力表单测、端到端（真实引擎加载真实的 `.node`）、关闭顺序、SDK 产物独立构建 | 改扩展宿主或 SDK |

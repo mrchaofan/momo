@@ -3,11 +3,10 @@
 // 跨线程任务的常用组合(docs/12 §3)。都建立在 TaskRunner::PostTask 之上, 任意线程可调用。
 //
 //   PostTaskAndWait(runner, task)        在 runner 线程执行 task 并阻塞等待(仅限启动/关闭汇合点)。
-//   PostTaskAndReply(runner, task, reply_runner, reply)
-//                                        task 在 runner 线程执行, 完成后 reply 在 reply_runner 线程执行。
-//   PostTaskAndReplyWithResult(...)      同上, task 的返回值传给 reply。
+//   PostTaskAndReplyWithResult(runner, task, reply_runner, reply)
+//                                        task 在 runner 线程执行, 返回值交给 reply_runner 线程上的 reply。
 //
-// 目标线程已终止时任务被丢弃: PostTaskAndWait 返回 false 而不会死锁;Reply 系列不会回复。
+// 目标线程已终止时任务被丢弃: PostTaskAndWait 返回 false 而不会死锁;PostTaskAndReplyWithResult 不会回复。
 
 #include <memory>
 #include <type_traits>
@@ -30,17 +29,6 @@ void PostTaskAndReplyWithResult(TaskRunner& runner, Task task,
     reply_runner->PostTask([reply = std::move(reply), result = std::move(result)]() mutable {
       reply(std::move(result));
     });
-  });
-}
-
-template <typename Task, typename Reply>
-void PostTaskAndReply(TaskRunner& runner, Task task, std::shared_ptr<TaskRunner> reply_runner,
-                      Reply reply) {
-  static_assert(std::is_void_v<decltype(task())>, "use PostTaskAndReplyWithResult");
-  runner.PostTask([task = std::move(task), reply_runner = std::move(reply_runner),
-                   reply = std::move(reply)]() mutable {
-    task();
-    reply_runner->PostTask(std::move(reply));
   });
 }
 

@@ -1,7 +1,7 @@
 export * from "./message_codecs";
 export * from "./standard_codec";
 export * from "./binary_messenger";
-export { BasicMessageChannel, MethodChannel } from "./platform_channel";
+export { MethodChannel } from "./platform_channel";
 export * from "./clipboard";
 export * from "./url";
 export * from "./app";

@@ -34,7 +34,6 @@ class Wrappable {
 
   // 绑定到 JS 对象(须由带 internal field 的模板创建);之后由 JS 对象拥有本对象。
   void Wrap(v8::Isolate* isolate, v8::Local<v8::Object> object);
-  v8::Local<v8::Object> GetWrapper(v8::Isolate* isolate) const;
 
   // 类型安全的解包;value 不是 T 的包装对象时返回 nullptr。
   template <typename T>

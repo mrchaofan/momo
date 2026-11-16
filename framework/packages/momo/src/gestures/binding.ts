@@ -117,7 +117,7 @@ export class GestureBinding {
       position: active.position, screenPosition: active.screenPosition,
     });
     if (this.#dispatching > 0) this.#pendingCancels.push([cancel, old]);
-    else this.#cancelPrevious(cancel, old);
+    else this.dispatchEvent(cancel, old);
     return capture;
   }
 
@@ -127,11 +127,6 @@ export class GestureBinding {
     if (entry?.capture !== capture) return;
     capture._end();
     this.#captures.set(capture.pointer, { capture, route: () => {} });  // 到抬起为止丢弃
-  }
-
-  /** 原接收方失去被捕获的指针: 命中路径与路由收到取消, 竞技场清场。 */
-  #cancelPrevious(cancel: PointerCancelEvent, old: HitTestResult | null): void {
-    this.dispatchEvent(cancel, old);
   }
 
   /** 属于显式捕获的事件: 交给捕获者并返回 true。 */
@@ -166,7 +161,7 @@ export class GestureBinding {
       if (this.#dispatching === 0) {
         const pending = this.#pendingCancels;
         this.#pendingCancels = [];
-        for (const [cancel, old] of pending) this.#cancelPrevious(cancel, old);
+        for (const [cancel, old] of pending) this.dispatchEvent(cancel, old);
       }
     }
   }

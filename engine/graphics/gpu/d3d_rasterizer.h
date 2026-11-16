@@ -36,8 +36,6 @@ class D3DRasterizer {
   // 平台视图合成的一片(docs/05 §9): resource 像素 (0,0) 对应设备坐标 origin。
   Status DrawSlice(const Composition& composition, size_t slice, void* resource, Point origin,
                    uint32_t clear_color = 0x00000000);
-  // 阻塞等待已提交的 GPU 工作完成(关闭前、测试回读使用)。
-  void WaitForGpu();
 
  private:
   struct Impl;

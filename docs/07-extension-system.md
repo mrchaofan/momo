@@ -132,7 +132,6 @@ Momo.app/Contents/Resources/        # Windows: Momo.exe 同级(目前没有 webv
 | `texture_update_pixels(host, id, rgba, w, h, row_bytes)` | 任意 | 推一帧 RGBA8(非预乘): 宿主拷贝, 并请求引擎出一帧 |
 | `texture_destroy(host, id)` | 任意 | 销毁 |
 | `platform_view_register_factory(host, type, factory)` | 任意 | 注册视图类型(`"acme.webview"`;`momo/` 前缀保留)。`create` / `dispose` 回调在 platform 线程 |
-| `platform_view_get(host, view_id, &native)` | platform | 按 id 取已创建视图的原生指针(每次查, 不缓存) |
 
 - 纯 C、无异常;全部返回 `MomoStatus`。表带 `struct_size` 与 `api_version`, **只在末尾追加**, 已有字段不改不删。
 - 指针在进程存续期间一直有效, 可以保存、可以在任意线程使用;引擎关闭后各函数返回 `kMomoErrClosed`。

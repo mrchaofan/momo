@@ -197,7 +197,6 @@ GCD 主队列由主 CFRunLoop 在 common modes 下服务，所以窗口拖拽缩
 | `Pipeline<T>` | `base/pipeline.h` | 固定深度生产/消费管道，实现帧背压（§4.3） |
 | `PostTaskAndWait` / `PostTaskAndReplyWithResult` | `base/task_util.h` | 启动/关闭汇合点；"在 A 线程做事、回 B 线程汇报" |
 | `WaitableEvent` | `base/waitable_event.h` | 关闭与拆除时的同步汇合（`PostTaskAndWait` 的实现；启动路径不等待） |
-| `WorkerPool` | `base/worker_pool.h` | CPU 密集的一次性任务 |
 | `Status` / `StatusOr<T>` | `base/status.h` | 全项目禁用异常，可失败操作返回 `StatusOr` |
 
 设计文档：[docs/12-base.md](docs/12-base.md)、[docs/08-threading-model.md](docs/08-threading-model.md)。
@@ -716,7 +715,6 @@ void Animator::BeginFrame(start, target) {
 
 void Animator::Render(unique_ptr<LayerTree> tree) {
   if (!continuation_) { stats_.renders_dropped++; return; }   // 帧外调用或一帧内调用两次
-  tree->timings = { vsync_start, frame_target, build_start, build_end = now };
   continuation_.Complete(move(tree));                      // 入队
   delegate_.OnAnimatorDraw(pipeline_);                     // → Shell::OnEngineDraw → raster PostTask(Draw)
 }
@@ -890,7 +888,7 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 | `momo/url` | JS → native（platform 线程） | 宿主 | 用系统浏览器打开 URL |
 | `momo/textinput` | 双向 | 宿主 | IME 编辑状态、commit/composing、光标矩形 |
 
-框架在其上封装了 `BasicMessageChannel` / `MethodChannel`（`framework/.../services/platform_channel.ts`）。
+框架在其上封装了 `MethodChannel`（`framework/.../services/platform_channel.ts`）。
 
 ### 4.9 原生扩展
 
@@ -906,7 +904,7 @@ JS: import { … } from "@acme/ext-x"                  （三方：Node 从应�
   → 需要宿主能力的门面：import { nativeHost } from "momo:services"（BigInt：表的地址），原样传给插件
        插件：momo_host_from_napi(env, value) → const MomoHost*                    [以上全部在 ui（JS）线程]
   … 运行期：post_platform_task、texture_create / texture_update_pixels / texture_destroy、
-            platform_view_register_factory / platform_view_get
+            platform_view_register_factory
   → Shell::Shutdown：关闭宿主表（此后各函数返回 kMomoErrClosed，未执行的平台任务丢弃）
        → dispose 全部平台视图、清空工厂 → 销毁 JS 运行时（插件登记的清理函数在这一步执行）→ raster
 ```

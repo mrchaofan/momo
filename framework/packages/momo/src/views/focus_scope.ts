@@ -139,7 +139,7 @@ export class FocusState extends State<Focus> {
       SchedulerBinding.instance.addPostFrameCallback(() => {
         if (!this.mounted) return;
         const node = this.focusNode;
-        const scope = node instanceof FocusScopeNode ? node.enclosingScope : node.enclosingScope;
+        const scope = node.enclosingScope;
         if (scope !== null) scope.autofocus(node);
         else node.requestFocus();
       });

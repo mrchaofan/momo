@@ -145,10 +145,4 @@ void MetalRasterizer::WaitUntilScheduled() {
   }
 }
 
-void MetalRasterizer::WaitForGpu() {
-  @autoreleasepool {
-    impl_->context->flushAndSubmit(GrSyncCpu::kYes);
-  }
-}
-
 }  // namespace momo::engine::graphics
