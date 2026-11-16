@@ -7,12 +7,12 @@
 // 创建参数(PlatformView.creationParams, JSON):
 //   {"url"?, "html"?, "baseUrl"?, "session"?: <会话键>, "userAgent"?, "devtools"?: bool,
 //    "initScripts"?: [string],
-//    "protocols"?: [{"scheme", "assets"?: <资源目录>, "index"?, "fallback"?}]}
-//   protocols: 该 WebView 可用的自定义资源协议。带 assets 的由原生直接从打包资源读取;不带的转给 JS。
+//    "protocols"?: [{"scheme"}]}
+//   protocols: 该 WebView 可用的自定义资源协议;请求都转给 JS 的处理函数。
 //   会话键: "default" | "persistent:<name>" | "ephemeral:<id>"。
 //
 // 插件导出(JS 门面 js/index.ts 是唯一的调用方):
-//   attach(nativeHost, {assetsDir, onEvent, onProtocolRequest})   只调用一次
+//   attach(nativeHost, {onEvent, onProtocolRequest})   只调用一次
 //   command(json) → Promise<json>          回复 {"result": <any>} 或 {"error": <string>}
 //   respondToProtocolRequest(frame)        JS 协议处理函数的应答
 //
@@ -43,7 +43,6 @@
 
 #import <Cocoa/Cocoa.h>
 #import <CommonCrypto/CommonDigest.h>
-#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <WebKit/WebKit.h>
 
 #include <map>
@@ -142,33 +141,6 @@ NSData* RequestBody(NSURLRequest* request) {
   }
   [stream close];
   return data;
-}
-
-NSString* MimeTypeForPath(NSString* path) {
-  static NSDictionary<NSString*, NSString*>* const known = @{
-    @"html" : @"text/html",
-    @"htm" : @"text/html",
-    @"js" : @"text/javascript",
-    @"mjs" : @"text/javascript",
-    @"css" : @"text/css",
-    @"json" : @"application/json",
-    @"map" : @"application/json",
-    @"svg" : @"image/svg+xml",
-    @"wasm" : @"application/wasm",
-    @"txt" : @"text/plain",
-    @"xml" : @"application/xml",
-  };
-  NSString* extension = path.pathExtension.lowercaseString;
-  NSString* mime = known[extension];
-  if (mime == nil && extension.length > 0) {
-    mime = [UTType typeWithFilenameExtension:extension].preferredMIMEType;
-  }
-  return mime ?: @"application/octet-stream";
-}
-
-bool IsTextMime(NSString* mime) {
-  return [mime hasPrefix:@"text/"] || [mime isEqualToString:@"application/json"] ||
-         [mime isEqualToString:@"application/xml"] || [mime isEqualToString:@"image/svg+xml"];
 }
 
 // 会话名 → 稳定的数据存储标识(同名总是同一份数据)。
@@ -282,10 +254,10 @@ void LoadUrl(WKWebView* web, NSURL* url) {
 
 class WebViewExtension;
 
-// 一个 WebView 上的一个自定义协议。assets 非空时由原生从打包资源应答, 否则转给 JS。
+// 一个 WebView 上的一个自定义协议: 请求转给 JS 的处理函数。
 __attribute__((visibility("hidden")))
 @interface MomoSchemeHandler : NSObject <WKURLSchemeHandler>
-- (instancetype)initWithOwner:(WebViewExtension*)owner viewId:(int64_t)viewId spec:(NSDictionary*)spec;
+- (instancetype)initWithOwner:(WebViewExtension*)owner viewId:(int64_t)viewId;
 - (void)detach;
 @end
 
@@ -327,23 +299,19 @@ class WebViewExtension {
  public:
   // ---- JS 线程: 插件导出的函数 ----
 
-  // attach(nativeHost, {assetsDir, onEvent, onProtocolRequest})
+  // attach(nativeHost, {onEvent, onProtocolRequest})
   napi_value Attach(napi_env env, size_t argc, napi_value* argv) {
     const MomoHost* host = argc < 2 ? nullptr : momo_host_from_napi(env, argv[0]);
-    napi_value assets_dir, on_event, on_protocol_request, name;
-    NSString* assets = nil;
+    napi_value on_event, on_protocol_request, name;
     if (host == nullptr || host_ != nullptr ||
-        napi_get_named_property(env, argv[1], "assetsDir", &assets_dir) != napi_ok ||
-        (assets = StringFrom(env, assets_dir)) == nil ||
         napi_get_named_property(env, argv[1], "onEvent", &on_event) != napi_ok ||
         napi_create_reference(env, on_event, 1, &on_event_) != napi_ok ||
         napi_get_named_property(env, argv[1], "onProtocolRequest", &on_protocol_request) != napi_ok ||
         napi_create_reference(env, on_protocol_request, 1, &on_protocol_request_) != napi_ok) {
       napi_throw_type_error(env, nullptr,
-                            "attach(nativeHost, {assetsDir, onEvent, onProtocolRequest}) may be called once");
+                            "attach(nativeHost, {onEvent, onProtocolRequest}) may be called once");
       return nullptr;
     }
-    assets_dir_ = assets;
     napi_create_string_utf8(env, kViewType, NAPI_AUTO_LENGTH, &name);
     napi_create_threadsafe_function(env, nullptr, nullptr, name, 0, 1, nullptr, nullptr, this, &DeliverToJs,
                                     &to_js_);
@@ -517,33 +485,6 @@ class WebViewExtension {
     }
   }
 
-  // 用打包资源应答(路径相对应用的 assets 目录;path 为 nil 或不存在时改用 fallback, 都没有则 404)。
-  // 文件在后台线程读取, 不占用 platform 线程。
-  void ServeAsset(id<WKURLSchemeTask> task, NSString* path, NSString* fallback) {
-    NSString* root = assets_dir_;
-    NSNumber* request_id = TrackTask(task);
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-      NSString* served = path;
-      NSData* data = path != nil ? ReadAsset(root, path) : nil;
-      if (data == nil && fallback != nil) {
-        served = fallback;
-        data = ReadAsset(root, fallback);
-      }
-      dispatch_async(dispatch_get_main_queue(), ^{
-        id<WKURLSchemeTask> live = TakeTask(request_id);
-        if (live == nil) return;  // 已被 WebKit 停止
-        if (data == nil) {
-          Respond(live, 404, @{@"Content-Type" : @"text/plain; charset=utf-8"},
-                  [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding]);
-          return;
-        }
-        NSString* mime = MimeTypeForPath(served);
-        if (IsTextMime(mime)) mime = [mime stringByAppendingString:@"; charset=utf-8"];
-        Respond(live, 200, @{@"Content-Type" : mime}, data);
-      });
-    });
-  }
-
   // 把请求转给 JS 的协议处理函数;应答经 respondToProtocolRequest 回来(HandleProtocolResponse)。
   void ForwardTask(int64_t view_id, id<WKURLSchemeTask> task) {
     NSNumber* request_id = TrackTask(task);
@@ -557,14 +498,6 @@ class WebViewExtension {
     },
                                 RequestBody(request));
     PostToJs(JsMessage::kProtocolRequest, 0, frame);
-  }
-
-  // 任意线程。path 相对应用的资源目录;越出该目录返回 nil。
-  static NSData* ReadAsset(NSString* root, NSString* path) {
-    NSString* base = root.stringByStandardizingPath;
-    NSString* file = [base stringByAppendingPathComponent:path].stringByStandardizingPath;
-    if (![file hasPrefix:[base stringByAppendingString:@"/"]]) return nil;
-    return [NSData dataWithContentsOfFile:file options:NSDataReadingMappedIfSafe error:nil];
   }
 
   static void Respond(id<WKURLSchemeTask> task, NSInteger status, NSDictionary* headers, NSData* body) {
@@ -833,7 +766,6 @@ class WebViewExtension {
  private:
   // attach 时确定, 之后只读。
   const MomoHost* host_ = nullptr;
-  NSString* assets_dir_ = nil;
   // 仅 JS 线程。
   napi_ref on_event_ = nullptr;
   napi_ref on_protocol_request_ = nullptr;
@@ -857,18 +789,12 @@ class WebViewExtension {
 @implementation MomoSchemeHandler {
   WebViewExtension* _owner;
   int64_t _viewId;
-  NSString* _assets;    // 资源目录(相对应用 assets);nil 表示由 JS 处理
-  NSString* _index;     // 目录请求对应的文件
-  NSString* _fallback;  // 找不到资源时改用的文件(单页应用的前端路由), 可空
 }
 
-- (instancetype)initWithOwner:(WebViewExtension*)owner viewId:(int64_t)viewId spec:(NSDictionary*)spec {
+- (instancetype)initWithOwner:(WebViewExtension*)owner viewId:(int64_t)viewId {
   if ((self = [super init])) {
     _owner = owner;
     _viewId = viewId;
-    _assets = StringField(spec, @"assets");
-    _index = StringField(spec, @"index") ?: @"index.html";
-    _fallback = StringField(spec, @"fallback");
   }
   return self;
 }
@@ -882,35 +808,11 @@ class WebViewExtension {
     WebViewExtension::FailTask(task, NSURLErrorCancelled);
     return;
   }
-  if (_assets == nil) {
-    _owner->ForwardTask(_viewId, task);
-    return;
-  }
-  NSString* file = [self assetFileForURL:task.request.URL];
-  _owner->ServeAsset(task, file != nil ? [self assetPath:file] : nil,
-                     _fallback != nil ? [self assetPath:_fallback] : nil);
+  _owner->ForwardTask(_viewId, task);
 }
 
 - (void)webView:(WKWebView*)webView stopURLSchemeTask:(id<WKURLSchemeTask>)task {
   if (_owner != nullptr) _owner->ForgetTask(task);
-}
-
-// URL 路径 → 资源目录内的相对文件;越出目录(..)返回 nil。
-- (NSString*)assetFileForURL:(NSURL*)url {
-  NSString* path = url.path ?: @"";
-  const BOOL directory = path.length == 0 || [url.absoluteString hasSuffix:@"/"] || url.hasDirectoryPath;
-  NSMutableArray<NSString*>* parts = [NSMutableArray array];
-  for (NSString* part in [path componentsSeparatedByString:@"/"]) {
-    if (part.length == 0 || [part isEqualToString:@"."]) continue;
-    if ([part isEqualToString:@".."]) return nil;
-    [parts addObject:part];
-  }
-  if (directory || parts.count == 0) [parts addObject:_index];
-  return [parts componentsJoinedByString:@"/"];
-}
-
-- (NSString*)assetPath:(NSString*)file {
-  return _assets.length > 0 ? [_assets stringByAppendingPathComponent:file] : file;
 }
 
 @end
@@ -950,7 +852,7 @@ static void* kStateContext = &kStateContext;
                                                          @"built in or already registered", scheme]);
         continue;
       }
-      MomoSchemeHandler* handler = [[MomoSchemeHandler alloc] initWithOwner:owner viewId:viewId spec:spec];
+      MomoSchemeHandler* handler = [[MomoSchemeHandler alloc] initWithOwner:owner viewId:viewId];
       [config setURLSchemeHandler:handler forURLScheme:scheme];
       [_schemeHandlers addObject:handler];
     }

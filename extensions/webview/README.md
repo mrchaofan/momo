@@ -18,7 +18,7 @@
 ```ts
 import { WebView, registerProtocol } from "momo:webview";
 
-// 1) 映射到打包资源目录(assets/web/): 原生直接读文件应答, 不经过 JS。
+// 1) 映射到打包资源目录(assets/web/): 一个读文件的处理函数的简写。
 registerProtocol("app", { assets: "web", fallback: "index.html" });
 
 // 2) JS 处理函数: 动态内容、本地 API。可以异步。
@@ -40,7 +40,7 @@ new WebView({ initialUrl: "app://localhost/" });
 - 源由 协议 + host 决定: `app://localhost` 请求 `api://host` 是跨源, 响应要带 CORS 头。
 - 资源映射: 目录地址取 `index`(默认 `index.html`);找不到文件返回 404, 或改用 `fallback`(单页应用的前端路由);
   路径不能越出资源目录。
-- 资源文件在后台线程读取, 不阻塞界面。
+- 资源文件由 Node 异步读取(`node:fs`), 不阻塞界面。
 - 自定义协议的页面没有 cookie(`document.cookie` 无效);用 `localStorage` 或由 JS 处理函数管理状态。
 - 目前整个响应一次给出, 不支持 Range 请求(大的音视频不适合走这里)。
 
