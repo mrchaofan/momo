@@ -7,7 +7,7 @@ Momo 是一个面向 macOS 与 Windows 的**自绘**（self-rendered）桌面应
 ```
 应用代码（TS）  ──  runApp(new MaterialApp({ home: ... }))
 Framework（TS） ──  View / Element / RenderObject、布局、手势、动画、Material 控件；app / Widget（应用与窗口）
-Engine（C++）   ──  V8 · momo:ui 绑定 · DisplayList / LayerTree · Skia（Metal / 软件）· 文本 · 扩展宿主
+Engine（C++）   ──  V8 · momo:ui 绑定 · DisplayList / LayerTree · Skia（Metal / 软件）· 文本 · 扩展宿主能力表
 Embedder（C++） ──  进程入口 · 消息循环 · 窗口 · 渲染表面 · VSync · 输入 / IME
 ```
 
@@ -152,7 +152,7 @@ runApp(new MaterialApp({ title: "MyApp", home: new CounterPage() }));
 
 ### 开发循环：构建 bundle + 运行
 
-把 TS 打成单文件 ESM bundle（只保留 `momo:*` / `ext:*` 外部导入，引擎会以内置模块提供），再用 `--dev` 启动运行时：
+把 TS 打成单文件 ESM bundle（只保留 `momo:*` 外部导入，引擎会以内置模块提供；代码里 import 的原生扩展 `.node` 拷到 bundle 旁的 `native/`），再用 `--dev` 启动运行时：
 
 ```bash
 node framework/packages/cli/momo.mjs bundle my-app
@@ -239,7 +239,7 @@ window.scheduleFrame();
 | 窗口 | `await Widget.create({ title, width, height, show, ... })` 打开窗口（`Widget.fromId(0)` 是启动窗口），内容用 `ViewAnchor({ views: [new RootView({ widget, child })] })` 渲染；`Title` / `MaterialApp({ title })` 设置所在窗口的标题；窗口方法 `close` / `destroy` / `show` / `hide` / `minimize` / `maximize` / `restore` / `focus` / `setPosition`，事件 `closed` / `focus` / `minimize` / `move` / `resize` / `ready-to-show`… |
 | 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`，两侧留白用 `windowControlsPadding`（macOS 在左、Windows 在右，一份代码适配）；`WindowDragArea` 声明可拖动窗口的区域 |
 | 窗口能力 | `widget.capabilities`、`widget.bounds`、`widget.state`（平台不支持的能力是空操作，可先查询） |
-| 与原生通信 | `new MethodChannel("acme/foo").invokeMethod("bar", args)`；对端由原生扩展注册（见下文） |
+| 调用原生代码 | 原生扩展是 Node.js 原生插件，以普通 npm 包的形式使用：`import { add } from "@acme/ext-foo"`（见下文） |
 
 完整用法可参考 `examples/counter`（按钮、主题、快捷键）、`examples/todo`（输入框、列表、勾选、删除、滚动），以及 `framework/test/` 下的测试用例。
 
@@ -259,7 +259,7 @@ window.scheduleFrame();
 
 命令行工具是 npm 包 `@momo/cli`（源码在 `framework/packages/cli`，命令名 `momo`），随每个版本发布（`momo-cli-v<version>.tgz`）。它不依赖源码树：装进自己的工程后即可使用，仓库内则直接用 `node framework/packages/cli/momo.mjs` 运行。
 
-`momo build` 把应用打包成可分发的 `.app`（可选 DMG）。它会：用 esbuild 打 bundle → 收集依赖中声明的原生扩展、生成 `extensions.manifest` 并拷贝动态库 → 复制运行时 `Momo.app` 为 `<Name>.app`，并把 bundle、`assets/`、扩展放进 `Contents/Resources/`。
+`momo build` 把应用打包成可分发的 `.app`（可选 DMG）。它会：用 esbuild 打 bundle → 把代码里按路径 import 的原生扩展（`.node`）拷到 `native/` → 复制运行时 `Momo.app` 为 `<Name>.app`，并把 bundle、`native/`、`assets/` 放进 `Contents/Resources/`。
 
 运行时不随 CLI 分发，用 `--runtime=` 或环境变量 `MOMO_RUNTIME` 指定：可以是发布产物 `momo-v<version>-<platform>.zip` 解压出的 `Momo.app`，也可以是自己构建的。
 
@@ -276,7 +276,6 @@ node framework/packages/cli/momo.mjs build my-app --out=out/apps --runtime=out/d
 | `--out=<dir>` | 输出目录 |
 | `--name=<App>` | 应用名（默认取 `package.json` 的 `momo.name`，其次是 `name`） |
 | `--runtime=<Momo.app>` | 使用的运行时（必填，或设环境变量 `MOMO_RUNTIME`；发布时请用 Release 构建的运行时） |
-| `--native-dir=<dir>` | 扩展包里声明的预编译原生库还不存在时，到这个目录里按文件名找（扩展的本地构建目录，如 `out/debug/extensions`）。不给则只用包里已有的 |
 | `--minify` | 压缩 bundle |
 | `--dmg` | 额外用 `hdiutil` 产出 `<Name>.dmg` |
 
@@ -289,7 +288,7 @@ MyApp.app/Contents/
 └── Resources/
     ├── bundle.js                # 你的应用
     ├── assets/                  # 来自 my-app/assets
-    └── extensions/              # extensions.manifest + 原生扩展动态库
+    └── native/                  # 原生扩展（*.node）；没有用到扩展时不存在
 ```
 
 非 `--dev` 模式下，引擎会把 JS 编译结果缓存在 `~/Library/Caches/<bundle identifier>/v8`（每个应用一个目录；默认的 Momo.app 是 `dev.momo.app`），加快之后的启动。
@@ -298,11 +297,11 @@ MyApp.app/Contents/
 
 ## 原生扩展
 
-框架内置的 API 不够用时（数据库、托盘、音视频、硬件、现有 C/C++ SDK……），可以写**原生扩展**：一个 JS 包 + 一个动态库。动态库只依赖扩展 SDK 的头文件：契约是稳定的纯 C ABI [momo_extension.h](extensions/sdk/include/momo/momo_extension.h)，扩展与宿主可以用不同的编译器构建；C++ 扩展可以用其上的便利封装 [momo_extension.hpp](extensions/sdk/include/momo/momo_extension.hpp)。
+框架内置的 API 不够用时（数据库、托盘、音视频、硬件、现有 C/C++ SDK……），可以写**原生扩展**。Momo 的 JS 运行在 Node.js 环境里，所以原生扩展就是 **Node.js 原生插件**（`.node`，Node-API）：一个普通的 npm 包 = JS 门面 + 一个 `.node` 文件，npm 上现成的原生包也用同一条路加载。JS 与原生之间只用 Node-API；需要引擎能力（平台线程、外部纹理、平台视图）的扩展另外使用一张很小的宿主能力表 [momo_host.h](extensions/sdk/include/momo/momo_host.h)（稳定的纯 C ABI，只在末尾追加）。
 
 ### 扩展 SDK（构建产物）
 
-构建 Momo 时，SDK 会原样放到 `out/<build>/sdk/`，也可以安装到任意目录：
+SDK 是编译一个能被 Momo 加载的插件所需的全部。构建 Momo 时，SDK 会放到 `out/<build>/sdk/`，也可以安装到任意目录；发布产物是 `momo-ext-sdk-v<version>-<platform>.zip`：
 
 ```bash
 cmake --install out/debug --prefix ~/momo-sdk --component sdk
@@ -310,17 +309,17 @@ cmake --install out/debug --prefix ~/momo-sdk --component sdk
 
 ```
 sdk/
-├── include/momo/momo_extension.h     # 稳定 C ABI（唯一契约）
-├── include/momo/momo_extension.hpp   # C++17 封装（header-only）
-├── lib/cmake/MomoExtSdk/             # find_package(MomoExtSdk) 的包配置
-└── types/ext.d.ts                    # ext:* 模块的 TS 类型模板
+├── include/momo/momo_host.h          # 宿主能力表（稳定 C ABI）
+├── include/node/                     # Momo 运行时所带 Node 的头文件（node_api.h 等；不含 openssl）
+├── Release/node.lib                  # 仅 Windows：libnode.dll 的导入库
+└── lib/cmake/MomoExtSdk/             # find_package(MomoExtSdk) 的包配置
 ```
 
-扩展工程的 CMake 只需要两行，`momo_add_extension()` 会设置隐藏可见性，保证只导出 `momo_ext_init`：
+扩展工程的 CMake 只需要两行（`CMakeLists.txt` 放在 `<包>/native/`），`momo_add_extension()` 产出 `<包>/build/<name>.node`：
 
 ```cmake
 find_package(MomoExtSdk 1 REQUIRED)        # -DMomoExtSdk_DIR=<sdk>/lib/cmake/MomoExtSdk
-momo_add_extension(ext_acme src/ext_acme.cc)
+momo_add_extension(ext_acme src/ext_acme.cc)   # → <包>/build/ext_acme.node
 ```
 
 ### 使用扩展
@@ -338,88 +337,64 @@ import { add, greet, hash } from "@momo-examples/ext-hello";
 console.log(add(1, 2), greet("Momo"), await hash(new Uint8Array([1, 2, 3])));
 ```
 
-`momo build` 会扫描依赖中 `package.json` 的 `momo.extension` 声明，自动把原生库打进应用，并打印每个扩展申请的能力（capabilities）。扩展本身的示例见 `extensions/examples/`。
+没有 manifest，也没有 `package.json` 里的专有声明：`momo bundle` / `momo build` 把代码里按路径 import 的 `.node` 拷到产物的 `native/` 并改写导入；`.node` 不存在（扩展还没编译）时打包报错。扩展本身的示例见 `extensions/examples/`。
 
 ### 编写扩展
 
 ```bash
-node framework/packages/cli/momo.mjs ext create my-ext --id=acme.myext
+node framework/packages/cli/momo.mjs ext create my-ext --name=myext
 ```
 
-生成的骨架包含 C 模板、TS 门面和 CMake 文件。用 C++ 写时，继承 `momo::ext::Extension`，用 `MOMO_EXTENSION` 宏导出入口：
-
-```cpp
-#include "momo/momo_extension.hpp"
-
-class MyExt final : public momo::ext::Extension {
- public:
-  void OnAttach(momo::ext::Host& host) override {                 // platform 线程
-    host.RegisterModule("ext:myext", [](momo::ext::ModuleBuilder& m) {
-      m.Function("add", [](momo::ext::Call& call) {               // ui 线程调用，禁止阻塞
-        auto a = call.Number(0), b = call.Number(1);
-        if (!a || !b) return call.Throw("add(a, b) expects two numbers");
-        call.Return(*a + *b);
-      });
-    });
-    host.SetChannelHandler("myext/echo", kMomoRunnerWorkerPool,   // 在 worker pool 上处理
-                           [&host](momo::ext::Bytes bytes, uint64_t reply) {
-                             host.Reply(reply, bytes.data, bytes.size);
-                           });
-  }
-  void OnDetach() override {}                                     // 停止自己的线程与定时任务
-};
-
-MOMO_EXTENSION(MyExt, "acme.myext")
-```
-
-扩展内部可以使用异常，但异常不得穿过 C ABI 边界（注册给宿主的 lambda 里必须捕获）。完整的 C++ 示例见 `extensions/examples/texture-extension`。
-
-用纯 C 写时，直接使用 C ABI：导出 `momo_ext_init`，在 `on_attach` 里注册 JS 模块与消息通道：
+生成的骨架是一个 Node 插件（C）、TS 门面和 CMake 文件。原生侧是标准的 Node-API 模块：
 
 ```c
-#include "momo/momo_extension.h"
+#include <node_api.h>
 
-static const MomoHostApi* g_host;
-
-static void Add(void* user_data, MomoCallInfoRef call) {          // ui 线程调用，禁止阻塞
+static napi_value Add(napi_env env, napi_callback_info info) {     // JS（ui）线程调用，禁止阻塞
+  size_t argc = 2;
+  napi_value argv[2], result;
   double a, b;
-  g_host->call->arg_double(call, 0, &a);
-  g_host->call->arg_double(call, 1, &b);
-  g_host->call->return_double(call, a + b);
+  napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+  if (argc < 2 || napi_get_value_double(env, argv[0], &a) != napi_ok ||
+      napi_get_value_double(env, argv[1], &b) != napi_ok) {
+    napi_throw_type_error(env, NULL, "add(a, b) expects two numbers");
+    return NULL;
+  }
+  napi_create_double(env, a + b, &result);
+  return result;
 }
 
-static void SetupModule(void* user_data, MomoJsBuilderRef b) {
-  g_host->builder_add_function(b, "add", Add, NULL);
-}
-
-static void OnAttach(void* user_data, const MomoHostApi* host, MomoEngineRef engine) {   // platform 线程
-  g_host = host;
-  host->register_module(engine, "ext:myext", SetupModule, NULL);   // JS: import { native } from "ext:myext"
-}
-
-static void OnDetach(void* user_data) { g_host = NULL; }            // 引擎关闭前释放一切宿主资源
-
-MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out) {
-  if (host_api_version < MOMO_EXT_API_VERSION) return false;
-  out->id = "acme.myext";
-  out->on_attach = OnAttach;
-  out->on_detach = OnDetach;
-  return true;
+NAPI_MODULE_INIT() {
+  napi_value fn;
+  napi_create_function(env, "add", NAPI_AUTO_LENGTH, Add, NULL, &fn);
+  napi_set_named_property(env, exports, "add", fn);
+  return exports;
 }
 ```
 
-宿主 API 还提供：Promise（在 worker 线程完成后 `promise_resolve_*`）、消息通道（`channel_set_handler` 可指定 platform / ui / io / worker pool 线程）、任务投递、窗口句柄（按视图 id 取得 `NSView*`，用于托盘、子窗口等系统集成）、帧回调、纹理注入（扩展自己生成像素，在界面中用 `Texture` widget 显示）。
+JS 门面 import 这个 `.node`（默认导出是插件的 exports），给它的函数加上类型：
 
-**回调线程规则**：宿主只在你注册回调的那个线程上调用它，或者在注册时用 `MomoTaskRunner` 显式指定的线程上调用；不会在宿主内部线程上调用扩展代码。因此帧回调（`add_frame_callback`）只能在 ui 线程注册；acquire/release 方式的纹理必须在注册线程上调用 `texture_mark_frame_available`，否则返回 `kMomoErrWrongThread`。
+```ts
+import addon from "../build/myext.node";
+const native = addon as { add(a: number, b: number): number };
+export const add = (a: number, b: number): number => native.add(a, b);
+```
 
-两个示例：
+Promise、后台线程（`napi_async_work`）、从别的线程回到 JS（`napi_threadsafe_function`）都用 Node-API。插件内部可以使用异常，但异常不得穿过 Node-API 与宿主表的回调边界。
+
+需要引擎能力时，JS 门面把 `momo:services` 的 `nativeHost`（一个 BigInt）传给插件，插件用 `momo_host_from_napi(env, value)` 取出宿主能力表。表里只有三样：把任务投到 platform（OS 主）线程（`post_platform_task`，原生 UI 只能在那里用）、外部纹理（扩展自己生成像素，在界面中用 `Texture` 视图显示）、平台视图（把系统原生视图嵌进界面，如 WebView）。
+
+**回调线程规则**：宿主只在 platform 线程调用扩展，而且只有两类回调——平台任务与视图工厂。引擎关闭时先关闭宿主表、销毁全部平台视图，再销毁 JS 运行时；扩展用 `napi_add_env_cleanup_hook` 登记的清理函数在最后这一步执行，在那里停掉自己的线程。
+
+示例：
 
 | 示例 | 演示 |
 |---|---|
-| `extensions/examples/hello-extension` | 纯 C：同步函数、字符串/字节、worker 线程 + Promise、消息通道 |
-| `extensions/examples/texture-extension` | C++ 封装：纹理注入，帧回调驱动 worker 渲染动画并推帧 |
+| `extensions/examples/hello-extension` | 纯 C，只用 Node-API：同步函数、字符串/字节、线程池上的 Promise |
+| `extensions/examples/texture-extension` | C++：外部纹理，自己的线程按约 60 fps 推帧 |
+| `extensions/examples/webview-extension` | ObjC++（macOS）：WKWebView 平台视图；示例应用 `examples/webview` |
 
-`node framework/packages/cli/momo.mjs ext verify <lib>` 检查动态库只导出 `momo_ext_init`、不链接引擎内部库。设计细节见 [docs/07-extension-system.md](docs/07-extension-system.md)。
+设计细节见 [docs/07-extension-system.md](docs/07-extension-system.md)。
 
 ---
 
@@ -461,10 +436,10 @@ View 示例都是独立 npm 工程，可以用 `momo bundle` 构建后以 `--bun
 | 目录 | 内容 |
 |---|---|
 | `framework/` | TypeScript UI 框架（`@momo/framework`）及其测试 |
-| `engine/` | 核心引擎（C++）：V8 运行时、`momo:*` 绑定、渲染管线、文本、资源、扩展宿主；`engine/platform/` 是宿主需要实现的平台契约 |
+| `engine/` | 核心引擎（C++）：V8 运行时、`momo:*` 绑定、渲染管线、文本、资源、扩展宿主能力表；`engine/platform/` 是宿主需要实现的平台契约 |
 | `embedder/` | 宿主层：进程入口、生命周期、Engine 装配；`common/` 平台无关，`macos/` / `windows/` / `headless/` 为各平台实现 |
 | `base/` | C++ 基础库：Object 模型、EventLoop、TaskRunner、Status |
-| `extensions/` | 扩展 SDK（C ABI 头 + JS 类型）与示例扩展 |
+| `extensions/` | 扩展 SDK（宿主能力表头文件 + CMake 包配置）与示例扩展 |
 | `examples/` | 示例应用 |
 | `tools/` | `fetch_deps.py`（依赖下载）、`package_release.py`（发布产物） |
 | `cmake/`、`third_party/` | CMake 模块与第三方依赖 |

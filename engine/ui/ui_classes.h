@@ -164,8 +164,6 @@ void InstallTextClasses(v8::Isolate* isolate, v8::Local<v8::Context> context,
                         v8::Local<v8::Object> exports);
 void InstallImageClasses(v8::Isolate* isolate, v8::Local<v8::Context> context,
                          v8::Local<v8::Object> exports);
-// 为 host.extensions 中注册的每个 ext:* 模块注册 synthetic module(extension_bindings.cc)。
-void InstallExtensionModules(UiBindings::Impl& impl);
 // momo:services 模块(消息通道)。
 void InstallServicesModule(v8::Isolate* isolate, v8::Local<v8::Context> context,
                            v8::Local<v8::Object> exports);

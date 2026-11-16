@@ -1,6 +1,6 @@
 # 12 · base 基础库
 
-`base/` 是全项目的最底层:platform、engine、embedder(以及将来的扩展宿主)都依赖它,它不依赖任何上层。对标 Chromium `base`、Qt Core 的对象与事件循环部分。命名空间为 `momo`(这些是全项目共用的词汇类型),CMake target `momo_base`(别名 `momo::base`),单测 `momo_base_unittests`。
+`base/` 是全项目的最底层:platform、engine、embedder 都依赖它,它不依赖任何上层。对标 Chromium `base`、Qt Core 的对象与事件循环部分。命名空间为 `momo`(这些是全项目共用的词汇类型),CMake target `momo_base`(别名 `momo::base`),单测 `momo_base_unittests`。
 
 **原则**:engine/embedder/platform 中不出现裸线程原语(`std::thread`、`std::mutex`、`condition_variable`)与自造的弱引用/任务投递;需要时先在 base 中提炼通用设施。
 

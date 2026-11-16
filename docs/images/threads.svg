@@ -28,7 +28,7 @@
     <text x="34" y="194" class="i">MacVsyncDisplayLink</text>
     <text x="34" y="214" class="i">PlatformServices（剪贴板/URL）</text>
     <text x="34" y="234" class="i">MacTextInput（IME）</text>
-    <text x="34" y="254" class="i">扩展 on_attach / on_detach</text>
+    <text x="34" y="254" class="i">扩展的平台任务 / 视图工厂回调</text>
     <text x="34" y="284" class="p">禁止：长任务（会卡住窗口事件）</text>
 
     <rect x="265" y="48" width="225" height="250" rx="10" fill="#e8f1ff" stroke="#4c7bd9" stroke-width="1.5"/>
@@ -60,11 +60,10 @@
     <rect x="755" y="48" width="225" height="250" rx="10" fill="#f1eef8" stroke="#7a61b8" stroke-width="1.5"/>
     <text x="769" y="72" class="h">io（momo.io）</text>
     <text x="769" y="90" class="p">EventLoop + DefaultMessagePump</text>
-    <text x="769" y="104" class="p">另有 WorkerPool（扩展可用）</text>
+    <text x="769" y="104" class="p">另有 WorkerPool</text>
     <line x1="765" y1="114" x2="970" y2="114" stroke="#7a61b8" stroke-opacity=".4"/>
     <text x="769" y="134" class="i">图片解码（Codec）</text>
     <text x="769" y="154" class="i">资源读取</text>
-    <text x="769" y="174" class="i">扩展 channel handler（可选）</text>
     <text x="769" y="284" class="p">禁止：调用 JS</text>
   </g>
 

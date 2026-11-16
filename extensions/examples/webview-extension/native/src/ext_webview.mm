@@ -1,5 +1,6 @@
 // ext_webview: 系统 WebView(macOS WKWebView)作为平台视图嵌入 momo(docs/05 §9、docs/07 §3)。
-// 只用 C ABI(经 momo_extension.hpp), 不链接引擎任何符号。接口设计与 WebView2 映射见本扩展的 README。
+// 一个 Node 插件: 与 JS 之间用 Node-API, 与引擎之间用宿主能力表(momo_host.h)——注册平台视图类型、
+// 把任务投到 platform 线程。不链接引擎任何符号。接口设计与 WebView2 映射见本扩展的 README。
 //
 // 视图类型 "momo.webview"。
 //
@@ -10,7 +11,12 @@
 //   protocols: 该 WebView 可用的自定义资源协议。带 assets 的由原生直接从打包资源读取;不带的转给 JS。
 //   会话键: "default" | "persistent:<name>" | "ephemeral:<id>"。
 //
-// 命令通道 "momo.webview"(JS → 原生, JSON, platform 线程), 回复 {"result": <any>} 或 {"error": <string>}:
+// 插件导出(JS 门面 js/index.ts 是唯一的调用方):
+//   attach(nativeHost, {assetsDir, onEvent, onProtocolRequest})   只调用一次
+//   command(json) → Promise<json>          回复 {"result": <any>} 或 {"error": <string>}
+//   respondToProtocolRequest(frame)        JS 协议处理函数的应答
+//
+// 命令(JS → 原生, JSON):
 //   视图命令 {"id": <viewId>, "method", ...}:
 //       loadUrl {url} | loadHtml {html, baseUrl?} | goBack | goForward | reload | stop |
 //       evaluateJavaScript {script}
@@ -20,18 +26,19 @@
 //   cookie: {"name", "value", "domain", "path", "expires": <Unix 秒>|null, "secure", "httpOnly",
 //            "sameSite": "lax"|"strict"|null};cookies.set 可用 "url" 代替 "domain"。
 //
-// 事件通道 "momo.webview/events"(原生 → JS, JSON):
+// 事件 onEvent(json)(原生 → JS):
 //   {"id", "event": "state", "url", "title", "loading", "progress", "canGoBack", "canGoForward"}
 //   {"id", "event": "message", "body", "origin"}   页面里 window.momo.postMessage(value);body 为 JSON 文本,
 //                                                  origin 为发送方的源("app://localhost";不透明源为 "null")
 //   {"id", "event": "error", "message"}   导航失败(含: 地址的协议不受支持, 也没有注册给这个视图)
 //   {"id", "event": "newWindow", "url"}   页面请求新窗口(target=_blank / window.open);原生不创建
 //
-// 协议通道 "momo.webview/protocol"(双向, 二进制帧: uint32 LE 头长度 + 头 JSON + 正文字节):
-//   原生 → JS  头 {"requestId", "viewId", "url", "method", "headers"}, 正文为请求体
-//   JS → 原生  头 {"requestId", "status", "headers"}, 正文为响应体(处理函数抛错时 JS 侧应答 500)
+// 自定义协议(二进制帧: uint32 LE 头长度 + 头 JSON + 正文字节):
+//   onProtocolRequest(frame)        头 {"requestId", "viewId", "url", "method", "headers"}, 正文为请求体
+//   respondToProtocolRequest(frame) 头 {"requestId", "status", "headers"}, 正文为响应体(处理函数抛错时 JS 侧应答 500)
 //
-// 线程: 工厂、命令 handler、WebKit 回调都在 platform(主)线程;事件经 channel_send 发出(任意线程可用)。
+// 线程: 导出的函数与两个 JS 回调在 JS 线程;视图工厂、命令的执行、WebKit 回调都在 platform(主)线程。
+//   JS → platform: post_platform_task;platform → JS: 一个 napi_threadsafe_function。
 
 #import <Cocoa/Cocoa.h>
 #import <CommonCrypto/CommonDigest.h>
@@ -39,17 +46,16 @@
 #import <WebKit/WebKit.h>
 
 #include <map>
-#include <string>
+#include <memory>
+#include <mutex>
 
-#include "momo/momo_extension.hpp"
+#include <node_api.h>
+
+#include "momo/momo_host.h"
 
 namespace {
 
 constexpr char kViewType[] = "momo.webview";
-constexpr char kCommandChannel[] = "momo.webview";
-constexpr char kEventChannel[] = "momo.webview/events";
-constexpr char kProtocolChannel[] = "momo.webview/protocol";
-constexpr char kTag[] = "momo.webview";
 
 // 页面侧消息桥: window.momo.postMessage(value) 发给宿主;宿主的消息以 window.momo 上的 "message" 事件到达。
 NSString* const kBridgeScript =
@@ -307,61 +313,189 @@ __attribute__((visibility("hidden")))
 }
 @end
 
-class WebViewExtension final : public momo::ext::Extension {
+// 发往 JS 线程的一条消息。
+struct JsMessage {
+  enum Kind { kReply, kEvent, kProtocolRequest };
+  Kind kind;
+  uint64_t token;  // kReply: command() 返回的 Promise
+  NSData* data;
+};
+
+// 进程里只有一个(模块初始化时创建), 不释放: platform 线程上的状态(WebKit 对象、在途的回调)比 JS 运行时活得久。
+class WebViewExtension {
  public:
-  void OnAttach(momo::ext::Host& host) override {
-    host_ = &host;
-    if (!host.SupportsPlatformViews()) {
-      host.Log(kMomoLogError, kTag, "host does not support platform views; WebView unavailable");
+  // ---- JS 线程: 插件导出的函数 ----
+
+  // attach(nativeHost, {assetsDir, onEvent, onProtocolRequest})
+  napi_value Attach(napi_env env, size_t argc, napi_value* argv) {
+    const MomoHost* host = argc < 2 ? nullptr : momo_host_from_napi(env, argv[0]);
+    napi_value assets_dir, on_event, on_protocol_request, name;
+    NSString* assets = nil;
+    if (host == nullptr || host_ != nullptr ||
+        napi_get_named_property(env, argv[1], "assetsDir", &assets_dir) != napi_ok ||
+        (assets = StringFrom(env, assets_dir)) == nil ||
+        napi_get_named_property(env, argv[1], "onEvent", &on_event) != napi_ok ||
+        napi_create_reference(env, on_event, 1, &on_event_) != napi_ok ||
+        napi_get_named_property(env, argv[1], "onProtocolRequest", &on_protocol_request) != napi_ok ||
+        napi_create_reference(env, on_protocol_request, 1, &on_protocol_request_) != napi_ok) {
+      napi_throw_type_error(env, nullptr,
+                            "attach(nativeHost, {assetsDir, onEvent, onProtocolRequest}) may be called once");
+      return nullptr;
+    }
+    assets_dir_ = assets;
+    napi_create_string_utf8(env, kViewType, NAPI_AUTO_LENGTH, &name);
+    napi_create_threadsafe_function(env, nullptr, nullptr, name, 0, 1, nullptr, nullptr, this, &DeliverToJs,
+                                    &to_js_);
+    napi_add_env_cleanup_hook(env, &OnRuntimeDestroyed, this);
+    const MomoPlatformViewFactory factory = {sizeof(MomoPlatformViewFactory), &CreateView, &DisposeView, this};
+    if (host->platform_view_register_factory(host, kViewType, &factory) != kMomoOk) {
+      napi_throw_error(env, nullptr, "cannot register the momo.webview platform view type");
+      return nullptr;
+    }
+    host_ = host;  // 此后只读;platform 线程经由下面投递的任务才看到它
+    return nullptr;
+  }
+
+  // command(json) → Promise<json>
+  napi_value Command(napi_env env, size_t argc, napi_value* argv) {
+    NSString* json = argc < 1 ? nil : StringFrom(env, argv[0]);
+    if (json == nil) {
+      napi_throw_type_error(env, nullptr, "command(json) expects a string");
+      return nullptr;
+    }
+    napi_deferred deferred;
+    napi_value promise;
+    napi_create_promise(env, &deferred, &promise);
+    const uint64_t token = ++next_token_;
+    NSDictionary* call = FromJson([json dataUsingEncoding:NSUTF8StringEncoding]);
+    if (PostToPlatform(^{
+          HandleCommand(call, token);
+        })) {
+      deferreds_[token] = deferred;
+    } else {
+      napi_value message, error;
+      napi_create_string_utf8(env, "the engine is shutting down", NAPI_AUTO_LENGTH, &message);
+      napi_create_error(env, nullptr, message, &error);
+      napi_reject_deferred(env, deferred, error);
+    }
+    return promise;
+  }
+
+  // respondToProtocolRequest(frame: ArrayBuffer)
+  napi_value RespondToProtocolRequest(napi_env env, size_t argc, napi_value* argv) {
+    void* bytes = nullptr;
+    size_t size = 0;
+    if (argc < 1 || napi_get_arraybuffer_info(env, argv[0], &bytes, &size) != napi_ok) {
+      napi_throw_type_error(env, nullptr, "respondToProtocolRequest(frame) expects an ArrayBuffer");
+      return nullptr;
+    }
+    NSData* frame = [NSData dataWithBytes:bytes length:size];
+    PostToPlatform(^{
+      HandleProtocolResponse(frame);
+    });
+    return nullptr;
+  }
+
+ private:
+  // ---- 两个方向的投递 ----
+
+  // JS 线程 → platform 线程。引擎已关闭时返回 false。(关闭前投递、关闭时还没执行的任务被宿主丢弃。)
+  bool PostToPlatform(dispatch_block_t block) {
+    if (host_ == nullptr) return false;
+    void* task = (void*)CFBridgingRetain([block copy]);
+    if (host_->post_platform_task(host_, &RunBlock, task) == kMomoOk) return true;
+    CFBridgingRelease(task);
+    return false;
+  }
+  static void RunBlock(void* task) {
+    @autoreleasepool {
+      dispatch_block_t block = CFBridgingRelease(task);
+      block();
+    }
+  }
+
+  // platform 线程 → JS 线程。JS 运行时已销毁时丢弃。
+  void PostToJs(JsMessage::Kind kind, uint64_t token, NSData* data) {
+    std::lock_guard<std::mutex> lock(to_js_mutex_);
+    if (to_js_ == nullptr) return;
+    auto* message = new JsMessage{kind, token, data};
+    if (napi_call_threadsafe_function(to_js_, message, napi_tsfn_nonblocking) != napi_ok) {
+      delete message;
+    }
+  }
+
+  // JS 线程: 运行时销毁时的清理函数。此前宿主已关闭宿主表并 dispose 全部视图(momo_host.h 的"关闭"),
+  // 所以只剩一件事: 不再向 JS 投递(WebKit 的在途回调可能更晚才到)。
+  static void OnRuntimeDestroyed(void* self) {
+    auto* extension = static_cast<WebViewExtension*>(self);
+    napi_threadsafe_function to_js;
+    {
+      std::lock_guard<std::mutex> lock(extension->to_js_mutex_);
+      to_js = extension->to_js_;
+      extension->to_js_ = nullptr;
+    }
+    napi_release_threadsafe_function(to_js, napi_tsfn_abort);
+  }
+
+  // JS 线程: 一条消息到达。env 为空表示运行时正在销毁(只释放消息)。
+  static void DeliverToJs(napi_env env, napi_value, void* self, void* data) {
+    std::unique_ptr<JsMessage> message(static_cast<JsMessage*>(data));
+    if (env == nullptr) return;
+    @autoreleasepool {
+      static_cast<WebViewExtension*>(self)->Deliver(env, *message);
+    }
+  }
+  void Deliver(napi_env env, const JsMessage& message) {
+    napi_value value;
+    if (message.kind == JsMessage::kProtocolRequest) {
+      void* bytes = nullptr;
+      napi_create_arraybuffer(env, message.data.length, &bytes, &value);
+      memcpy(bytes, message.data.bytes, message.data.length);
+      CallJs(env, on_protocol_request_, value);
       return;
     }
-    const MomoStatus status = host.RegisterPlatformViewFactory(
-        kViewType,
-        [this](int64_t view_id, momo::ext::Bytes params) -> void* { return Create(view_id, params); },
-        [this](int64_t view_id, void* native) { Dispose(view_id, native); });
-    if (status != kMomoOk) {
-      host.Log(kMomoLogError, kTag, "failed to register the momo.webview platform view type");
+    napi_create_string_utf8(env, static_cast<const char*>(message.data.bytes), message.data.length, &value);
+    if (message.kind == JsMessage::kEvent) {
+      CallJs(env, on_event_, value);
       return;
     }
-    host.SetChannelHandler(kCommandChannel, kMomoRunnerPlatform,
-                           [this](momo::ext::Bytes bytes, uint64_t reply) {
-                             @autoreleasepool {
-                               HandleCommand(bytes, reply);
-                             }
-                           });
-    host.SetChannelHandler(kProtocolChannel, kMomoRunnerPlatform,
-                           [this](momo::ext::Bytes bytes, uint64_t reply) {
-                             @autoreleasepool {
-                               HandleProtocolResponse(bytes, reply);
-                             }
-                           });
-  }
-
-  // JS 运行时已销毁, 视图已由宿主全部 dispose: 释放剩下的状态。
-  void OnDetach() override {
-    // 视图: 宿主保证此前已全部 dispose;这里只做兜底。
-    for (auto& [id, entry] : entries_) {
-      [entry teardown];
+    auto it = deferreds_.find(message.token);
+    if (it != deferreds_.end()) {
+      napi_resolve_deferred(env, it->second, value);
+      deferreds_.erase(it);
     }
-    entries_.clear();
-    // 等待 JS 应答的协议请求不会再有应答。
-    for (NSNumber* request_id in pending_.allKeys) {
-      FailTask(pending_[request_id], NSURLErrorCancelled);
+  }
+  // 调用 JS 回调;它抛出的异常按未捕获异常上报。
+  static void CallJs(napi_env env, napi_ref callback, napi_value argument) {
+    napi_value function, receiver, error;
+    napi_get_reference_value(env, callback, &function);
+    napi_get_undefined(env, &receiver);
+    if (napi_call_function(env, receiver, function, 1, &argument, nullptr) == napi_pending_exception &&
+        napi_get_and_clear_last_exception(env, &error) == napi_ok) {
+      napi_fatal_exception(env, error);
     }
-    [pending_ removeAllObjects];
-    [stores_ removeAllObjects];
-    host_ = nullptr;
+  }
+  static NSString* StringFrom(napi_env env, napi_value value) {
+    size_t length = 0;
+    if (napi_get_value_string_utf8(env, value, nullptr, 0, &length) != napi_ok) return nil;
+    NSMutableData* buffer = [NSMutableData dataWithLength:length + 1];
+    napi_get_value_string_utf8(env, value, static_cast<char*>(buffer.mutableBytes), length + 1, &length);
+    return [[NSString alloc] initWithBytes:buffer.bytes length:length encoding:NSUTF8StringEncoding];
   }
 
-  void SendEvent(NSDictionary* event) {
-    if (host_ == nullptr) return;
-    NSData* json = ToJson(event);
-    host_->Send(kEventChannel, json.bytes, json.length);
+  static void* CreateView(void* self, int64_t view_id, const uint8_t* params, size_t size) {
+    return static_cast<WebViewExtension*>(self)->Create(view_id, params, size);
+  }
+  static void DisposeView(void* self, int64_t view_id, void* native) {
+    static_cast<WebViewExtension*>(self)->Dispose(view_id, native);
   }
 
-  void Log(MomoLogLevel level, NSString* message) {
-    if (host_ != nullptr) host_->Log(level, kTag, message.UTF8String);
-  }
+ public:
+  // ---- platform 线程 ----
+
+  void SendEvent(NSDictionary* event) { PostToJs(JsMessage::kEvent, 0, ToJson(event)); }
+
+  static void Log(NSString* message) { NSLog(@"[momo.webview] %@", message); }
 
   // ---- 自定义协议 ----
 
@@ -385,22 +519,18 @@ class WebViewExtension final : public momo::ext::Extension {
   // 用打包资源应答(路径相对应用的 assets 目录;path 为 nil 或不存在时改用 fallback, 都没有则 404)。
   // 文件在后台线程读取, 不占用 platform 线程。
   void ServeAsset(id<WKURLSchemeTask> task, NSString* path, NSString* fallback) {
-    momo::ext::Host* host = host_;
-    if (host == nullptr) {
-      FailTask(task, NSURLErrorCancelled);
-      return;
-    }
+    NSString* root = assets_dir_;
     NSNumber* request_id = TrackTask(task);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
       NSString* served = path;
-      NSData* data = path != nil ? ReadAsset(host, path) : nil;
+      NSData* data = path != nil ? ReadAsset(root, path) : nil;
       if (data == nil && fallback != nil) {
         served = fallback;
-        data = ReadAsset(host, fallback);
+        data = ReadAsset(root, fallback);
       }
       dispatch_async(dispatch_get_main_queue(), ^{
         id<WKURLSchemeTask> live = TakeTask(request_id);
-        if (live == nil) return;  // 已被 WebKit 停止, 或扩展已卸载
+        if (live == nil) return;  // 已被 WebKit 停止
         if (data == nil) {
           Respond(live, 404, @{@"Content-Type" : @"text/plain; charset=utf-8"},
                   [@"Not Found" dataUsingEncoding:NSUTF8StringEncoding]);
@@ -413,12 +543,8 @@ class WebViewExtension final : public momo::ext::Extension {
     });
   }
 
-  // 把请求转给 JS 的协议处理函数;应答经协议通道回来(HandleProtocolResponse)。
+  // 把请求转给 JS 的协议处理函数;应答经 respondToProtocolRequest 回来(HandleProtocolResponse)。
   void ForwardTask(int64_t view_id, id<WKURLSchemeTask> task) {
-    if (host_ == nullptr) {
-      FailTask(task, NSURLErrorCancelled);
-      return;
-    }
     NSNumber* request_id = TrackTask(task);
     NSURLRequest* request = task.request;
     NSData* frame = EncodeFrame(@{
@@ -429,21 +555,15 @@ class WebViewExtension final : public momo::ext::Extension {
       @"headers" : request.allHTTPHeaderFields ?: @{},
     },
                                 RequestBody(request));
-    host_->Send(kProtocolChannel, frame.bytes, frame.length);
+    PostToJs(JsMessage::kProtocolRequest, 0, frame);
   }
 
-  // 任意线程。数据直接引用宿主的缓冲区(不再拷贝), 随 NSData 释放。
-  static NSData* ReadAsset(momo::ext::Host* host, NSString* path) {
-    const MomoHostApi* api = host->api();
-    MomoEngineRef engine = host->engine();
-    const uint8_t* bytes = nullptr;
-    size_t size = 0;
-    if (api->open_asset(engine, path.UTF8String, &bytes, &size) != kMomoOk) return nil;
-    return [[NSData alloc] initWithBytesNoCopy:const_cast<uint8_t*>(bytes)
-                                        length:size
-                                   deallocator:^(void* pointer, NSUInteger) {
-                                     api->free_asset(engine, static_cast<const uint8_t*>(pointer));
-                                   }];
+  // 任意线程。path 相对应用的资源目录;越出该目录返回 nil。
+  static NSData* ReadAsset(NSString* root, NSString* path) {
+    NSString* base = root.stringByStandardizingPath;
+    NSString* file = [base stringByAppendingPathComponent:path].stringByStandardizingPath;
+    if (![file hasPrefix:[base stringByAppendingString:@"/"]]) return nil;
+    return [NSData dataWithContentsOfFile:file options:NSDataReadingMappedIfSafe error:nil];
   }
 
   static void Respond(id<WKURLSchemeTask> task, NSInteger status, NSDictionary* headers, NSData* body) {
@@ -477,13 +597,13 @@ class WebViewExtension final : public momo::ext::Extension {
  private:
   // ---- 视图 ----
 
-  void* Create(int64_t view_id, momo::ext::Bytes bytes) {
+  void* Create(int64_t view_id, const uint8_t* bytes, size_t size) {
     @autoreleasepool {
-      NSDictionary* params = FromJson(bytes.data, bytes.size);
+      NSDictionary* params = FromJson(bytes, size);
       NSString* error = nil;
       WKWebsiteDataStore* store = StoreFor(StringField(params, @"session"), &error);
       if (store == nil) {
-        Log(kMomoLogError, [@"cannot create the WebView: " stringByAppendingString:error]);
+        Log([@"cannot create the WebView: " stringByAppendingString:error]);
         return nullptr;
       }
       MomoWebViewEntry* entry = [[MomoWebViewEntry alloc] initWithId:view_id
@@ -509,16 +629,11 @@ class WebViewExtension final : public momo::ext::Extension {
     }
   }
 
-  void Reply(uint64_t token, NSDictionary* payload) {
-    if (host_ == nullptr) return;
-    NSData* json = ToJson(payload);
-    host_->Reply(token, json.bytes, json.length);
-  }
+  void Reply(uint64_t token, NSDictionary* payload) { PostToJs(JsMessage::kReply, token, ToJson(payload)); }
   void ReplyResult(uint64_t token, id result) { Reply(token, @{@"result" : result ?: [NSNull null]}); }
   void ReplyError(uint64_t token, NSString* message) { Reply(token, @{@"error" : message ?: @"error"}); }
 
-  void HandleCommand(momo::ext::Bytes bytes, uint64_t token) {
-    NSDictionary* call = FromJson(bytes.data, bytes.size);
+  void HandleCommand(NSDictionary* call, uint64_t token) {
     NSString* method = StringField(call, @"method");
     if (method == nil) {
       ReplyError(token, @"missing method");
@@ -554,7 +669,7 @@ class WebViewExtension final : public momo::ext::Extension {
     } else if ([method isEqualToString:@"stop"]) {
       [web stopLoading];
     } else if ([method isEqualToString:@"evaluateJavaScript"]) {
-      // 异步结果: 在主线程回调里应答(reply token 可延后、恰好一次)。
+      // 异步结果: 在主线程回调里应答。
       [web evaluateJavaScript:StringField(call, @"script") ?: @""
             completionHandler:^(id result, NSError* error) {
               if (error != nil) {
@@ -674,10 +789,10 @@ class WebViewExtension final : public momo::ext::Extension {
 
   // ---- 协议应答(JS → 原生) ----
 
-  void HandleProtocolResponse(momo::ext::Bytes bytes, uint64_t token) {
+  void HandleProtocolResponse(NSData* frame) {
     NSDictionary* header = nil;
     NSData* body = nil;
-    if (DecodeFrame(bytes.data, bytes.size, &header, &body)) {
+    if (DecodeFrame(static_cast<const uint8_t*>(frame.bytes), frame.length, &header, &body)) {
       id<WKURLSchemeTask> task = TakeTask(NumberField(header, @"requestId"));
       if (task != nil) {
         NSDictionary* headers =
@@ -685,7 +800,6 @@ class WebViewExtension final : public momo::ext::Extension {
         Respond(task, NumberField(header, @"status").integerValue ?: 200, headers, body);
       }
     }
-    if (host_ != nullptr) host_->Reply(token, nullptr, 0);
   }
 
  public:
@@ -704,8 +818,19 @@ class WebViewExtension final : public momo::ext::Extension {
   }
 
  private:
+  // attach 时确定, 之后只读。
+  const MomoHost* host_ = nullptr;
+  NSString* assets_dir_ = nil;
+  // 仅 JS 线程。
+  napi_ref on_event_ = nullptr;
+  napi_ref on_protocol_request_ = nullptr;
+  std::map<uint64_t, napi_deferred> deferreds_;  // command() 等待应答的 Promise
+  uint64_t next_token_ = 0;
+  // 任意线程(to_js_mutex_ 保护): 运行时销毁后为空。
+  std::mutex to_js_mutex_;
+  napi_threadsafe_function to_js_ = nullptr;
+
   // 以下全部只在 platform 线程访问。
-  momo::ext::Host* host_ = nullptr;
   std::map<int64_t, MomoWebViewEntry*> entries_;
   // 非默认会话的数据存储, 按会话键。一直持有: 没有 WebView 时也能读写其 cookie(无痕会话到 session.dispose 为止)。
   NSMutableDictionary<NSString*, WKWebsiteDataStore*>* stores_ = [NSMutableDictionary dictionary];
@@ -808,9 +933,8 @@ static void* kStateContext = &kStateContext;
       NSString* scheme = [spec isKindOfClass:[NSDictionary class]] ? StringField(spec, @"scheme") : nil;
       if (scheme == nil) continue;
       if ([WKWebView handlesURLScheme:scheme] || [config urlSchemeHandlerForURLScheme:scheme] != nil) {
-        owner->Log(kMomoLogError,
-                   [NSString stringWithFormat:@"cannot register protocol \"%@\": the scheme is built in "
-                                              @"or already registered", scheme]);
+        WebViewExtension::Log([NSString stringWithFormat:@"cannot register protocol \"%@\": the scheme is "
+                                                         @"built in or already registered", scheme]);
         continue;
       }
       MomoSchemeHandler* handler = [[MomoSchemeHandler alloc] initWithOwner:owner viewId:viewId spec:spec];
@@ -975,4 +1099,31 @@ static void* kStateContext = &kStateContext;
 
 @end
 
-MOMO_EXTENSION(WebViewExtension, "momo.example.webview")
+// ---------------------------------------------------------------------------
+
+namespace {
+
+template <napi_value (WebViewExtension::*method)(napi_env, size_t, napi_value*)>
+napi_value Export(napi_env env, napi_callback_info info) {
+  size_t argc = 2;
+  napi_value argv[2];
+  void* extension = nullptr;
+  napi_get_cb_info(env, info, &argc, argv, nullptr, &extension);
+  @autoreleasepool {
+    return (static_cast<WebViewExtension*>(extension)->*method)(env, argc, argv);
+  }
+}
+
+}  // namespace
+
+NAPI_MODULE_INIT() {
+  auto* extension = new WebViewExtension;  // 不释放, 见类注释
+  const napi_property_descriptor properties[] = {
+      {"attach", nullptr, &Export<&WebViewExtension::Attach>, nullptr, nullptr, nullptr, napi_default, extension},
+      {"command", nullptr, &Export<&WebViewExtension::Command>, nullptr, nullptr, nullptr, napi_default, extension},
+      {"respondToProtocolRequest", nullptr, &Export<&WebViewExtension::RespondToProtocolRequest>, nullptr,
+       nullptr, nullptr, napi_default, extension},
+  };
+  napi_define_properties(env, exports, 3, properties);
+  return exports;
+}

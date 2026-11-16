@@ -2,22 +2,29 @@
 //   WebView / WebViewController   网页视图与对它的操作
 //   registerProtocol              自定义资源协议(app://… 之类), 用它加载应用自己的网页
 //   WebSession / CookieStore      会话(数据分区)与 cookie
-// 原生侧(native/src/ext_webview.mm)注册平台视图类型 "momo.webview";本文件只用框架的公开 API。
-// 线上协议见 ext_webview.mm 文件头;接口设计与平台映射见 README。
+// 原生侧(native/src/ext_webview.mm, 一个 Node 插件)注册平台视图类型 "momo.webview";本文件是它唯一的调用方。
+// 与原生侧之间的命令、事件、协议帧的格式见 ext_webview.mm 文件头;接口设计与平台映射见 README。
 import {
-  BasicMessageChannel, BinaryCodec, JSONMessageCodec, PlatformView, State, StatefulView, utf8Decode, utf8Encode,
+  PlatformView, State, StatefulView, utf8Decode, utf8Encode,
   type BuildContext, type FocusNode, type Key, type PlatformViewController, type View,
 } from "@momo/framework";
+import { assetsDir, nativeHost } from "momo:services";
+import addon from "../build/ext_webview.node";
 
 export const kWebViewType = "momo.webview";
 
-const commands = new BasicMessageChannel<unknown>("momo.webview", JSONMessageCodec.instance);
-const events = new BasicMessageChannel<unknown>("momo.webview/events", JSONMessageCodec.instance);
-const protocolChannel = new BasicMessageChannel<ArrayBuffer>("momo.webview/protocol", BinaryCodec.instance);
+const native = addon as {
+  attach(host: bigint, options: {
+    assetsDir: string;
+    onEvent(json: string): void;
+    onProtocolRequest(frame: ArrayBuffer): void;
+  }): void;
+  command(json: string): Promise<string>;
+  respondToProtocolRequest(frame: ArrayBuffer): void;
+};
 
 async function call(target: { id: number } | { session: string }, method: string, args: Record<string, unknown> = {}): Promise<unknown> {
-  const reply = (await commands.send({ ...target, method, ...args })) as Record<string, unknown> | null;
-  if (reply === null) throw new Error("momo.webview: the WebView extension is not loaded");
+  const reply = JSON.parse(await native.command(JSON.stringify({ ...target, method, ...args }))) as Record<string, unknown>;
   if (typeof reply.error === "string") throw new Error(`momo.webview ${method}: ${reply.error}`);
   return reply.result ?? null;
 }
@@ -62,9 +69,6 @@ type ProtocolSource = ProtocolHandler | AssetProtocol;
 // 系统 WebView 自己处理、不能接管的协议。
 const kBuiltInSchemes = new Set(["http", "https", "file", "about", "data", "blob", "javascript", "ws", "wss", "ftp"]);
 const protocols = new Map<string, ProtocolSource>();
-protocolChannel.setMessageHandler((frame) => {
-  if (frame !== null) void serveProtocolRequest(frame);
-});
 
 /**
  * 声明一个自定义资源协议, 之后创建的 WebView 可以加载 `<scheme>://…` 地址(如 `app://localhost/index.html`)。
@@ -89,7 +93,7 @@ function protocolSpecs(only?: readonly string[]): Record<string, unknown>[] {
     .map(([scheme, source]) => (typeof source === "function" ? { scheme } : { scheme, ...source }));
 }
 
-// 协议通道的帧: uint32 LE 头长度 + 头 JSON + 正文。
+// 协议请求与应答的帧: uint32 LE 头长度 + 头 JSON + 正文。
 function encodeFrame(header: unknown, body: Uint8Array | null): ArrayBuffer {
   const json = utf8Encode(JSON.stringify(header));
   const frame = new Uint8Array(4 + json.length + (body?.length ?? 0));
@@ -135,7 +139,7 @@ async function serveProtocolRequest(frame: ArrayBuffer): Promise<void> {
     headers["Content-Type"] = /^text\/|json|xml/.test(mime) && !mime.includes("charset") ? `${mime}; charset=utf-8` : mime;
   }
   const bytes = typeof response.body === "string" ? utf8Encode(response.body) : response.body ?? null;
-  await protocolChannel.send(encodeFrame({ requestId, status: response.status ?? 200, headers }, bytes));
+  native.respondToProtocolRequest(encodeFrame({ requestId, status: response.status ?? 200, headers }, bytes));
 }
 
 // ---------------------------------------------------------------------------
@@ -258,10 +262,16 @@ export interface MessageSource {
 }
 
 const controllers = new Map<number, WebViewController>();
-events.setMessageHandler((message) => {
-  const m = message as Record<string, unknown> | null;
-  if (m === null || typeof m.id !== "number") return;
-  controllers.get(m.id)?._handleEvent(m);
+
+native.attach(nativeHost, {
+  assetsDir,
+  onEvent(json) {
+    const m = JSON.parse(json) as Record<string, unknown>;
+    if (typeof m.id === "number") controllers.get(m.id)?._handleEvent(m);
+  },
+  onProtocolRequest(frame) {
+    void serveProtocolRequest(frame);
+  },
 });
 
 /** 操作一个已创建的 WebView。 */

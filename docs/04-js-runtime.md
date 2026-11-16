@@ -29,7 +29,7 @@
   循环里继续——泵送的只有 uv, 等下去的话 ui 线程上的引擎任务(平台通道应答、帧)无法执行, 启动会卡住。因此入口里
   应当同步调用 `runApp`, 不要把它放在顶层 await 之后。加载错误与同步部分的求值错误以
   Promise 拒绝返回宿主,转成 `Status`(含 JS 栈);顶层 await 之后的错误只记录日志。
-- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):`JsRuntime::Call` 在 `node::CallbackScope`
+- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码):`JsRuntime::Call` 在 `node::CallbackScope`
   里调用(同 `node::MakeCallback`),最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask(nextTick 先于
   Promise)。入口都是 ui 线程上的任务,与 uv 回调同属一个循环,顺序即到达顺序。之后 `DrainMicrotasks()` 唤醒 poll 线程。
 - **错误**:C++ 调用 JS 的异常收敛为 `Status` 并记日志;uv 回调里的未捕获异常与未处理的 Promise 拒绝由 bootstrap 注册的
@@ -52,7 +52,7 @@
 
 ## 3. 原生绑定基建
 
-**模块**:`JsRuntime::RegisterNativeModule(specifier, factory)` 注册一个 synthetic ESM 模块(如 `momo:ui`),`factory(isolate, context, exports)` 在模块首次被 import 时填充导出。`momo:ui` / `momo:services` 由 `ui::UiBindings::Install` 注册,`ext:*` 由 `ui/extension_bindings.cc` 注册。
+**模块**:`JsRuntime::RegisterNativeModule(specifier, factory)` 注册一个 synthetic ESM 模块(如 `momo:ui`),`factory(isolate, context, exports)` 在模块首次被 import 时填充导出。`momo:ui` / `momo:services` 由 `ui::UiBindings::Install` 注册。`momo:services` 除消息通道外还导出 `assetsDir`(应用资源目录的绝对路径)与 `nativeHost`(BigInt: 宿主能力表的地址, 原生扩展用, docs/07 §3)。
 
 **宿主类**:C++ 对象继承 `Wrappable`,用 `ClassBuilder<T>` 暴露为 JS 类:
 
@@ -73,10 +73,12 @@ ClassBuilder<JsPaint>(isolate, "Paint", &JsPaint::Construct)   // ctor 传空 = 
 
 - 应用代码与框架层均为 **ESM**,由 Node 的 ESM 加载器执行:相对/绝对路径、`node:*`、npm 包(按 Node 规则从 node_modules
   解析)。momo 应用自己的 `.js` 文件一律按 ESM 处理(不依赖 package.json 的 `type`);node_modules 中的包保持 Node 的格式判定。
-- `momo:*` / `ext:*`:`RegisterNativeModule(specifier, factory)` 以 `node::AddLinkedBinding` 注册原生绑定(import 时才调用 factory
+- `momo:*`:`RegisterNativeModule(specifier, factory)` 以 `node::AddLinkedBinding` 注册原生绑定(import 时才调用 factory
   填充导出);bootstrap 的 `module.registerHooks` 把这类 specifier 解析为 ESM 模块,内容从 `process._linkedBinding(specifier)` 读出导出。
-- 内置原生模块:`momo:ui`、`momo:services`。扩展 JS 包以 `ext:<name>` 暴露(如 `ext:sqlite`),其 JS 部分打进应用 bundle,
-  原生部分由 ExtensionHost 注册(docs/07)。
+- 内置原生模块:`momo:ui`、`momo:services`。
+- 原生扩展是 Node 原生插件(docs/07):Node 自己只在 `require` 里认 `.node`, 同一个模块钩子(`runtime/node_bootstrap.cc`)让
+  `import addon from "./x.node"` 也能用(默认导出是插件的 exports)。扩展的 JS 门面打进应用 bundle, `.node` 由
+  `momo bundle` 拷到 bundle 旁的 `native/`(docs/09 §4)。
 - `RunModuleSource(source, name, base_dir)`(测试与 `--dev` 片段):源码由加载钩子提供,url 带递增查询串(每次都是新模块),
   相对导入基于 `base_dir`。
 - 生产模式:单 bundle(esbuild 产物)+ Node 编译缓存;startup snapshot 尚未实现(docs/11 M6)。
@@ -92,7 +94,7 @@ C++: hub.SetHandler(channel, handler(bytes, reply_cb))   // 任意线程注册, 
      hub.Send(channel, bytes, reply_cb)                   // native -> JS
 ```
 
-其上提供 `StandardCodec`(与 Flutter StandardMessageCodec 同思路的二进制编码:null/bool/int/double/string/bytes/list/map),JS 与 C++ 各一份实现。平台服务(docs/03 §5)与扩展消息(docs/07)复用之。
+其上提供 `StandardCodec`(与 Flutter StandardMessageCodec 同思路的二进制编码:null/bool/int/double/string/bytes/list/map),JS 与 C++ 各一份实现。平台服务(docs/03 §5)复用之。
 
 ## 6. 事件入口与帧回调
 
@@ -118,7 +120,7 @@ view.render(scene: Scene): void
 M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS 声明见
 `framework/packages/momo/src/ui/momo-ui.d.ts`。消息通道实现: `engine/common/message_channel_hub.h`(回复总是投递,
 不在 JS 调用栈内同步重入)、`engine/common/standard_codec.h`、JS 端 `momo:services`(`engine/ui/services_bindings.cc`)。
-内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/extensions(JS 查询扩展加载错误: `getErrors`)、momo/platform_views。
+内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/platform_views。
 JS 运行时销毁时移除 JS 端点, 之后发往 JS 的消息(含在途的)回复空;已投递给 native handler 的消息由 handler 的注册方自己判活。
 
 ## 7. 调试与诊断
@@ -136,4 +138,4 @@ JS 运行时销毁时移除 JS 端点, 之后发往 JS 的消息(含在途的)�
 重置 JS 而不重置宿主, 意味着每个 JS 模块、每个扩展都要能正确撤销自己留在宿主里的状态(窗口、平台视图、在途的通道
 请求、按 id 登记的对象), 这类错误只在热重启时出现, 测不到;而最需要重启的场景(顶层抛异常、死循环)恰恰没有机会
 执行任何撤销逻辑。开发循环是重新打 bundle 后重启进程。随之消失的还有: 运行时的代数、通道消息的代际、扩展的
-生命周期监听(`RuntimeStarting` / `RuntimeStopped`)——扩展里属于 JS 的状态与扩展自身同寿, 在 `on_detach` 清理。
+生命周期监听(`RuntimeStarting` / `RuntimeStopped`)——扩展里属于 JS 的状态与进程同寿(docs/07 §4)。

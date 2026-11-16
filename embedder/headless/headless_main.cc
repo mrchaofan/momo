@@ -1,6 +1,6 @@
 // momo_headless: 无窗口地运行 JS bundle(docs/09 §5 的 headless 测试运行器 / tools/momo-test 的引擎侧)。
 //
-//   momo_headless --bundle=<file.js> [--assets=<dir>] [--extensions=<dir>]
+//   momo_headless --bundle=<file.js> [--assets=<dir>]
 //                 [--width=800 --height=600 --dpr=1] [--timeout=30] [--screenshot=<out.png>]
 //                 [--manual-frames]
 // --manual-frames: window.scheduleFrame() 不触发 vsync(框架测试自行调用 onBeginFrame/onDrawFrame
@@ -79,16 +79,12 @@ class ManualVsyncSource final : public platform::VsyncSource {
   void RequestFrameCallback(Callback) override {}
 };
 
-// 无窗口: 不提供原生句柄;窗口管理、剪贴板、输入法等宿主通道一律不注册(JS 调用会得到"无实现")。
-class HeadlessDelegate final : public engine::Shell::Delegate {
- public:
-  void* GetNativeWindowHandle() override { return nullptr; }
-};
+// 无窗口: 窗口管理、剪贴板、输入法等宿主通道一律不注册(JS 调用会得到"无实现")。
+class HeadlessDelegate final : public engine::Shell::Delegate {};
 
 struct Options {
   std::filesystem::path bundle;
   std::filesystem::path assets;
-  std::filesystem::path extensions;
   std::filesystem::path screenshot;
   double width = 800, height = 600, dpr = 1;
   double timeout_s = 30;
@@ -111,7 +107,6 @@ bool ParseArgs(int argc, char** argv, Options* o) {
     const std::string value(arg.substr(eq + 1));
     if (key == "bundle") o->bundle = value;
     else if (key == "assets") o->assets = value;
-    else if (key == "extensions") o->extensions = value;
     else if (key == "screenshot") o->screenshot = value;
     else if (key == "width") o->width = std::atof(value.c_str());
     else if (key == "height") o->height = std::atof(value.c_str());
@@ -123,7 +118,7 @@ bool ParseArgs(int argc, char** argv, Options* o) {
     }
   }
   if (o->bundle.empty()) {
-    std::fprintf(stderr, "usage: momo_headless --bundle=<file.js> [--assets=dir] [--extensions=dir]"
+    std::fprintf(stderr, "usage: momo_headless --bundle=<file.js> [--assets=dir]"
                          " [--width=800 --height=600 --dpr=1] [--timeout=30] [--screenshot=out.png]\n");
     return false;
   }
@@ -141,7 +136,6 @@ int Run(const Options& options) {
     settings.bundle_path = std::filesystem::absolute(options.bundle);
     settings.assets_dir = options.assets.empty() ? settings.bundle_path.parent_path()
                                                  : std::filesystem::absolute(options.assets);
-    settings.extensions_dir = options.extensions;
     settings.dev_mode = true;
     // process.exit(code): 退出码交给本进程, 结束消息循环后有序关闭。
     auto on_exit = [&exit_code, loop](int code) {

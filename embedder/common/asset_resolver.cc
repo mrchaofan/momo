@@ -35,7 +35,6 @@ StatusOr<ResolvedAssets> AssetResolver::Resolve(const AppConfig& config) const {
     out.assets_dir = MakeAbsolute(resources_dir_ / kAssetsDirName);
   }
 
-  out.extensions_dir = MakeAbsolute(resources_dir_ / kExtensionsDirName);
   if (!cache_dir_.empty()) {
     out.code_cache_dir = MakeAbsolute(cache_dir_ / kCodeCacheDirName);
   }

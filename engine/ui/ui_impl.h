@@ -12,7 +12,6 @@
 
 #include "base/object.h"
 #include "engine/assets/asset_manager.h"
-#include "engine/extension/extension_host.h"
 #include "engine/runtime/js_runtime.h"
 #include "engine/text/font_collection.h"
 #include "engine/ui/app_driver.h"
@@ -20,13 +19,6 @@
 #include "v8.h"
 
 namespace momo::engine::ui {
-
-// 一个已绑定的扩展函数(ext:* 模块, 见 extension_bindings.cc);随 Impl 存活, V8 函数的 data 指向它。
-struct ExtFunction {
-  MomoNativeFn fn;
-  void* user_data;
-  std::string qualified_name;  // "ext:hello.add"
-};
 
 // 一个视图(窗口)在 JS 中的对象。对象 internal field 0 指向本绑定, 对象上的方法以该对象为
 // callback data(方法 → 对象 → 绑定), 因此只要 JS 还持有对象或其任一方法, 绑定就有效。
@@ -65,7 +57,6 @@ struct UiBindings::Impl final : public Object {
   std::map<std::string, v8::Global<v8::Function>> js_handlers;
   uint64_t next_reply_ = 1;
   std::map<uint64_t, MessageReply> pending_replies;  // JS handler 返回 Promise 时暂存
-  std::vector<std::unique_ptr<ExtFunction>> ext_functions;
 
   text::FontCollection& Fonts();
 
@@ -102,7 +93,7 @@ struct UiBindings::Impl final : public Object {
 
  private:
   std::unique_ptr<text::FontCollection> fonts;
-  // Promise id 也是扩展 promise token(跨线程往返)。从 1 起, 0 不是合法 token。
+  // Promise id(跨线程往返)。从 1 起。
   uint64_t next_request_ = 1;
   std::map<uint64_t, v8::Global<v8::Promise::Resolver>> pending_;
   const WeakPtr<Impl> weak_this_;

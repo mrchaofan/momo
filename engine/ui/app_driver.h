@@ -16,17 +16,15 @@
 #include "base/time.h"
 #include "engine/common/message_channel_hub.h"
 #include "engine/common/settings.h"
-#include "engine/extension/js_glue.h"
 #include "engine/graphics/layer_tree.h"
 #include "engine/platform/input_types.h"
 #include "engine/platform/view.h"
 #include "engine/platform/viewport_metrics.h"
 
-namespace momo::engine {
-class ExtensionHost;
-namespace graphics {
+struct MomoHost;  // extensions/sdk/include/momo/momo_host.h
+
+namespace momo::engine::graphics {
 class TextureRegistry;
-}
 }
 
 namespace momo::engine::ui {
@@ -75,7 +73,7 @@ class AppDriver {
 struct AppHost {
   std::shared_ptr<TaskRunner> io_runner;      // 资源读取/图片解码
   std::shared_ptr<MessageChannelHub> hub;     // momo:services
-  ExtensionHost* extensions = nullptr;        // 扩展宿主(ext:* 模块、帧回调;可空)
+  const MomoHost* native_host = nullptr;      // 宿主能力表, momo:services 的 nativeHost(可空)
   std::shared_ptr<graphics::TextureRegistry> textures;  // 外部纹理(可空)
   // JS 调用 process.exit(code): 交给宿主做有序退出(ui 线程调用, 实现方自行投递;可空 = 只停止 JS)。
   std::function<void(int exit_code)> request_exit;
@@ -102,13 +100,9 @@ class PlaceholderDriver final : public AppDriver {
   WindowClient& client_;
 };
 
-// 以下两个函数的实现由链接决定: 有 V8 为 js_app_driver.cc / extension_bindings.cc, 否则为 app_driver_no_js.cc。
-
+// 实现由链接决定: 有 V8 为 js_app_driver.cc, 否则为 app_driver_no_js.cc。
 // 按 settings 创建驱动(bundle 为空时为占位驱动)。bundle 加载/执行失败返回错误(消息含 JS 栈)。
 StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings, WindowClient& client,
                                                      const AppHost& host);
-
-// 扩展 C ABI 的 JS 部分(MomoCallApi 与 builder_add_function), 供 ExtensionHost 构造时填入函数表。
-const ExtensionJsGlue& GetExtensionJsGlue();
 
 }  // namespace momo::engine::ui

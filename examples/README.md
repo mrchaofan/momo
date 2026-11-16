@@ -22,4 +22,4 @@ out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/counter/
 node framework/packages/cli/momo.mjs build examples/counter --out=out/apps --runtime=out/debug/embedder/Momo.app   # 打包成 .app
 ```
 
-扩展的使用示例见 `extensions/examples/`（hello、texture）。
+扩展的使用示例见 `extensions/examples/`（hello、texture、webview）；`examples/webview` 是用到 webview 扩展的示例应用。

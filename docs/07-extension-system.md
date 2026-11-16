@@ -1,131 +1,153 @@
-# 07 · 扩展机制设计
+# 07 · 原生扩展
 
-一方暴露的 JS API 永远不够(数据库、音视频、托盘、硬件、现有 C/C++ SDK…)。Momo 的扩展机制允许三方开发者**用原生代码直接调用平台能力,并借助 engine 层能力(JS 绑定、消息通道、窗口句柄、GPU 上下文、帧回调)把功能安全地暴露给 JS**。对标 Flutter Plugin + RN TurboModule,但以**稳定 C ABI** 为边界(扩展与宿主可用不同编译器/标准库版本构建)。
+一方暴露的 JS API 永远不够(数据库、音视频、托盘、硬件、现有 C/C++ SDK…)。Momo 的 JS 运行在 Node.js 环境里
+(docs/04), 所以**原生扩展就是 Node.js 原生插件**(`.node`, Node-API): npm 上现成的原生包直接可用, 自己写的扩展
+也用同一套工具。Momo 只补上 Node-API 给不了的东西——引擎自己的能力(平台线程、外部纹理、平台视图), 以一张很小的
+**宿主能力表**(稳定 C ABI)提供。
 
 ## 1. 扩展的形态
 
-一个扩展 = **JS 包 + 可选原生库**:
+一个扩展 = 一个普通的 npm 包: **JS 门面 + 一个 `.node` 文件**。
 
 ```
 ext-sqlite/
-├── package.json          # momo 字段声明原生库与权限
-├── js/index.ts           # JS 门面: 封装消息通道/原生函数, 提供好用的 API
+├── package.json          # 普通的 package.json, 没有 Momo 专有的声明
+├── js/index.ts           # JS 门面: import 插件, 给它的函数加上类型, 提供好用的 API
 ├── native/
-│   ├── CMakeLists.txt
-│   └── src/ext_sqlite.cc # 实现 momo_ext_init 入口
-└── prebuilt/             # 分发时附带: windows-x64/ext_sqlite.dll, macos-arm64/....dylib
+│   ├── CMakeLists.txt    # find_package(MomoExtSdk) + momo_add_extension(ext_sqlite ...)
+│   └── src/ext_sqlite.cc # Node-API 模块(NAPI_MODULE_INIT)
+└── build/ext_sqlite.node # 编译产物(node-gyp 的惯例位置;不入库)
 ```
-
-`package.json` 声明:
-
-```json
-{
-  "name": "@acme/ext-sqlite",
-  "momo": {
-    "extension": {
-      "id": "acme.sqlite",
-      "native": { "windows-x64": "prebuilt/windows-x64/ext_sqlite.dll",
-                   "macos-arm64": "prebuilt/macos-arm64/libext_sqlite.dylib" },
-      "specifier": "ext:sqlite",
-      "capabilities": ["filesystem"]
-    }
-  }
-}
-```
-
-构建工具(framework/packages/cli, `@momo/cli`)收集依赖中的扩展声明,生成 `extensions.manifest`(打进应用资源),并把原生库拷入应用包。**加载是静态声明式的**——不支持运行期从任意路径 dlopen,降低被当作通用注入器的风险。
-
-## 2. C ABI(extensions/sdk/include/momo/momo_extension.h)
-
-C++ 扩展可使用其上的 header-only 封装 `momo_extension.hpp`(不引入新的跨边界符号);SDK 以 CMake 包 `MomoExtSdk` 随构建产物发布(`out/<build>/sdk/`),见 extensions/README.md。
-
-扩展只依赖这一个头文件。核心形状:
-
-```c
-#define MOMO_EXT_API_VERSION 1
-
-typedef struct MomoHostApi MomoHostApi;   // 宿主函数表(见 §3)
-typedef struct MomoExtension {
-  uint32_t struct_size;
-  const char* id;                          // "acme.sqlite"
-  void* user_data;
-  void (*on_attach)(void* user_data, const MomoHostApi* host, MomoEngineRef engine);
-  void (*on_detach)(void* user_data);      // 引擎关闭前, 必须释放一切宿主资源
-} MomoExtension;
-
-// 扩展导出的唯一入口(C 符号):
-MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out);
-```
-
-版本策略:`MomoHostApi` 只增不改不删(结构体带 size 字段);扩展在 init 中检查版本号,宿主拒绝过新的扩展并给出明确错误。
-
-## 3. 宿主能力面(MomoHostApi)
-
-按能力域分组的函数表,全部 C 签名、无异常传播(返回 `MomoStatus`):
-
-| 能力域 | 代表函数 | 说明/线程约定 |
-|---|---|---|
-| 模块注册 | `register_module(engine, "ext:sqlite", setup_cb)` | setup 回调在 ui 线程被调,用 `MomoJsBuilder` 声明函数 |
-| JS 函数 | `MomoJsBuilder.add_function(name, fn, user_data)` | fn 收 `MomoCallInfo`(读参数/设返回值/抛 JS 错误的 C API),**在 ui 线程被调,禁止阻塞** |
-| 消息通道 | `channel_set_handler / channel_send / channel_reply` | 字节流;handler 可声明回调线程(platform/pool) |
-| 任务投递 | `post_task(engine, runner_kind, fn, user_data)`、`post_delayed` | runner_kind ∈ {platform, ui, io, worker_pool} |
-| 窗口访问 | `get_window_handle(view_id)` → HWND/NSView* | 仅 platform 线程;托盘、子窗口、系统集成用 |
-| 帧参与 | `add_frame_callback(engine, cb)` | ui 线程注册(注册即请求一帧, 不经其他线程),vsync 后调用;视频/图表类扩展驱动动画 |
-| 纹理注入 | `texture_registry_register(...)`, `texture_mark_frame_available` | 扩展在自己线程生成像素/GPU 纹理,引擎合成时采样——视频播放、相机、原生渲染互操作的正路 |
-| 平台视图 | `platform_view_register_factory(engine, "acme.webview", factory)`、`platform_view_get(id)` | 仅 platform 线程。扩展提供原生视图(NSView*/HWND)的 create/dispose,引擎负责嵌入、合成、输入与焦点(docs/05 §9)——WebView、地图、系统控件的正路 |
-| 资源 | `open_asset(path)` | 读取打进应用包的扩展资源 |
-| 日志/崩溃 | `log(level, tag, msg)` | 汇入引擎日志 |
-
-**平台视图与纹理注入互补**:纹理适合"扩展自己生成像素"的内容(视频帧、相机);平台视图适合"本身就是系统视图、
-需要原生输入/IME/无障碍"的内容(WebView)。扩展只负责创建与释放视图,嵌入的难点(分片合成、同帧呈现、命中遮挡、
-焦点交接)全部在引擎与 embedder 中解决, 因此三方扩展无需接触引擎内部 API。
-
-**纹理注入是"扩展借助 engine 绘制能力"的核心设计**:扩展不直接拿 SkCanvas(Skia C++ ABI 不稳定),而是注册外部纹理(IOSurface/D3D 共享句柄/CPU 位图),JS 侧用 `<Texture textureId>` widget 占位,引擎在 LayerTree 中以 TextureLayer 合成。
-
-## 4. JS 侧形态
-
-JS 门面把底层通路包装成友好 API:
 
 ```ts
 // ext-sqlite/js/index.ts
-import { native } from "ext:sqlite";          // ExtensionHost 注册的 synthetic module
+import addon from "../build/ext_sqlite.node";     // 默认导出 = 插件的 exports
+const native = addon as { open(path: string): Promise<number> };
 export class Database {
-  static async open(path: string): Promise<Database> { ... } // 内部走 native.open / 消息通道
+  static async open(path: string): Promise<Database> { ... }
 }
 ```
 
-对应用开发者而言与普通 npm 包无差别:`npm i @acme/ext-sqlite` + `import { Database } from "@acme/ext-sqlite"`。
+对应用开发者而言与任何 npm 包无差别: `npm i @acme/ext-sqlite` + `import { Database } from "@acme/ext-sqlite"`。
 
-## 5. 加载与生命周期(engine/extension/)
+**JS 与原生之间只有 Node-API 一条路**: 函数、对象、类、Promise、`napi_async_work`(线程池)、
+`napi_threadsafe_function`(从别的线程回到 JS)。不经过消息通道, 也没有 Momo 专有的参数/返回值 API。
+
+## 2. 加载
+
+没有 manifest, 没有宿主侧的扩展列表: 扩展由 JS 加载, 加载失败就是一次普通的 `import` 失败(异常里有原因)。
 
 ```
-Shell 启动 → ExtensionHost 读 extensions.manifest
- → 逐个 dlopen/LoadLibrary(应用包内路径) → 解析 momo_ext_init → 版本握手
- → on_attach(host_api, engine)            [platform 线程]
- → 扩展注册模块/通道; ui 线程建 JS 绑定
- → 宿主 Shell::Run: ui 线程创建 JS 运行时, 执行 bundle(异步)
- … 运行期 …
- → 引擎关闭: JS 运行时销毁 → 它创建的平台视图全部 dispose → on_detach
-   → 排空并停止扩展 worker pool → 拒绝该扩展此后的一切 API 调用
-   (动态库不卸载: 扩展线程上可能仍有在途回调, 与 Flutter 插件一致)
+JS: import addon from "./x.node"
+ → 运行时的模块钩子(engine/runtime/node_bootstrap.cc)把 .node 交给 Node 的 require → dlopen → NAPI_MODULE_INIT
+ → 需要宿主能力的门面: native.attach(nativeHost, …)        [全部在 ui(JS)线程]
 ```
 
-**扩展与 JS 运行时的关系**。一个进程里只有一个 JS 运行时(没有热重启, docs/04 §8), 它晚于 `on_attach` 创建、早于
-`on_detach` 销毁。所以扩展里"属于 JS"的状态(JS 传来的句柄、按 id 登记的对象、等待 JS 应答的请求)与扩展自身同寿,
-在 `on_detach` 清理即可, 不需要额外的生命周期事件:
+- Node 自己只在 `require` 里认 `.node`;Momo 的模块钩子让 ESM 的 `import x from "./x.node"` 也能用(默认导出是
+  插件的 exports)。类型声明(`declare module "*.node"`)在 `@momo/framework` 里。
+- **打包**(`momo bundle` / `momo build`, docs/09 §4): 按路径 import 的 `.node` 被拷到 `<out>/native/`, bundle 里的
+  导入改为 `./native/<name>.node`。`.node` 不存在(扩展还没编译)时打包报错。只认静态的按路径 import;运行期自己
+  拼路径找 `.node` 的第三方包(如用 `node-gyp-build` 的)不会被拷贝, 这类包不要打进 bundle。
+- 不做"能力声明"与加载白名单: JS 本来就能 `process.dlopen`、读写文件、起子进程, 宿主拦不住, 就不假装拦。
 
-- `on_attach` 时还没有 JS 运行时: 运行时发来的消息一定晚于 `on_attach`。
-- `on_detach` 时 JS 运行时已销毁(不再有 JS 函数调用、帧回调), 它创建的平台视图已全部 dispose。
-- 宿主自己管的东西(平台视图、通道应答、Promise)不依赖扩展配合, 照常由宿主回收。
+## 3. 宿主能力表(extensions/sdk/include/momo/momo_host.h)
 
-  GPU 共享句柄(IOSurface / D3D)为预留。
-- 引擎保留 `momo/*` 通道名;扩展加载错误是可查询的状态: JS 向 `momo/extensions` 发方法调用 `getErrors`(StandardMethodCodec),
-  得到 `string[]`(每项 `"<id>: <原因>"`, 全部成功为空数组)。任何时刻都能问到同样的结果。
-  框架里的写法: `new MethodChannel("momo/extensions").invokeMethod("getErrors")`。
-- 工具链: `framework/packages/cli/momo.mjs` 的 `bundle` / `build`(manifest 生成 + 库拷贝 + 能力报告;声明校验与 `ext verify --package` 共用)、`ext create`、`ext verify`。
-- 平台视图(v1 追加, M6): `MomoHostApi` 末尾追加 `platform_view_register_factory` / `platform_view_get`(扩展以
-  `struct_size` 判断宿主是否提供;C++ 封装 `Host::SupportsPlatformViews / RegisterPlatformViewFactory / PlatformView`)。
-  create 返回的原生视图归扩展所有(macOS 惯用 `CFBridgingRetain`/`CFBridgingRelease`),每次成功 create 恰好对应一次
-  dispose,且全部早于 `on_detach`;类型名 `momo/` 前缀保留。能力声明 `platform-view`。
-- 示例: `extensions/examples/{hello,texture,webview}-extension`(webview: macOS WKWebView 平台视图 + JS 门面
-  `WebView` / `WebViewController`;示例应用 `examples/webview`: 多标签浏览器)(tray 示例已在精简示例时删除, 窗口句柄 API 由 `ExtensionHostTest.CallsAfterDetachAreRejected` 覆盖);端到端测试 `engine/extension/extension_unittests.cc`。
+只有用到引擎能力的扩展才需要它。JS 侧 `import { nativeHost } from "momo:services"`(一个 BigInt: 表的地址),
+原样传给插件, 插件用头文件里的 `momo_host_from_napi(env, value)` 取出 `const MomoHost*`。
+
+| 函数 | 调用线程 | 说明 |
+|---|---|---|
+| `post_platform_task(host, fn, user_data)` | 任意 | 在 platform(OS 主)线程执行 `fn`;按投递顺序。原生 UI 只能在那里用 |
+| `texture_create(host, &id)` | 任意 | 创建外部纹理, 得到 id |
+| `texture_update_pixels(host, id, rgba, w, h, row_bytes)` | 任意 | 推一帧 RGBA8(非预乘): 宿主拷贝, 并请求引擎出一帧 |
+| `texture_destroy(host, id)` | 任意 | 销毁 |
+| `platform_view_register_factory(host, type, factory)` | 任意 | 注册视图类型(`"acme.webview"`;`momo/` 前缀保留)。`create` / `dispose` 回调在 platform 线程 |
+| `platform_view_get(host, view_id, &native)` | platform | 按 id 取已创建视图的原生指针(每次查, 不缓存) |
+
+- 纯 C、无异常;全部返回 `MomoStatus`。表带 `struct_size` 与 `api_version`, **只在末尾追加**, 已有字段不改不删。
+- 指针在进程存续期间一直有效, 可以保存、可以在任意线程使用;引擎关闭后各函数返回 `kMomoErrClosed`。
+- **宿主只在 platform 线程调用扩展**, 而且只有两类回调: 平台任务、视图工厂。
+- 这张表里没有、也不需要的东西: 回到 JS 线程用 `napi_threadsafe_function`;后台线程用 `napi_async_work` 或自己
+  开;读应用资源用 `momo:services` 的 `assetsDir`(门面传给插件)或 `node:fs`;日志用自己的方式;跟随帧节奏由 JS
+  驱动(框架的 Ticker)或插件自己定时。
+
+**外部纹理**是"扩展借助引擎绘制能力"的途径: 扩展不直接拿 SkCanvas(Skia 的 C++ ABI 不稳定), 而是在自己的线程
+生成像素并推给纹理, JS 侧用 `Texture` 视图(或 `SceneBuilder.addTexture` / `Canvas.drawTexture`)按 id 显示,
+引擎在 LayerTree 中以 TextureLayer 合成。目前只有 CPU 像素帧。
+
+**平台视图**用于"本身就是系统视图、需要原生输入 / IME / 无障碍"的内容(WebView、地图、系统控件)。扩展只负责
+创建与释放视图;嵌入的难点(分片合成、同帧呈现、命中遮挡、焦点交接)全部在引擎与 embedder 里(docs/05 §9)。
+JS 侧用框架的 `PlatformView`, 经引擎的 `momo/platform_views` 通道请求创建/销毁。目前只有 macOS 的 Metal surface
+支持;软件渲染不支持, Windows embedder 未实现。create 返回的原生视图归扩展所有(macOS 惯用
+`CFBridgingRetain` / `CFBridgingRelease`), 每次成功的 create 恰好对应一次 dispose。
+
+## 4. 关闭
+
+扩展的代码随 JS 运行时一起结束(Node 在环境销毁时运行插件登记的清理函数), 所以引擎对扩展的调用必须先结束。
+`Shell::Shutdown`(platform 线程)的顺序固定:
+
+```
+① 关闭宿主能力表: 此后每个函数返回 kMomoErrClosed;已投递而未执行的平台任务被丢弃(不会执行)
+② dispose 全部平台视图(先移出窗口, 再调工厂的 dispose), 清空工厂            ← 此后引擎不再调用任何扩展代码
+③ 销毁 JS 运行时: 扩展用 napi_add_env_cleanup_hook 登记的清理函数在这里执行
+④ raster: 释放 GPU 资源
+```
+
+由此得到扩展作者要记住的两条:
+
+- **清理函数执行时, 宿主已不会再调用你**(视图已全部 dispose, 平台任务不再执行)。在清理函数里停掉自己的线程、
+  关掉 `napi_threadsafe_function`。
+- ② 时 JS 还在运行, 可能对已经 dispose 的视图 id 发命令: 所以按 id 查视图, 查不到就报错, 不缓存指针。
+
+一个进程里只有一个 JS 运行时(没有热重启, docs/04 §8), 所以扩展里"属于 JS"的状态与进程同寿, 没有别的生命周期
+事件。系统框架自己的在途回调(如 WebKit 的 completion handler)可能晚于 ③ 才到: 扩展要自己保证此时不再碰 JS
+(webview 示例: 清理函数里把 threadsafe function 置空, 之后的消息丢弃)。
+
+## 5. SDK 与构建
+
+SDK = 编译一个能被 Momo 加载的插件所需的全部。构建 Momo 时放到 `out/<build>/sdk/`, 也可
+`cmake --install <build> --prefix <dir> --component sdk`;发布产物是 `momo-ext-sdk-v<version>-<platform>.zip`。
+
+| 路径 | 内容 |
+|---|---|
+| `include/momo/momo_host.h` | 宿主能力表(§3) |
+| `include/node/` | **Momo 运行时所带 Node 的头文件**(`node_api.h` 等;同 Electron 发布自己的头文件)。不含 openssl |
+| `Release/node.lib` | 仅 Windows: `libnode.dll` 的导入库(路径同 node-gyp 的 `--nodedir` 约定) |
+| `lib/cmake/MomoExtSdk/` | `find_package(MomoExtSdk)`: `momo::ext_sdk` 与 `momo_add_extension()` |
+
+```cmake
+find_package(MomoExtSdk 1 REQUIRED)        # -DMomoExtSdk_DIR=<sdk>/lib/cmake/MomoExtSdk
+momo_add_extension(ext_acme src/acme.cc)   # CMakeLists.txt 在 <包>/native/ → 产物 <包>/build/ext_acme.node
+```
+
+- **符号从哪来**: Node-API 的符号在 libnode 里, 不在应用的可执行文件里。macOS 上插件以
+  `-undefined dynamic_lookup` 链接, 加载时从进程解析。Windows 上插件直接链接 SDK 里的导入库, 导入表指向
+  `libnode.dll`(与应用 exe 叫什么无关), 所以不需要 node-gyp 的 delay-load 钩子。
+- **用 node-gyp 的扩展**: `node-gyp rebuild --nodedir=<sdk>`(SDK 的布局就是 `--nodedir` 要的布局)。未验证。
+- **npm 上预编译的插件**: macOS 上按设计直接可用——符号在加载时从进程解析, 与自己编译的插件走同一条路(自己编译
+  的已实测;没有拿 npm 上的预编译包测过)。Windows 上, 用新版 node-gyp 编出的插件带有先找
+  `libnode.dll` 的 delay-load 钩子, 按设计可以加载;自己在进程 exe 里查 Node-API 符号的插件加载不了(需要 `Momo.exe`
+  转发导出这些符号, 未做)。Windows 路径均未运行验证。
+- Momo 用的是未打补丁、默认配置的 Node(版本见 docs/09 §2.1), 所以 Node-API 与 Node 自身的 ABI 都和同版本的官方
+  Node 一致;只用 Node-API 的插件不随 Node 版本变化。
+
+## 6. 示例与测试
+
+| 位置 | 内容 |
+|---|---|
+| `extensions/examples/hello-extension` | 纯 C, 只用 Node-API(不需要宿主表): 同步函数、字符串/字节、线程池上的 Promise |
+| `extensions/examples/texture-extension` | C++: 外部纹理, 自己的线程按约 60 fps 推帧;清理函数里停线程 |
+| `extensions/examples/webview-extension` | ObjC++(macOS): WKWebView 平台视图;命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。示例应用 `examples/webview`(多标签浏览器) |
+| `extensions/testing/lifecycle-addon` | 只供测试: 记录宿主对它的每次调用, 验证 §4 的关闭顺序 |
+
+- `engine/extension/extension_unittests.cc`: 宿主能力表的单元测试(只经 C 函数表调用)。
+- `extensions/examples/examples_unittests.cc`: 端到端——真实的引擎(Shell + Node 运行时)执行 JS, JS import 真实的 `.node`。
+- CTest `ExtensionSdk.StandaloneCxxBuild`: 只凭 `<build>/sdk` 独立配置并编译 texture 示例。
+- 工具: `momo ext create <dir>` 生成扩展骨架(`framework/packages/cli/momo.mjs`)。
+
+## 7. 为什么不是自有的扩展 ABI
+
+早期版本有一套自有的扩展机制(`momo_ext_init` 入口、manifest 声明式加载、`ext:*` 模块、自有的 JS 调用参数表、
+Promise token、扩展消息通道)。接入 Node.js 之后它的一大半与 Node-API 重复, 而且弱得多(参数只有
+number / bool / string / bytes), 还挡住了 npm 上现成的原生包;"静态声明式加载更安全"的理由也不再成立(JS 能
+`process.dlopen`)。于是删掉与 Node-API 重复的部分, 只留下引擎能力这一小块, 就是 §3 的那张表。

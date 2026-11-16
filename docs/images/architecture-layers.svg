@@ -56,7 +56,7 @@
 
   <!-- binding strip -->
   <rect x="120" y="252" width="760" height="28" rx="14" fill="#ffffff" stroke="#57606a"/>
-  <text x="500" y="271" text-anchor="middle" class="n">JS ⇄ C++ 边界：import "momo:ui" · "momo:services" · "ext:*"（V8 synthetic module）</text>
+  <text x="500" y="271" text-anchor="middle" class="n">JS ⇄ C++ 边界：import "momo:ui" · "momo:services"（V8 synthetic module）· 原生扩展 "*.node"（Node-API）</text>
 
   <!-- Engine -->
   <rect x="20" y="288" width="960" height="154" rx="10" class="en" stroke-width="1.5"/>
@@ -66,11 +66,11 @@
     <rect x="40" y="320" width="221" height="52" rx="6" class="box en"/>
     <text x="52" y="340" class="n">shell</text><text x="52" y="358" class="d">Shell · Engine · Animator · Rasterizer</text>
     <rect x="273" y="320" width="221" height="52" rx="6" class="box en"/>
-    <text x="285" y="340" class="n">ui</text><text x="285" y="358" class="d">momo:* / ext:* 绑定 · AppDriver</text>
+    <text x="285" y="340" class="n">ui</text><text x="285" y="358" class="d">momo:* 绑定 · AppDriver</text>
     <rect x="506" y="320" width="221" height="52" rx="6" class="box en"/>
     <text x="518" y="340" class="n">runtime</text><text x="518" y="358" class="d">V8 · ESM 模块 · Inspector</text>
     <rect x="739" y="320" width="221" height="52" rx="6" class="box en"/>
-    <text x="751" y="340" class="n">extension</text><text x="751" y="358" class="d">ExtensionHost · dlopen · C ABI</text>
+    <text x="751" y="340" class="n">extension</text><text x="751" y="358" class="d">ExtensionHost · 宿主能力表（C ABI）</text>
 
     <rect x="40" y="380" width="174" height="52" rx="6" class="box en"/>
     <text x="52" y="400" class="n">graphics</text><text x="52" y="418" class="d">DisplayList · LayerTree · Skia</text>

@@ -1,6 +1,6 @@
 #pragma once
 
-// Settings: 一个引擎实例的启动设置(由 embedder 填写, 传给 Shell::Create)。纯数据, 供 shell/ui/extension 共用。
+// Settings: 一个引擎实例的启动设置(由 embedder 填写, 传给 Shell::Create)。纯数据, 供 shell/ui 共用。
 
 #include <filesystem>
 
@@ -9,7 +9,6 @@ namespace momo::engine {
 struct Settings {
   std::filesystem::path bundle_path;  // 空 = 不加载 JS(占位帧, 仅 --dev 下允许)
   std::filesystem::path assets_dir;
-  std::filesystem::path extensions_dir;
   bool enable_inspector = false;
   bool dev_mode = false;           // --dev: 开发模式(momo:services.isDev)
   int inspector_port = 9229;

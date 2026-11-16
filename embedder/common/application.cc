@@ -169,7 +169,6 @@ Status Application::LaunchEngine() {
   MOMO_ASSIGN_OR_RETURN(ResolvedAssets assets, resolver.Resolve(options_.config));
   settings.bundle_path = assets.bundle_path;
   settings.assets_dir = assets.assets_dir;
-  settings.extensions_dir = assets.extensions_dir;
   // V8 code cache: 入口给出的应用缓存目录下。--dev 下 bundle 频繁变化, 缓存反复失效, 不启用。
   if (!options_.config.dev_mode) {
     settings.code_cache_dir = assets.code_cache_dir;
@@ -363,8 +362,8 @@ void Application::TearDown() {
   }
   torn_down_ = true;
 
-  // 1+2) JS 环境最先: ui 线程销毁 JS 运行时(此前投递给它的事件都已执行完), 再是引擎其余部分——平台视图
-  //      (移出窗口后交给扩展释放)、扩展 on_detach、raster 上的 GPU 资源(同步停用各窗口的 surface)。
+  // 1+2) 引擎最先(Shell::Shutdown): 平台视图(移出窗口后交给扩展释放)→ ui 线程销毁 JS 运行时(此前投递给它的
+  //      事件都已执行完)→ raster 上的 GPU 资源(同步停用各窗口的 surface)。
   //      窗口此时仍绑定着: 平台视图要从它们身上移除。与 ui 线程汇合: JS 不返回就在这里等它。
   if (shell_ != nullptr) {
     shell_->Shutdown();

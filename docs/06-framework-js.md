@@ -40,7 +40,7 @@ onDrawFrame : buildOwner.flushBuild → 每个窗口: pipeline.flushLayout → f
               → flushPaint(生成 Picture) → 画面有变化时 scene = 合成 Layer → viewport.render(scene)
 ```
 
-渲染树没有脏节点的窗口不重复合成与提交(引擎保留着它上一次提交的画面)。没有脏节点也提交的情况:首帧、尺寸/缩放变化、重新可见、画面里有外部纹理,以及不是框架请求的帧(引擎自己发起的帧:新视图、重新可见、扩展的帧回调)。
+渲染树没有脏节点的窗口不重复合成与提交(引擎保留着它上一次提交的画面)。没有脏节点也提交的情况:首帧、尺寸/缩放变化、重新可见、画面里有外部纹理,以及不是框架请求的帧(引擎自己发起的帧:新视图、重新可见、外部纹理的新帧)。
 
 延迟任务 `SchedulerBinding.scheduleDelayed(ms, fn)` 由定时器驱动(`SchedulerBinding.timerHost`:生产是宿主的 `setTimeout`,测试注入假时钟),等待期间不请求帧;回调在帧外执行,其中的 `setState` 等照常请求帧。光标闪烁、双击超时、长按 deadline 都走它,所以空闲的应用(包括有输入框聚焦时)不出帧。
 
@@ -87,7 +87,7 @@ view/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`/`
 ## 6. 与 JS 生态的关系
 
 - 框架以 npm 包形式发布(`@momo/framework`),应用用 esbuild 打 bundle;**不依赖任何浏览器/Node API**(唯一的例外是 scheduler 的延迟任务用运行时的 `setTimeout`),全局只存在引擎注入的 `momo:*` 模块——framework/ 的 lint 规则禁止引用 `window.document`、`fetch` 等。
-- `services` 提供的网络/文件等能力由扩展包填充(如 `ext:fetch`),框架核心不内置 IO。
+- 网络/文件等能力来自 Node 的内置模块(docs/04)或原生扩展包(docs/07),框架核心不内置 IO。
 
 ## 7. 测试
 

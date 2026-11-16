@@ -20,6 +20,8 @@ export function setHandler(channel: string, handler: MessageHandler | null): voi
 
 export const isDev = true;
 export const platform = "headless";
+export const assetsDir = "/mock/assets";
+export const nativeHost = 0n;
 
 export const __mockServices = {
   sent,

@@ -70,7 +70,6 @@ class WindowController final : public Object,
   void OnWindowControlsChanged(const std::optional<Rect>& rect) override;
 
   // engine::Shell::Delegate
-  void* GetNativeWindowHandle() override;
   void OnPlatformViewCreated(int64_t view_id, void* native_view) override;
   void OnPlatformViewDisposed(int64_t view_id) override;
   void OnPlatformViewFocusRequested(int64_t view_id) override;

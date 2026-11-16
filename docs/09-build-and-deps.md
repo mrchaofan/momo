@@ -17,7 +17,7 @@ Skia 与 V8 从源码构建成本极高(GN/depot_tools、小时级编译),策略
 | ICU | V8 与 skunicode 共用 | 随 V8/Skia 包提供,注意**两者必须同一 ICU 版本**(坑:符号冲突) |
 | spdlog | 日志 | FetchContent,header-only 模式 |
 | googletest | 测试 | FetchContent |
-| rapidjson 或 simdjson | manifest/配置解析 | FetchContent(禁异常配置) |
+| rapidjson 或 simdjson | 配置解析 | FetchContent(禁异常配置) |
 
 所有预编译包带 SHA256 锁定在 `cmake/deps.lock.json`;`tools/fetch_deps.py` 支持离线镜像(`--mirror`,对 libnode 的源码包同样生效)。
 
@@ -56,7 +56,8 @@ momo::engine          (聚合 momo_engine_{platform,common,shell,runtime,ui,grap
 momo_embedder_common  (静态库: 装配 + 平台抽象接口)
 momo_embedder_{macos,windows}  (静态库: 平台实现, 只链接 momo_engine_platform)
 momo_app_win / momo_app_mac   (可执行文件/App Bundle)
-momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
+momo_ext_sdk          (INTERFACE: 原生扩展的宿主能力表头文件 momo_host.h;引擎侧用)
+momo_ext_sdk_package  (构建产物 <build>/sdk: 完整的扩展 SDK, docs/07 §5)
 ```
 
 可见性由 `target_link_libraries` 的 PRIVATE/PUBLIC 严格控制实现"engine 不见 embedder、平台实现只见 engine/platform 契约"。
@@ -64,10 +65,10 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 ## 4. JS/TS 构建
 
 - framework/ 是 npm workspace, 里面两个发布的包:`packages/momo`(`@momo/framework`, 以 TS 源码发布, 不预先打包)与 `packages/cli`(`@momo/cli`, 命令 `momo`)。CLI 不依赖源码树:应用的依赖按 Node 的规则解析(装在 `node_modules` 里的包), 以 `file:` 指向目录的本地包则直接按它的 `package.json` 解析、不要求先安装(仓库内的示例这样引用框架与扩展)。"Momo 的 JS 怎么打包"只有一份设置(`packages/cli/bundle_options.mjs`), 框架自己的测试打包(`framework/scripts/common.mjs`)复用它。
-- 打应用 bundle 只有一个入口:`framework/packages/cli/momo.mjs bundle <app> [--out=<dir>]`,调 esbuild 产出 `<out>/bundle.js`,扫描依赖产出 `<out>/extensions/{extensions.manifest, 原生库}`(`<out>` 默认 `<app>/dist`;开发循环用它,再以 `Momo --dev --bundle=` 运行)。
+- 打应用 bundle 只有一个入口:`framework/packages/cli/momo.mjs bundle <app> [--out=<dir>]`,调 esbuild 产出 `<out>/bundle.js`;代码里按路径 import 的原生扩展(`.node`, docs/07 §2)拷到 `<out>/native/`, bundle 里的导入改为 `./native/<name>.node`, `.node` 不存在(扩展还没编译)时报错(`<out>` 默认 `<app>/dist`;开发循环用它,再以 `Momo --dev --bundle=` 运行)。
 - 应用打包不走 CMake,由 `framework/packages/cli/momo.mjs build` 完成:复制运行时(`--runtime=` 或环境变量 `MOMO_RUNTIME` 给出;发布产物解压后的内容或自己的构建),把 `momo bundle` 的产物与 `assets/` 放进:
-  - macOS: `<Name>.app/Contents/Resources/{bundle.js, assets/, extensions/}`
-  - Windows: `<Name>/{<Name>.exe, libnode.dll, bundle.js, assets/, extensions/}`(exe 同级即资源目录;`momo build --runtime=<含 Momo.exe 的目录>`, 未验证)
+  - macOS: `<Name>.app/Contents/Resources/{bundle.js, native/, assets/}`
+  - Windows: `<Name>/{<Name>.exe, libnode.dll, bundle.js, native/, assets/}`(exe 同级即资源目录;`momo build --runtime=<含 Momo.exe 的目录>`, 未验证)
 - CMake 只做一件相关的事:把 `MOMO_APP_DEFAULT_BUNDLE`(默认 `examples/hello_frame/main.js`)拷进 `Momo.app` 作为默认 bundle。
 - startup snapshot(`tools/make_snapshot`)未实现,见 docs/04 §1。
 
@@ -90,7 +91,7 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 |---|---|
 | `momo-v<version>-<p>.zip` | 运行时。macOS:`Momo.app`;Windows:`Momo.exe`、`libnode.dll`、`icudtl.dat`、`bundle.js`(默认 bundle)。另有 `version` 文件。解压后直接传给 `momo build --runtime=` |
 | `momo-headless-v<version>-<p>.zip` | `momo_headless` + libnode:无窗口运行 bundle 的测试运行器 |
-| `momo-ext-sdk-v<version>.zip` | 扩展 SDK:`include/`、`lib/cmake/MomoExtSdk/`、`types/`(与平台无关) |
+| `momo-ext-sdk-v<version>-<p>.zip` | 原生扩展 SDK(docs/07 §5):`include/momo/momo_host.h`、`include/node/`(Node 头文件, 不含 openssl)、`lib/cmake/MomoExtSdk/`;Windows 另有 `Release/node.lib`(`libnode.dll` 的导入库, 未运行验证) |
 | `momo-framework-v<version>.tgz` | `@momo/framework` 的 npm 包(与平台无关) |
 | `momo-cli-v<version>.tgz` | `@momo/cli` 的 npm 包(与平台无关;版本与 `@momo/framework` 相同, 打包时校验) |
 | `SHASUMS256.txt` | 以上全部文件的 SHA256 |

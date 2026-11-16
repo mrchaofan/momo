@@ -1,7 +1,7 @@
 # engine/: 每个模块一个静态库 momo_engine_<module>(docs/02 §1)。基础设施(线程/任务/对象/Status…)在顶层 base/。
 # 模块依赖(单向, 无环; A → B 表示 A 依赖 B):
-#   shell → ui → {runtime, extension, text, assets} → graphics → base
-#   extension → common;各模块按需 → platform(纯接口)/ common(Settings、TaskRunners、消息通道)
+#   shell → {ui, extension};ui → {runtime, text, assets} → graphics → base
+#   extension → {common, graphics};各模块按需 → platform(纯接口)/ common(Settings、TaskRunners、消息通道)
 
 if(NOT MOMO_HAVE_SKIA)
   message(FATAL_ERROR "engine requires the Skia prebuilt: python3 tools/fetch_deps.py skia")
@@ -54,16 +54,15 @@ add_library(momo_engine_assets STATIC
   assets/image_decoder.cc)
 target_link_libraries(momo_engine_assets PUBLIC momo_engine_graphics PRIVATE momo::skia)
 
-# ---- momo_engine_extension: 扩展宿主(C ABI, manifest, dlopen;不含 V8)----
+# ---- momo_engine_extension: 宿主能力表 MomoHost 的实现(原生扩展是 Node 插件, 由 JS 加载;不含 V8)----
 add_library(momo_engine_extension STATIC
   extension/extension_host.cc)
 target_link_libraries(momo_engine_extension PUBLIC momo_base momo_engine_common momo_engine_graphics
-                      momo_engine_assets momo_ext_sdk)
-target_link_libraries(momo_engine_extension PRIVATE ${CMAKE_DL_LIBS})
+                      momo_ext_sdk)
 
 # ---- momo_engine_runtime / momo_engine_ui: V8(v8.h 只在这两个模块的实现文件中出现) ----
-# ui 提供 AppDriver 与扩展 C ABI 的 JS 部分(engine/ui/app_driver.h)的实现, shell 只面向该接口。
-# sanitizer 构建没有 V8(docs/09 §2.1): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)与返回错误的 JS 胶水。
+# ui 提供 AppDriver(engine/ui/app_driver.h)的实现, shell 只面向该接口。
+# sanitizer 构建没有 V8(docs/09 §2.1): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)。
 if(MOMO_HAVE_V8)
   add_library(momo_engine_runtime STATIC
     runtime/js_args.cc
@@ -75,7 +74,6 @@ if(MOMO_HAVE_V8)
   target_link_libraries(momo_engine_runtime PUBLIC momo_base momo::v8)
 
   add_library(momo_engine_ui STATIC
-    ui/extension_bindings.cc
     ui/image_bindings.cc
     ui/js_app_driver.cc
     ui/painting_bindings.cc
@@ -84,11 +82,10 @@ if(MOMO_HAVE_V8)
     ui/text_bindings.cc
     ui/platform_dispatcher_binding.cc)
   target_link_libraries(momo_engine_ui PUBLIC momo_engine_runtime momo_engine_common momo_engine_graphics
-                        momo_engine_text momo_engine_assets momo_engine_extension
-                        momo_engine_platform)
+                        momo_engine_text momo_engine_assets momo_engine_platform)
 else()
   add_library(momo_engine_ui STATIC ui/app_driver_no_js.cc)
-  target_link_libraries(momo_engine_ui PUBLIC momo_engine_common momo_engine_graphics momo_engine_extension
+  target_link_libraries(momo_engine_ui PUBLIC momo_engine_common momo_engine_graphics
                         momo_engine_platform)
 endif()
 
@@ -113,6 +110,7 @@ if(MOMO_BUILD_TESTS)
   add_executable(momo_engine_unittests
     common/common_unittests.cc
     common/platform_view_registry_unittests.cc
+    extension/extension_unittests.cc
     graphics/composition_unittests.cc
     graphics/graphics_unittests.cc
     graphics/testing/golden.cc
@@ -121,10 +119,7 @@ if(MOMO_BUILD_TESTS)
     shell/shell_unittests.cc
     shell/thread_host_unittests.cc)
   if(MOMO_HAVE_V8)
-    # 扩展宿主用进程内测试扩展驱动(不依赖 extensions/examples;加载示例扩展动态库的端到端测试在
-    # extensions/ 的 momo_extension_examples_unittests)。
-    target_sources(momo_engine_unittests PRIVATE
-      runtime/runtime_unittests.cc ui/ui_unittests.cc extension/extension_unittests.cc)
+    target_sources(momo_engine_unittests PRIVATE runtime/runtime_unittests.cc ui/ui_unittests.cc)
   endif()
   if(APPLE)
     target_sources(momo_engine_unittests PRIVATE graphics/gpu/metal_rasterizer_unittests.mm)

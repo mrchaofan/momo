@@ -40,8 +40,8 @@ embedder/
 4. Application::Launch(): 创建启动窗口(隐式视图 0)的 PlatformWindow + RenderSurface 并 Show(此时只有原生空窗口,显示闪屏底色)
 5. AssetResolver 解析 bundle → Shell::Create() → 注册通道、绑定窗口 → Shell::Run()(Application::LaunchEngine;Launch 到此返回,
    状态仍是 Launching, 主线程进入事件循环)
-   a. engine::Shell::Create(TaskRunners, Settings, on_exit_requested): 只组装引擎(不创建 JS 运行时、不等待其他线程);
-      ExtensionHost 扫描并加载声明的原生扩展(见 docs/07);主显示器刷新率作为 vsync 回退定时器频率
+   a. engine::Shell::Create(TaskRunners, Settings, on_exit_requested): 只组装引擎(不创建 JS 运行时、不等待其他线程;
+      原生扩展由 JS 加载, 这里不加载任何东西, 见 docs/07);主显示器刷新率作为 vsync 回退定时器频率
    b. 注册宿主通道(AppChannel: momo/app;WindowChannel: momo/window;PlatformChannels: momo/clipboard、momo/url、momo/textinput)
    c. WindowManager::AttachEngine: platform.CreateVsyncSource()(应用只有一个;不支持时为空 → 定时器回退)经 Shell::SetVsyncSource 移交 Shell,
       再逐个窗口 Shell::AttachView;帧时钟跟随 id 最小的窗口所在的显示器(platform.SetVsyncWindow)
@@ -75,11 +75,11 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 
 ### 引擎装配(Application::LaunchEngine)
 
-Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果(bundle、资源、扩展目录, 以及入口给出的缓存目录下的 V8 code cache 目录) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。销毁时先 `Shell::Shutdown`(JS 运行时最先), 再 `WindowManager::DetachEngine`、移除宿主通道。
+Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果(bundle、资源目录, 以及入口给出的缓存目录下的 V8 code cache 目录) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。销毁时先 `Shell::Shutdown`(顺序见 §4), 再 `WindowManager::DetachEngine`、移除宿主通道。
 
 ### WindowController(common)
 
-把 `PlatformWindow` 的视图相关回调(尺寸/DPI 变化、输入事件、焦点)转发给 `engine::Shell` 对应的视图;纯通知类的窗口事件(状态、焦点、屏幕框、窗口控制按钮占用区域、首帧)直接经注入的 `WindowChannel` 通知 JS, 需要 WindowManager 做决定的(关闭请求、焦点归属、IME 路由)经 `WindowController::Client` 接口交给它;平台窗口每次上报当前的原始值, 去重(与上次相同则不转发)只在这里做;反向只承接引擎对视图的请求(指针捕获转交、平台视图挂载/聚焦、原生句柄)。窗口外观与行为(标题、光标、位置、标题栏…)的请求不经过这里: `momo/window` 通道直接调用 `PlatformWindow`。输入事件在 platform 线程收到后打包为 `PointerDataPacket`/`KeyData` 投递至 ui 线程。引擎附着前收到的 metrics/焦点会被缓存,附着时补发。原生关闭请求**总是先拦截**(`OnCloseRequested` 返回 false),交给 `WindowManager::RequestCloseWindow` 异步询问 JS。
+把 `PlatformWindow` 的视图相关回调(尺寸/DPI 变化、输入事件、焦点)转发给 `engine::Shell` 对应的视图;纯通知类的窗口事件(状态、焦点、屏幕框、窗口控制按钮占用区域、首帧)直接经注入的 `WindowChannel` 通知 JS, 需要 WindowManager 做决定的(关闭请求、焦点归属、IME 路由)经 `WindowController::Client` 接口交给它;平台窗口每次上报当前的原始值, 去重(与上次相同则不转发)只在这里做;反向只承接引擎对视图的请求(指针捕获转交、平台视图挂载/聚焦)。窗口外观与行为(标题、光标、位置、标题栏…)的请求不经过这里: `momo/window` 通道直接调用 `PlatformWindow`。输入事件在 platform 线程收到后打包为 `PointerDataPacket`/`KeyData` 投递至 ui 线程。引擎附着前收到的 metrics/焦点会被缓存,附着时补发。原生关闭请求**总是先拦截**(`OnCloseRequested` 返回 false),交给 `WindowManager::RequestCloseWindow` 异步询问 JS。
 
 ## 4. 生命周期与关闭顺序
 
@@ -89,14 +89,15 @@ Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时�
 Quit(JS 可取消) / Exit(code): 窗口在流程里关闭(JS 还在, 收到各自的 closed)
  → Application::Shutdown: 进入 Terminating(通知 JS)
  → 0) platform EventLoop::Terminate: 当前任务返回后排空、析构 DeleteLater 对象, 再退出原生循环
- —— 消息循环结束, Run() 返回之前: Application::TearDown, JS 环境最先, 逐级销毁 ——
- → 1) ui 线程: 销毁 JsRuntime(Isolate Dispose), 再停止帧调度;平台视图交给扩展释放, 扩展 on_detach
+ —— 消息循环结束, Run() 返回之前: Application::TearDown, 逐级销毁 ——
+ → 1) platform 线程: 关闭原生扩展的宿主能力表;全部平台视图移出窗口、交给扩展释放(此后引擎不再调用扩展, docs/07 §4)
+      ui 线程: 销毁 JsRuntime(Isolate Dispose;扩展登记的清理函数在这里执行), 再停止帧调度
  → 2) raster 线程: 释放 LayerTree 与 GPU 资源,销毁 GrDirectContext(同步停用各窗口的 surface)
  → 3) 销毁还开着的 RenderSurface 与 PlatformWindow(platform 线程;正常退出时窗口已在流程里关闭)
  → 4) ThreadHost::Join(): ui → raster → io(各自排空已到期任务、清理 DeleteLater 对象)
 ```
 
-第 1 步要与 ui 线程汇合: 此前投递给 JS 的事件都先执行完;JS 不返回(`--inspect-brk` 等待调试器连接、脚本死循环)时
+第 1 步销毁 JsRuntime 时要与 ui 线程汇合: 此前投递给 JS 的事件都先执行完;JS 不返回(`--inspect-brk` 等待调试器连接、脚本死循环)时
 退出停在这里等它。不强行终止 JS 的执行, 也不强杀进程。
 
 ## 5. 平台入口差异
@@ -106,7 +107,7 @@ Quit(JS 可取消) / Exit(code): 窗口在流程里关闭(JS 还在, 收到各�
 
 ### 命令行(`AppConfig::Parse`)
 
-`--bundle=<path>`、`--assets=<dir>`、`--title=<text>`、`--width=<px>`、`--height=<px>`、`--dev`。未知参数与系统参数(`-psn_*`、`-NS*`)忽略。资源根目录由入口提供:Mac `NSBundle.mainBundle.resourcePath`,Win exe 所在目录;默认布局 `<resources>/{bundle.js, assets/, extensions/}`(docs/09 §4)。应用的缓存目录(V8 code cache 在其 `v8/` 下)同样由入口提供, 每个应用一个:Mac `~/Library/Caches/<bundle identifier>`,Win `%LOCALAPPDATA%\<exe 名>`(与单实例的 app id 相同)。
+`--bundle=<path>`、`--assets=<dir>`、`--title=<text>`、`--width=<px>`、`--height=<px>`、`--dev`。未知参数与系统参数(`-psn_*`、`-NS*`)忽略。资源根目录由入口提供:Mac `NSBundle.mainBundle.resourcePath`,Win exe 所在目录;默认布局 `<resources>/{bundle.js, native/, assets/}`(docs/09 §4)。应用的缓存目录(V8 code cache 在其 `v8/` 下)同样由入口提供, 每个应用一个:Mac `~/Library/Caches/<bundle identifier>`,Win `%LOCALAPPDATA%\<exe 名>`(与单实例的 app id 相同)。
 
 ## 6. 测试策略
 
