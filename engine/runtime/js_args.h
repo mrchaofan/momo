@@ -25,7 +25,6 @@ bool ArgNumber(const Args& args, int index, double* out);
 bool ArgUint32(const Args& args, int index, uint32_t* out);
 // 可选数字参数: 缺省/undefined 时取 fallback。
 bool OptNumber(const Args& args, int index, double fallback, double* out);
-bool ArgFunction(const Args& args, int index, v8::Local<v8::Function>* out);
 
 // 第 index 个参数为 T 的包装对象。
 template <typename T>
@@ -37,8 +36,5 @@ T* ArgWrapped(const Args& args, int index) {
   }
   return object;
 }
-
-// 把 value 设为当前调用的返回值。
-inline void Return(const Args& args, double value) { args.GetReturnValue().Set(value); }
 
 }  // namespace momo::engine::runtime

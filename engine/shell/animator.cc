@@ -66,9 +66,6 @@ void Animator::BeginFrame(TimePoint frame_start, TimePoint frame_target) {
   }
 
   frame_scheduled_ = false;
-  frame_start_ = frame_start;
-  frame_target_ = frame_target;
-  build_start_ = Clock::now();
   stats_.frames_begun++;
 
   current_ = std::make_unique<FrameItem>();
@@ -103,11 +100,6 @@ void Animator::Render(std::unique_ptr<graphics::LayerTree> layer_tree) {
       return;
     }
   }
-  graphics::LayerTree::FrameTimings& timings = layer_tree->mutable_timings();
-  timings.vsync_start = frame_start_;
-  timings.frame_target = frame_target_;
-  timings.build_start = build_start_;
-  timings.build_end = Clock::now();
   current_->layer_trees.push_back(std::move(layer_tree));
 }
 

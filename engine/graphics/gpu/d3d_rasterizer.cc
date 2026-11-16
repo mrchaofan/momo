@@ -140,6 +140,4 @@ Status D3DRasterizer::DrawSlice(const Composition& composition, size_t slice, vo
   });
 }
 
-void D3DRasterizer::WaitForGpu() { impl_->context->flushAndSubmit(GrSyncCpu::kYes); }
-
 }  // namespace momo::engine::graphics

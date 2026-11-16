@@ -8,20 +8,12 @@
 #include <memory>
 
 #include "base/geometry.h"
-#include "base/time.h"
 #include "engine/graphics/layer.h"
 
 namespace momo::engine::graphics {
 
 class LayerTree {
  public:
-  struct FrameTimings {
-    TimePoint vsync_start;   // 本帧 vsync 时间
-    TimePoint frame_target;  // 期望上屏时间
-    TimePoint build_start;   // JS onBeginFrame 开始
-    TimePoint build_end;     // 提交 Scene 时刻
-  };
-
   // root 可为空(空帧: 只清屏)。
   LayerTree(Size frame_size, double device_pixel_ratio,
             std::shared_ptr<ContainerLayer> root = nullptr)
@@ -40,16 +32,12 @@ class LayerTree {
   bool has_platform_views() const { return has_platform_views_; }
   void set_has_platform_views(bool value) { has_platform_views_ = value; }
 
-  const FrameTimings& timings() const { return timings_; }
-  FrameTimings& mutable_timings() { return timings_; }
-
  private:
   Size frame_size_;
   double device_pixel_ratio_;
   std::shared_ptr<ContainerLayer> root_;
   int64_t view_id_ = 0;
   bool has_platform_views_ = false;
-  FrameTimings timings_;
 };
 
 }  // namespace momo::engine::graphics

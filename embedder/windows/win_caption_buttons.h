@@ -39,7 +39,6 @@ class WinCaptionButtons {
 
   // 外观有变化时重画(并按布局移动子窗口)。
   void Update(const WinCaptionButtonsAppearance& appearance);
-  HWND hwnd() const { return hwnd_; }
 
  private:
   void Paint();

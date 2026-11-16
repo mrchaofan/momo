@@ -11,8 +11,8 @@
 | 词汇类型 | `status.h`、`logging.h`、`macros.h`、`time.h`、`closure.h`、`geometry.h`、`matrix.h` | Status/StatusOr 与 `MOMO_RETURN_IF_ERROR`;`MOMO_LOG/CHECK/DCHECK`;仅可移动的 `Closure`;Point/Size/Rect/Matrix |
 | 对象模型 | `object.h/.cc` | `Object`、`ObjectPtr<T>`、`MakeObject<T>()`、`WeakPtr<T>`、`PostToObject()`、`MOMO_DCHECK_ON_AFFINITY_THREAD()` |
 | 事件循环 | `event_loop.h/.cc`、`message_pump.h/.cc` | 统一 `EventLoop`(任务调度 + 延迟析构)与可替换的 `MessagePump`(默认:条件变量) |
-| 任务投递 | `task_runner.h/.cc`、`task_util.h/.cc` | `TaskRunner`;`PostTaskAndWait`、`PostTaskAndReply`、`PostTaskAndReplyWithResult` |
-| 线程 | `thread.h/.cc`、`worker_pool.h/.cc`、`waitable_event.h` | 具名线程(自带 EventLoop)、CPU 线程池、启动/关闭用的汇合事件 |
+| 任务投递 | `task_runner.h/.cc`、`task_util.h/.cc` | `TaskRunner`;`PostTaskAndWait`、`PostTaskAndReplyWithResult` |
+| 线程 | `thread.h/.cc`、`waitable_event.h` | 具名线程(自带 EventLoop)、启动/关闭用的汇合事件 |
 | 并发数据结构 | `pipeline.h` | 固定深度生产/消费管道(帧管线背压) |
 | 原生循环适配 | `native_loop.h`、`native_message_pump.h/.cc` | 平台层实现 `NativeLoop`(NSApp/GCD、Win32 泵),`NativeMessagePump` 把它适配成 EventLoop 的 pump |
 | 测试支持 | `testing/scoped_test_event_loop.h`、`testing/mock_native_loop.h` | 测试线程上的临时 EventLoop;可嵌套的模拟原生循环 |
@@ -42,7 +42,7 @@
 
 **绑定**:每个循环绑定一个线程,每个线程至多一个循环;`Run`/`RunUntilIdle` 不可嵌套。
 
-**任务组合(task_util.h)**:`PostTaskAndWait` 仅用于启动/关闭汇合点(目标线程已终止时返回 false,不死锁);`PostTaskAndReply[WithResult]` 用于"在 A 线程做事、回 B 线程汇报"(如 `Shell::RequestClose`:ui 上询问 JS,platform 上回复)。
+**任务组合(task_util.h)**:`PostTaskAndWait` 仅用于启动/关闭汇合点(目标线程已终止时返回 false,不死锁);`PostTaskAndReplyWithResult` 用于"在 A 线程做事、回 B 线程汇报"(如 `Shell::RequestClose`:ui 上询问 JS,platform 上回复)。
 
 ## 4. 依赖方向
 

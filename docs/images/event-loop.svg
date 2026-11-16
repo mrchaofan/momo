@@ -36,7 +36,7 @@
   <text x="269" y="144" class="n">DoWork()（一轮迭代）</text>
   <text x="269" y="164" class="i">1. 取"此刻已到期"任务的快照，按序执行</text>
   <text x="269" y="182" class="i">   （执行中新投递的任务进入下一轮）</text>
-  <text x="269" y="200" class="i">2. task_depth()==0 → 安全点：析构 DeleteLater 对象</text>
+  <text x="269" y="200" class="i">2. task_depth_==0 → 安全点：析构 DeleteLater 对象</text>
   <text x="269" y="218" class="i">   （嵌套循环中只执行任务，不析构）</text>
   <text x="269" y="236" class="i">3. 返回下一次唤醒时刻，交给 pump 等待</text>
 

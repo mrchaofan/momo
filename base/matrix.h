@@ -8,7 +8,6 @@
 
 #include <array>
 #include <cmath>
-#include <optional>
 
 #include "base/geometry.h"
 
@@ -65,14 +64,6 @@ class Matrix {
 
   constexpr bool IsIdentity() const { return *this == Matrix(); }
 
-  // 只含 2D 平移(可用 OffsetLayer 快路径)。
-  constexpr bool IsTranslateOnly() const {
-    Matrix t = *this;
-    t.m_[0][3] = 0;
-    t.m_[1][3] = 0;
-    return t.IsIdentity();
-  }
-
   // 无透视分量(第 4 行为 0 0 0 1)。
   constexpr bool IsAffine() const {
     return m_[3][0] == 0 && m_[3][1] == 0 && m_[3][2] == 0 && m_[3][3] == 1;
@@ -92,12 +83,8 @@ class Matrix {
     return r;
   }
 
-  Matrix& operator*=(const Matrix& other) { return *this = *this * other; }
-
   // 先应用 other 再应用 this。
   Matrix& PreConcat(const Matrix& other) { return *this = *this * other; }
-  // 先应用 this 再应用 other。
-  Matrix& PostConcat(const Matrix& other) { return *this = other * *this; }
 
   friend constexpr bool operator==(const Matrix&, const Matrix&) = default;
 
@@ -127,64 +114,6 @@ class Matrix {
       max_y = std::fmax(max_y, c.y);
     }
     return {min_x, min_y, max_x - min_x, max_y - min_y};
-  }
-
-  double Determinant() const {
-    const auto& a = m_;
-    const double s0 = a[0][0] * a[1][1] - a[1][0] * a[0][1];
-    const double s1 = a[0][0] * a[1][2] - a[1][0] * a[0][2];
-    const double s2 = a[0][0] * a[1][3] - a[1][0] * a[0][3];
-    const double s3 = a[0][1] * a[1][2] - a[1][1] * a[0][2];
-    const double s4 = a[0][1] * a[1][3] - a[1][1] * a[0][3];
-    const double s5 = a[0][2] * a[1][3] - a[1][2] * a[0][3];
-    const double c5 = a[2][2] * a[3][3] - a[3][2] * a[2][3];
-    const double c4 = a[2][1] * a[3][3] - a[3][1] * a[2][3];
-    const double c3 = a[2][1] * a[3][2] - a[3][1] * a[2][2];
-    const double c2 = a[2][0] * a[3][3] - a[3][0] * a[2][3];
-    const double c1 = a[2][0] * a[3][2] - a[3][0] * a[2][2];
-    const double c0 = a[2][0] * a[3][1] - a[3][0] * a[2][1];
-    return s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
-  }
-
-  // 逆矩阵;奇异(行列式为 0 或非有限)时返回 nullopt。
-  std::optional<Matrix> Invert() const {
-    const auto& a = m_;
-    const double s0 = a[0][0] * a[1][1] - a[1][0] * a[0][1];
-    const double s1 = a[0][0] * a[1][2] - a[1][0] * a[0][2];
-    const double s2 = a[0][0] * a[1][3] - a[1][0] * a[0][3];
-    const double s3 = a[0][1] * a[1][2] - a[1][1] * a[0][2];
-    const double s4 = a[0][1] * a[1][3] - a[1][1] * a[0][3];
-    const double s5 = a[0][2] * a[1][3] - a[1][2] * a[0][3];
-    const double c5 = a[2][2] * a[3][3] - a[3][2] * a[2][3];
-    const double c4 = a[2][1] * a[3][3] - a[3][1] * a[2][3];
-    const double c3 = a[2][1] * a[3][2] - a[3][1] * a[2][2];
-    const double c2 = a[2][0] * a[3][3] - a[3][0] * a[2][3];
-    const double c1 = a[2][0] * a[3][2] - a[3][0] * a[2][2];
-    const double c0 = a[2][0] * a[3][1] - a[3][0] * a[2][1];
-    const double det = s0 * c5 - s1 * c4 + s2 * c3 + s3 * c2 - s4 * c1 + s5 * c0;
-    if (det == 0 || !std::isfinite(det)) {
-      return std::nullopt;
-    }
-    const double inv = 1.0 / det;
-    Matrix r;
-    auto& b = r.m_;
-    b[0][0] = (a[1][1] * c5 - a[1][2] * c4 + a[1][3] * c3) * inv;
-    b[0][1] = (-a[0][1] * c5 + a[0][2] * c4 - a[0][3] * c3) * inv;
-    b[0][2] = (a[3][1] * s5 - a[3][2] * s4 + a[3][3] * s3) * inv;
-    b[0][3] = (-a[2][1] * s5 + a[2][2] * s4 - a[2][3] * s3) * inv;
-    b[1][0] = (-a[1][0] * c5 + a[1][2] * c2 - a[1][3] * c1) * inv;
-    b[1][1] = (a[0][0] * c5 - a[0][2] * c2 + a[0][3] * c1) * inv;
-    b[1][2] = (-a[3][0] * s5 + a[3][2] * s2 - a[3][3] * s1) * inv;
-    b[1][3] = (a[2][0] * s5 - a[2][2] * s2 + a[2][3] * s1) * inv;
-    b[2][0] = (a[1][0] * c4 - a[1][1] * c2 + a[1][3] * c0) * inv;
-    b[2][1] = (-a[0][0] * c4 + a[0][1] * c2 - a[0][3] * c0) * inv;
-    b[2][2] = (a[3][0] * s4 - a[3][1] * s2 + a[3][3] * s0) * inv;
-    b[2][3] = (-a[2][0] * s4 + a[2][1] * s2 - a[2][3] * s0) * inv;
-    b[3][0] = (-a[1][0] * c3 + a[1][1] * c1 - a[1][2] * c0) * inv;
-    b[3][1] = (a[0][0] * c3 - a[0][1] * c1 + a[0][2] * c0) * inv;
-    b[3][2] = (-a[3][0] * s3 + a[3][1] * s1 - a[3][2] * s0) * inv;
-    b[3][3] = (a[2][0] * s3 - a[2][1] * s1 + a[2][2] * s0) * inv;
-    return r;
   }
 
  private:

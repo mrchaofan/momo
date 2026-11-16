@@ -38,7 +38,6 @@ constexpr DWORD kDwmUseImmersiveDarkModeLegacy = 19;
 // ToUnicodeEx 的 wFlags bit2: 不修改内核键盘状态(不吃掉死键), Win10 1607+。
 constexpr UINT kToUnicodeNoStateChange = 0x4;
 
-// 拖拽缩放时等待新尺寸帧的上限: 应用在此之内出帧则缩放无拉伸, 否则暂时拉伸旧内容(拖动保持跟手)。
 // 呈现队列的唤醒消息: 有帧等着在本线程呈现(WndProc 收到后执行 PresentQueue::Drain)。
 constexpr UINT kPresentMessage = WM_APP + 0x40;
 

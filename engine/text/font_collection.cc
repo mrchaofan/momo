@@ -70,8 +70,4 @@ StatusOr<std::string> FontCollection::RegisterFont(const uint8_t* data, size_t s
   return name;
 }
 
-int FontCollection::system_family_count() const {
-  return impl_->system ? impl_->system->countFamilies() : 0;
-}
-
 }  // namespace momo::engine::text

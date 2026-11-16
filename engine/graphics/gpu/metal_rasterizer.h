@@ -39,8 +39,6 @@ class MetalRasterizer {
   // 等待到目前为止提交的命令缓冲都已被 GPU 调度(之后可在其他线程 present drawable,
   // CAMetalLayer.presentsWithTransaction 要求)。
   void WaitUntilScheduled();
-  // 阻塞等待已提交的 GPU 工作完成(测试回读、关闭前使用)。
-  void WaitForGpu();
 
  private:
   struct Impl;

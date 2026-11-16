@@ -1,5 +1,4 @@
-import { SceneBuilder, viewports, platformDispatcher, type Viewport } from "momo:ui";
-import { reportError } from "../foundation/assert";
+import { SceneBuilder, viewports, type Viewport } from "momo:ui";
 import { GestureBinding } from "../gestures/binding";
 import { Size } from "../painting/geometry";
 import { ContainerLayer, TextureLayer, type Layer } from "../rendering/layer";
@@ -101,7 +100,6 @@ export class ViewsBinding {
   readonly #needsCommit = new Set<ViewRenderHost>();
   /** 画面里有外部纹理的窗口: 纹理内容的更新不经过渲染树, 每帧都提交。 */
   readonly #liveContent = new Set<ViewRenderHost>();
-  readonly #viewsListeners = new Set<() => void>();
 
   private constructor() {
     const scheduler = this.scheduler;
@@ -112,15 +110,6 @@ export class ViewsBinding {
     gestures.hitTestInView = (result, position, viewId) => this.#renderViewOf(viewId)?.hitTest(result, position);
     this.mouseTracker = new MouseTracker((p, viewId) => gestures.hitTest(p, viewId),
                                          (cursor, viewId) => Widget.fromId(viewId)?.setCursor(cursor));
-    platformDispatcher.onViewportsChanged = () => {
-      for (const l of [...this.#viewsListeners]) {
-        try {
-          l();
-        } catch (e) {
-          reportError(e, "in onViewportsChanged");
-        }
-      }
-    };
     gestures.mouseTracker = this.mouseTracker;
     gestures.pointerCaptureSink = (viewId, sequenceId) => Widget.fromId(viewId)?.capturePointer(sequenceId);
     this.focusManager.registerGlobalHandlers();
@@ -188,14 +177,6 @@ export class ViewsBinding {
     this.#needsCommit.add(host);
     this.scheduler.scheduleFrame();
   }
-  /** 视图集合变化(createView 完成、窗口被关闭)的监听。 */
-  addViewsListener(listener: () => void): void {
-    this.#viewsListeners.add(listener);
-  }
-  removeViewsListener(listener: () => void): void {
-    this.#viewsListeners.delete(listener);
-  }
-
   /** 测试用:覆盖启动窗口(视图 0)的逻辑尺寸与 dpr(null 恢复为窗口值)。 */
   debugOverrideView(size: Size | null, devicePixelRatio = 1): void {
     this.#viewOverride = size === null ? null : { size, devicePixelRatio };
@@ -277,7 +258,6 @@ export class ViewsBinding {
     this.#viewHosts.clear();
     this.#needsCommit.clear();
     this.#liveContent.clear();
-    this.#viewsListeners.clear();
     this.gestures.debugReset();
     this.mouseTracker.reset();
     this.focusManager.debugReset();

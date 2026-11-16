@@ -67,7 +67,7 @@ TEST(RasterizerTest, DrawsAndPresentsQueuedFrames) {
   auto pipeline = LayerTreePipeline::Create(2);
   FakeSurface surface;
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
 
   Enqueue(*pipeline, 10);
   Enqueue(*pipeline, 20);
@@ -78,8 +78,8 @@ TEST(RasterizerTest, DrawsAndPresentsQueuedFrames) {
   EXPECT_EQ(surface.last_width.load(), 20);
   EXPECT_EQ(rasterizer.stats().frames_presented, 2u);
   EXPECT_EQ(pipeline->available_slots(), 2u);
-  ASSERT_NE(rasterizer.last_layer_tree(), nullptr);
-  EXPECT_EQ(rasterizer.last_layer_tree()->frame_size().width, 20);
+  ASSERT_NE(rasterizer.last_layer_tree(platform::kImplicitViewId), nullptr);
+  EXPECT_EQ(rasterizer.last_layer_tree(platform::kImplicitViewId)->frame_size().width, 20);
 }
 
 TEST(RasterizerTest, FramesWithoutSurfaceAreKeptAndDrawnOnSetup) {
@@ -91,12 +91,12 @@ TEST(RasterizerTest, FramesWithoutSurfaceAreKeptAndDrawnOnSetup) {
   EXPECT_EQ(rasterizer.stats().frames_without_surface, 1u);
 
   FakeSurface surface;
-  rasterizer.Setup(&surface);  // 补画最近一帧
+  rasterizer.Setup(platform::kImplicitViewId, &surface);  // 补画最近一帧
   EXPECT_EQ(surface.presented.load(), 1);
   EXPECT_EQ(surface.last_width.load(), 30);
-  rasterizer.Teardown();
-  EXPECT_EQ(rasterizer.surface(), nullptr);
-  EXPECT_FALSE(rasterizer.DrawLastLayerTree());
+  rasterizer.Teardown(platform::kImplicitViewId);
+  EXPECT_EQ(rasterizer.surface(platform::kImplicitViewId), nullptr);
+  EXPECT_FALSE(rasterizer.DrawLastLayerTree(platform::kImplicitViewId));
 }
 
 TEST(RasterizerTest, AcquireFailureIsCounted) {
@@ -105,7 +105,7 @@ TEST(RasterizerTest, AcquireFailureIsCounted) {
   FakeSurface surface;
   surface.fail_acquire = true;
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
   Enqueue(*pipeline, 10);
   rasterizer.Draw(*pipeline);
   EXPECT_EQ(rasterizer.stats().frames_failed, 1u);
@@ -116,11 +116,11 @@ TEST(RasterizerTest, SoftwareSurfaceUsesSoftwareBackend) {
   momo::testing::ScopedTestEventLoop loop;
   FakeSurface surface;
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
-  ASSERT_NE(rasterizer.backend(), nullptr);
-  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kSoftware);
-  rasterizer.Teardown();
-  EXPECT_EQ(rasterizer.backend(), nullptr);  // 视图放手;最后一个使用者放手时后端(及其 GPU 资源)释放
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
+  ASSERT_NE(rasterizer.backend(platform::kImplicitViewId), nullptr);
+  EXPECT_EQ(rasterizer.backend(platform::kImplicitViewId)->kind(), platform::SurfaceKind::kSoftware);
+  rasterizer.Teardown(platform::kImplicitViewId);
+  EXPECT_EQ(rasterizer.backend(platform::kImplicitViewId), nullptr);  // 视图放手;最后一个使用者放手时后端(及其 GPU 资源)释放
 }
 
 TEST(RasterizerTest, GpuBackendFailureFallsBackToSoftware) {
@@ -128,11 +128,11 @@ TEST(RasterizerTest, GpuBackendFailureFallsBackToSoftware) {
   auto pipeline = LayerTreePipeline::Create(2);
   FakeGpuSurface surface(/*supports_fallback=*/true);
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
 
   EXPECT_EQ(surface.fallback_calls, 1);
   EXPECT_EQ(surface.kind(), platform::SurfaceKind::kSoftware);
-  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kSoftware);
+  EXPECT_EQ(rasterizer.backend(platform::kImplicitViewId)->kind(), platform::SurfaceKind::kSoftware);
 
   Enqueue(*pipeline, 12);
   rasterizer.Draw(*pipeline);
@@ -147,15 +147,15 @@ TEST(RasterizerTest, GpuBackendFailureWithoutFallbackDropsFrames) {
   auto pipeline = LayerTreePipeline::Create(2);
   FakeGpuSurface surface(/*supports_fallback=*/false);
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
 
   EXPECT_EQ(surface.fallback_calls, 1);
-  EXPECT_EQ(rasterizer.backend(), nullptr);
+  EXPECT_EQ(rasterizer.backend(platform::kImplicitViewId), nullptr);
   Enqueue(*pipeline, 10);
   rasterizer.Draw(*pipeline);
   EXPECT_EQ(rasterizer.stats().frames_failed, 1u);
   EXPECT_EQ(surface.gpu_acquired, 0);  // 无后端时不取帧
-  ASSERT_NE(rasterizer.last_layer_tree(), nullptr);
+  ASSERT_NE(rasterizer.last_layer_tree(platform::kImplicitViewId), nullptr);
 }
 
 // 运行中自行改变种类的 surface(GPU 设备丢失后回退软件): 起初是无绘制目标的 kNone, switched 后为软件。
@@ -178,13 +178,13 @@ TEST(RasterizerTest, SwitchesBackendWhenSurfaceChangesKind) {
   auto pipeline = LayerTreePipeline::Create(2);
   FakeSwitchingSurface surface;
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
-  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kNone);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
+  EXPECT_EQ(rasterizer.backend(platform::kImplicitViewId)->kind(), platform::SurfaceKind::kNone);
 
   surface.switched = true;  // 设备丢失: surface 自己改为软件呈现
   Enqueue(*pipeline, 14);
   rasterizer.Draw(*pipeline);
-  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kSoftware);
+  EXPECT_EQ(rasterizer.backend(platform::kImplicitViewId)->kind(), platform::SurfaceKind::kSoftware);
   EXPECT_EQ(rasterizer.stats().frames_presented, 1u);
   EXPECT_EQ(surface.software.last_width.load(), 14);  // 新的软件后端画进了 surface 的软件帧
 }
@@ -294,7 +294,7 @@ TEST(RasterizerTest, PlatformViewFramesAreComposited) {
   auto pipeline = LayerTreePipeline::Create(2);
   FakeCompositingSurface surface;
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
 
   ASSERT_TRUE(pipeline->Produce().Complete(Frame(TreeWithPlatformView(true))));
   rasterizer.Draw(*pipeline);
@@ -335,7 +335,7 @@ TEST(RasterizerTest, PlatformViewsAreSkippedOnSurfacesWithoutSupport) {
   FakeCompositingSurface surface;
   surface.supports = false;
   Rasterizer rasterizer;
-  rasterizer.Setup(&surface);
+  rasterizer.Setup(platform::kImplicitViewId, &surface);
   ASSERT_TRUE(pipeline->Produce().Complete(Frame(TreeWithPlatformView(true))));
   rasterizer.Draw(*pipeline);
   EXPECT_TRUE(surface.layouts.empty());

@@ -9,8 +9,6 @@
 | raster | 引擎创建的专用线程 | GPU context、DisplayList 重放、present | 调用 JS、平台 API(present 除外,surface 实现内部处理) |
 | io | 引擎创建的专用线程(+可扩为池) | 文件读取、图片解码、字体加载 | 调用 JS |
 
-另有 `WorkerPool`(base):CPU 密集一次性任务,不保证顺序。
-
 Node.js(docs/04 §1)另带几类线程,都不执行 JS、不碰 momo 对象:
 - **uv poll 线程**("momo.uv.poll",每个 JS 运行时一个):只在 `uv_backend_fd` 上等待,有事件时向 ui 投递 `UvRunOnce`;
   与 ui 以 `uv_sem` 严格交替(Electron NodeBindings 的模型)。libuv 的回调全部在 ui 线程执行。
@@ -31,7 +29,7 @@ Node.js(docs/04 §1)另带几类线程,都不执行 JS、不碰 momo 对象:
 **一轮迭代(DoWork)**:
 
 1. 取出"此刻已到期"任务的快照,按 (到期时间, 投递序号) 执行;执行期间新投递的任务进入下一轮(自我重投的任务不会饿死其他工作)。
-2. **安全点**:若栈上已无任务(`task_depth() == 0`),析构所有被 `DeleteLater` 标记的对象(见 §3)。原生嵌套循环(任务内弹模态框、live resize)中 pump 会重入 DoWork:嵌套层只执行任务,不析构,直到最外层任务返回。
+2. **安全点**:若栈上已无任务(`task_depth_ == 0`),析构所有被 `DeleteLater` 标记的对象(见 §3)。原生嵌套循环(任务内弹模态框、live resize)中 pump 会重入 DoWork:嵌套层只执行任务,不析构,直到最外层任务返回。
 3. 返回下一次唤醒时刻,由 pump 等待。
 
 **结束语义**:`Terminate()`(任意线程,幂等)之前已到期的任务全部执行;未到期的延迟任务与之后的投递被丢弃(闭包在循环线程析构);**结束时反复清理 DeleteLater 队列直到为空**,被标记的对象一定在本线程析构。结束后再 DeleteLater:在循环线程上立即析构,其他线程上记 ERROR 并泄漏(绝不在错误线程析构)。
@@ -49,7 +47,7 @@ class TaskRunner {
 };
 ```
 
-`TaskRunners.platform` 即 platform EventLoop 的 runner;`NativeLoop` 只是 pump 的底层原语,engine 不直接使用。跨线程组合操作(`PostTaskAndWait`、`PostTaskAndReply[WithResult]`、`PostToObject`)见 base/task_util.h、base/object.h。
+`TaskRunners.platform` 即 platform EventLoop 的 runner;`NativeLoop` 只是 pump 的底层原语,engine 不直接使用。跨线程组合操作(`PostTaskAndWait`、`PostTaskAndReplyWithResult`、`PostToObject`)见 base/task_util.h、base/object.h。
 
 **所有权**:`ThreadHost` 由宿主持有(而非 Shell),因为 join 必须发生在 Shell 关闭**且窗口销毁之后**(docs/01 §4 第 4 步),只有宿主知道这个时点。契约:宿主保证线程比 Shell 活得久。
 

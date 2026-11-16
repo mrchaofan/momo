@@ -69,8 +69,6 @@ class EventLoop final : public MessagePump::Delegate, public std::enable_shared_
 
   bool RunsTasksOnCurrentThread() const;
   bool has_exited() const;
-  // 当前处于第几层任务中(0 = 栈上无任务)。仅循环线程。
-  int task_depth() const { return task_depth_; }
 
   // 投递到本循环的 TaskRunner(持有循环的共享引用)。
   std::shared_ptr<TaskRunner> GetTaskRunner();

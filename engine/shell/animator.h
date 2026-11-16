@@ -90,9 +90,6 @@ class Animator final : public Object {
   // 当前帧预占的槽位与收集中的产物;仅在 BeginFrame 期间有效。
   LayerTreePipeline::ProducerContinuation continuation_;
   std::unique_ptr<FrameItem> current_;
-  TimePoint frame_start_;
-  TimePoint frame_target_;
-  TimePoint build_start_;
   Stats stats_;
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(Animator);

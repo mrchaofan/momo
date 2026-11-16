@@ -215,14 +215,6 @@ void Shell::PostToEngine(MoveOnlyFunction<void(Engine&)> task) {
   });
 }
 
-void Shell::PostToDelegate(platform::ViewId view, MoveOnlyFunction<void(Delegate&)> task) {
-  PostToObject(weak_this_, [view, task = std::move(task)](Shell& self) mutable {
-    if (Delegate* delegate = self.DelegateOf(view)) {
-      task(*delegate);
-    }
-  });
-}
-
 // ---------------------------------------------------------------------------
 // 宿主事件入口
 

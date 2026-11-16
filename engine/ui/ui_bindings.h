@@ -44,14 +44,6 @@ class UiBindings {
   void ViewAdded(ViewId view);
   void ViewRemoved(ViewId view);
 
-  // 隐式视图(视图 0)的便捷入口。
-  void MetricsChanged() { MetricsChanged(platform::kImplicitViewId); }
-  void PointerPacket(const platform::PointerDataPacket& packet) {
-    PointerPacket(platform::kImplicitViewId, packet);
-  }
-  bool KeyData(const platform::KeyData& data) { return KeyData(platform::kImplicitViewId, data); }
-  void FocusChanged(bool focused) { FocusChanged(platform::kImplicitViewId, focused); }
-
   // 应用是否导入了 momo:ui(未导入时上述回调都是空操作)。
   bool is_imported() const;
   // 测试/诊断: 已移除但 JS 侧对象尚未被回收的视图绑定数。

@@ -101,16 +101,6 @@ MomoStatus PlatformViewRegisterFactory(const MomoHost* host, const char* view_ty
   return kMomoOk;
 }
 
-MomoStatus PlatformViewGet(const MomoHost* host, int64_t view_id, void** out) {
-  std::shared_ptr<TaskRunner> runner = Use(host, &Table::platform_runner);
-  std::shared_ptr<PlatformViewRegistry> views = Use(host, &Table::platform_views);
-  if (runner == nullptr || views == nullptr) return kMomoErrClosed;
-  if (out == nullptr) return kMomoErrInvalidArgs;
-  if (!runner->RunsTasksOnCurrentThread()) return kMomoErrWrongThread;
-  *out = views->Get(view_id);
-  return *out != nullptr ? kMomoOk : kMomoErrNotFound;
-}
-
 }  // namespace
 
 NativeHost::NativeHost(std::shared_ptr<TaskRunner> platform_runner,
@@ -129,7 +119,6 @@ NativeHost::NativeHost(std::shared_ptr<TaskRunner> platform_runner,
   api.texture_update_pixels = &TextureUpdatePixels;
   api.texture_destroy = &TextureDestroy;
   api.platform_view_register_factory = &PlatformViewRegisterFactory;
-  api.platform_view_get = &PlatformViewGet;
 }
 
 NativeHost::~NativeHost() { Close(); }

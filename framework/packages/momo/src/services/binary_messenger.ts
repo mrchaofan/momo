@@ -30,11 +30,6 @@ export class BinaryMessenger {
     services.setHandler(channel, (data) => this.#invoke(handler, data, channel));
   }
 
-  /** 是否已注册 handler。 */
-  hasMessageHandler(channel: string): boolean {
-    return this.#handlers.has(channel);
-  }
-
   /** 测试用:拦截发往原生的消息(null 取消)。 */
   setMockMessageHandler(channel: string, handler: BinaryMessageHandler | null): void {
     if (handler === null) this.#mockHandlers.delete(channel);

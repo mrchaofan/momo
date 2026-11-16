@@ -67,7 +67,6 @@ class MessageChannelHub : public std::enable_shared_from_this<MessageChannelHub>
   // handler 为空表示移除。
   void SetNativeHandler(const std::string& channel, std::shared_ptr<TaskRunner> runner,
                         NativeHandler handler);
-  bool HasNativeHandler(const std::string& channel) const;
   // endpoint 为空表示移除(JS 运行时销毁时)。之后发往 JS 的消息直接回复 nullopt。
   void SetJsEndpoint(std::shared_ptr<TaskRunner> ui_runner, JsEndpoint endpoint);
 

@@ -101,11 +101,6 @@ class Shell final : public Object {
   // 解绑。返回后: delegate 不再被回调;raster 线程不再使用 surface(同步);
   // 视图从引擎移除(JS 收到 onViewsChanged)。
   void DetachView(platform::ViewId view_id);
-  // 隐式视图(视图 0)的便捷入口。
-  void AttachView(Delegate* delegate, platform::RenderSurface* surface) {
-    AttachView(platform::kImplicitViewId, delegate, surface);
-  }
-  void DetachView() { DetachView(platform::kImplicitViewId); }
   // 已绑定的视图(platform 线程)。
   std::vector<platform::ViewId> attached_views() const;
 
@@ -122,15 +117,6 @@ class Shell final : public Object {
   void OnFocusChanged(platform::ViewId view, bool focused);
   // 视图可见性(窗口显示/隐藏/最小化)。不可见的视图不出帧;全部不可见时停帧。
   void OnViewVisibilityChanged(platform::ViewId view, bool visible);
-  // 隐式视图(视图 0)的便捷入口。
-  void OnMetricsChanged(const platform::ViewportMetrics& metrics) {
-    OnMetricsChanged(platform::kImplicitViewId, metrics);
-  }
-  void OnPointerPacket(platform::PointerDataPacket packet) {
-    OnPointerPacket(platform::kImplicitViewId, std::move(packet));
-  }
-  void OnKeyData(const platform::KeyData& data) { OnKeyData(platform::kImplicitViewId, data); }
-  void OnFocusChanged(bool focused) { OnFocusChanged(platform::kImplicitViewId, focused); }
   // 平台视图获得了键盘焦点(用户点击等)→ momo/platform_views 通道 "focused"(native→JS)。
   void OnPlatformViewFocused(int64_t view_id);
   // 应用整体挂起(宿主隐藏了应用)时停帧, 恢复时继续。应用生命周期本身属于宿主。
@@ -148,8 +134,6 @@ class Shell final : public Object {
 
   // platform 线程 → ui 线程, Engine 存在时执行。
   void PostToEngine(MoveOnlyFunction<void(Engine&)> task);
-  // 任意线程 → platform 线程, Shell 未关闭且视图已绑定时执行。
-  void PostToDelegate(platform::ViewId view, MoveOnlyFunction<void(Delegate&)> task);
   Delegate* DelegateOf(platform::ViewId view) const;
   // source 未绑定时为回退定时器。
   std::unique_ptr<VsyncWaiter> MakeVsyncWaiter(WeakPtr<platform::VsyncSource> source) const;

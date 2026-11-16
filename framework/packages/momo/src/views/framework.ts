@@ -79,8 +79,6 @@ export class GlobalKey<T extends State = State> extends Key {
   }
 }
 
-/** 以 State 类型标注的 GlobalKey。 */
-export class LabeledGlobalKey<T extends State = State> extends GlobalKey<T> {}
 
 /**
  * View 树的持久化节点:持有位置(slot)、负责子节点 diff 与复用。
@@ -122,11 +120,6 @@ export abstract class Element {
 
   /** 遍历子 Element。 */
   visitChildren(_visitor: (child: Element) => void): void {}
-
-  /** 遍历子 Element(构建上下文版本)。 */
-  visitChildElements(visitor: (child: Element) => void): void {
-    this.visitChildren(visitor);
-  }
 
   /** 子 Element 列表(调试/测试)。 */
   get debugChildren(): Element[] {

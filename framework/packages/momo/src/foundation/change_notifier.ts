@@ -95,16 +95,3 @@ export class ValueNotifier<T> extends ChangeNotifier implements ValueListenable<
     this.notifyListeners();
   }
 }
-
-/** 合并多个 Listenable:任意一个通知即回调。 */
-export function mergeListenables(listenables: readonly (Listenable | null | undefined)[]): Listenable {
-  const items = listenables.filter((l): l is Listenable => l != null);
-  return {
-    addListener(listener: VoidCallback): void {
-      for (const l of items) l.addListener(listener);
-    },
-    removeListener(listener: VoidCallback): void {
-      for (const l of items) l.removeListener(listener);
-    },
-  };
-}

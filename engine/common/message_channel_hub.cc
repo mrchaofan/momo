@@ -42,11 +42,6 @@ void MessageChannelHub::SetNativeHandler(const std::string& channel,
   handlers_[channel] = Handler{std::move(runner), std::move(handler)};
 }
 
-bool MessageChannelHub::HasNativeHandler(const std::string& channel) const {
-  MutexLock lock(mutex_);
-  return handlers_.count(channel) != 0;
-}
-
 void MessageChannelHub::SetJsEndpoint(std::shared_ptr<TaskRunner> ui_runner, JsEndpoint endpoint) {
   MutexLock lock(mutex_);
   if (!endpoint || ui_runner == nullptr) {

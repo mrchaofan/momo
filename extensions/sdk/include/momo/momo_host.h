@@ -31,7 +31,6 @@ extern "C" {
 typedef enum MomoStatus {
   kMomoOk = 0,
   kMomoErrInvalidArgs = 1,
-  kMomoErrWrongThread = 2,
   kMomoErrNotFound = 3,
   kMomoErrClosed = 4,  // 引擎已关闭(或正在关闭)
 } MomoStatus;
@@ -86,9 +85,6 @@ typedef struct MomoHost {
   // 任意线程调用。JS 侧以同名类型创建视图(框架的 PlatformView)。类型一经注册, 到引擎关闭为止都有效。
   MomoStatus (*platform_view_register_factory)(const struct MomoHost*, const char* view_type,
                                                const MomoPlatformViewFactory* factory);
-  // 取已创建视图的原生指针。仅 platform 线程;未知(或已 dispose 的)id 返回 kMomoErrNotFound——
-  // 插件每次按 id 查, 不缓存指针。
-  MomoStatus (*platform_view_get)(const struct MomoHost*, int64_t view_id, void** out_native_view);
 } MomoHost;
 
 // nativeHost(JS 值)→ 宿主表;不是合法的 nativeHost 时返回 NULL。先包含 <node_api.h> 才有这个函数。

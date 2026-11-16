@@ -74,23 +74,6 @@ TEST_F(AnimatorTest, RequestsAreCoalescedIntoOneFrame) {
   EXPECT_EQ(animator_->stats().frames_rendered, 1u);
 }
 
-TEST_F(AnimatorTest, RenderedLayerTreeCarriesTimings) {
-  animator_->RequestFrame();
-  waiter_->Fire();
-  bool checked = false;
-  animator_->pipeline()->Consume([&](std::unique_ptr<FrameItem> item) {
-    ASSERT_NE(item, nullptr);
-    ASSERT_EQ(item->layer_trees.size(), 1u);
-    const std::unique_ptr<graphics::LayerTree>& tree = item->layer_trees[0];
-    EXPECT_EQ(tree->frame_size(), (Size{100, 50}));
-    const auto& t = tree->timings();
-    EXPECT_LE(t.vsync_start, t.frame_target);
-    EXPECT_LE(t.build_start, t.build_end);
-    checked = true;
-  });
-  EXPECT_TRUE(checked);
-}
-
 TEST_F(AnimatorTest, RenderOutsideFrameIsDropped) {
   animator_->Render(std::make_unique<graphics::LayerTree>(Size{1, 1}, 1.0));
   EXPECT_EQ(animator_->stats().renders_dropped, 1u);
