@@ -13,6 +13,8 @@
 //   main            运行时加载的入口(JS)。`Momo <app-dir>` 与打包后的应用都从这里启动(只有这一项是运行时读的)
 //   momo.include    带进应用包的文件(通配, 相对应用目录)。package.json、main、assets/** 总是带上
 //   momo.ignore     从全部结果里去掉的文件(通配)
+//   momo.id         应用标识, 反域名写法("com.acme.notes")。必填: 系统按它区分应用(macOS 的 bundle id), 用户数据
+//                   (缓存、WebView 的网站数据…)按它存放——两个应用用同一个标识就会共用这些数据
 //   momo.name       应用名(缺省取 name, --name 优先);momo.icon 应用图标 .icns(macOS)
 // 通配: * 匹配一段路径里的任意字符, ** 匹配任意层目录, ? 匹配一个字符;以 / 结尾表示整个目录。
 //
@@ -152,6 +154,11 @@ class App {
     }
     const momo = pkg.momo ?? {};
     this.name = name ?? momo.name ?? String(pkg.name ?? path.basename(this.dir)).replace(/^@.*\//, "");
+    this.id = momo.id;
+    if (typeof this.id !== "string" || !/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/.test(this.id)) {
+      fail(`package.json momo.id is required: the app's identifier in reverse-DNS form, e.g. "com.acme.notes" ` +
+           `(got ${JSON.stringify(this.id)})`);
+    }
     this.main = pkg.main ?? "index.js";  // 运行时的缺省值(engine/common/app_layout.h)
     this.icon = momo.icon ? path.resolve(this.dir, momo.icon) : null;
     this.include = momo.include ?? [];
@@ -236,15 +243,18 @@ class MacAppShell extends AppShell {
   }
   copyRuntime() {
     if (!fs.existsSync(path.join(this.runtime, "Contents/MacOS"))) fail(`not a Momo.app runtime: ${this.runtime}`);
-    const { icon, name } = this.app;
+    const { icon, id, name } = this.app;
     if (icon !== null && !(fs.existsSync(icon) && icon.endsWith(".icns"))) {
       fail(`momo.icon must point to an existing .icns file: ${icon}`);
     }
     fs.cpSync(this.runtime, this.root, { recursive: true, verbatimSymlinks: true });
-    // Info.plist: 显示名(可执行文件名保持 Momo)与图标(Resources/AppIcon.icns)。
+    // Info.plist: 应用标识、显示名(可执行文件名保持 Momo)与图标(Resources/AppIcon.icns)。
     if (icon !== null) fs.copyFileSync(icon, path.join(this.resources, "AppIcon.icns"));
     const plist = path.join(this.root, "Contents/Info.plist");
-    let text = fs.readFileSync(plist, "utf8").replace(/(<key>CFBundleName<\/key>\s*<string>)[^<]*/, `$1${name}`);
+    const original = fs.readFileSync(plist, "utf8");
+    let text = original.replace(/(<key>CFBundleIdentifier<\/key>\s*<string>)[^<]*/, `$1${id}`);
+    if (text === original) fail(`cannot set the bundle identifier: no CFBundleIdentifier in ${plist}`);
+    text = text.replace(/(<key>CFBundleName<\/key>\s*<string>)[^<]*/, `$1${name}`);
     if (icon !== null) {
       text = /<key>CFBundleIconFile<\/key>/.test(text)
         ? text.replace(/(<key>CFBundleIconFile<\/key>\s*<string>)[^<]*/, "$1AppIcon")

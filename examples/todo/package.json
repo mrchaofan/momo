@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "main": "dist/main.js",
+  "momo": {
+    "id": "dev.momo.examples.todo"
+  },
   "scripts": {
     "build": "../../framework/node_modules/.bin/esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --sourcemap=inline --outfile=dist/main.js",
     "package": "node ../../framework/packages/cli/momo.mjs build ."

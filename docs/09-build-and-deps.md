@@ -129,7 +129,7 @@ momo build <app-dir> [--out=<dir>] [--runtime=<Momo.app|dir>] [--name=<App>] [--
 - Windows: `<Name>/{<Name>.exe, *.dll, icudtl.dat, builtin/, app/}`(exe 同级即资源目录;`--runtime=<含 Momo.exe 的目录>`, 未验证)
 - 其他平台没有运行时, 只输出 `<Name>/app/`
 
-`package.json` 里的约定:运行时只读 `main`;CLI 另读 `momo.include` / `momo.ignore`(带上/去掉哪些文件)、`momo.name`(应用名, 缺省取 `name`, `--name` 优先)、`momo.icon`(`.icns`, macOS)。
+`package.json` 里的约定:运行时只读 `main`;CLI 另读 `momo.id`(应用标识, 反域名写法, **必填**: 写进 macOS 的 bundle id;系统按它存放用户数据——V8 code cache、WebView 的网站数据——两个应用用同一个标识就会共用这些数据)、`momo.include` / `momo.ignore`(带上/去掉哪些文件)、`momo.name`(应用名, 缺省取 `name`, `--name` 优先)、`momo.icon`(`.icns`, macOS)。
 
 - **选哪些文件只按文件名决定**:`package.json`、`main`、`assets/**` 总是带上, `momo.include` 追加, `momo.ignore` 从全部结果里去掉。通配:`*` 匹配一段路径里的任意字符, `**` 匹配任意层目录, `?` 匹配一个字符, 以 `/` 结尾表示整个目录。跟随符号链接(链接进 `node_modules` 的本地包复制为它指向的文件)。
 - **CLI 不编译、不分析文件内容、不知道依赖**:打包前先用应用自己的构建脚本产出 `main`;留在 `node_modules` 里的包由应用写进 `momo.include`(如 `"node_modules/better-sqlite3/"`), 它依赖的包也要写上。

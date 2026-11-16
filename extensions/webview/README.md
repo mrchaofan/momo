@@ -47,6 +47,9 @@ new WebView({ initialUrl: "app://localhost/" });
 ## 会话与 cookie
 
 会话是一份相互隔离的网站数据(cookie、缓存、localStorage / IndexedDB…)。WebView 的会话在创建时确定。
+数据由系统的 WebKit 按应用标识存放(macOS: `~/Library/WebKit/<bundle id>/`), 不能指定路径, 也不与 Safari 共享;
+应用标识来自 `package.json` 的 `momo.id`(`momo build` 写进 bundle id), 所以不同的应用各有各的数据。未打包直接用
+运行时启动(`Momo <app-dir>`)时, 标识是运行时自己的 `dev.momo.app`, 这样启动的应用共用一份。
 
 ```ts
 import { WebSession, WebView } from "momo:webview";
