@@ -84,7 +84,6 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   void* native_handle() const override { return hwnd_; }
   void Activate() override;
   WindowStateFlags state() const override;
-  uint32_t capabilities() const override;
   Status Hide() override;
   Status Minimize() override;
   Status Maximize() override;

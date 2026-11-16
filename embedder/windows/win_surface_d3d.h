@@ -20,7 +20,7 @@
 //   经 device_lost() 报告, FallbackSurface 据此回退。重建 GPU 设备未实现。
 // 未在 Windows 上验证的前提: 后端每帧 submit(GrSyncCpu::kYes) 后 Skia 不再引用后台缓冲(ResizeBuffers 的前提);
 //   若不成立, ResizeBuffers 失败, 日志会有 "ResizeBuffers failed"。
-// 平台视图: 不支持(SupportsPlatformViews() 为 false;Windows 宿主不声明 kCapabilityPlatformViews)。
+// 平台视图: 不支持(SupportsPlatformViews() 为 false)。
 // 生命周期: 由 WinWindow 拥有(经 FallbackSurface);Shell 解绑(raster 停用)之后才析构(render_surface.h)。
 
 #include <cstdint>

@@ -36,15 +36,6 @@ AppChannel::AppChannel(std::shared_ptr<engine::MessageChannelHub> hub,
   channel_.Register("focus", [&platform_app](const EncodableValue& a) {
     return Done(platform_app.Activate(Bool(a, "steal", false)));
   });
-  channel_.Register("getState", [this, &platform_app](const EncodableValue&) -> StatusOr<EncodableValue> {
-    engine::EncodableList caps;
-    const uint32_t bits = platform_app.capabilities();
-    if ((bits & kAppCapabilityHide) != 0) caps.emplace_back("hide");
-    if ((bits & kAppCapabilityActivate) != 0) caps.emplace_back("activate");
-    return EncodableValue(EncodableMap{{"state", std::string(host_->app_state_name())},
-                                       {"active", host_->app_active()},
-                                       {"capabilities", std::move(caps)}});
-  });
 }
 
 void AppChannel::NotifyState(std::string_view state) {

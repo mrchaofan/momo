@@ -11,7 +11,7 @@
 //     close {view}                        立即关闭(不询问 closeRequested)
 //     requestClose {view}                 与用户点关闭按钮相同: 先询问 closeRequested, 允许后关闭
 //     getState {view} → 窗口快照: {frame: [x, y, w, h] | null, controls: [x, y, w, h] | null, focused,
-//                        capabilities: [string], state: {visible, minimized, maximized, fullscreen}}
+//                        state: {visible, minimized, maximized, fullscreen}}
 //     show {view} / hide {view} / minimize {view} / maximize {view} / restore {view} / activate {view}
 //     setTitle {view, title} / setMinSize {view, width, height} / setCursor {view, cursor}
 //     setAlwaysOnTop {view, on} / setPosition {view, x, y}
@@ -32,7 +32,7 @@
 //     closeRequested {view} → bool        用户点了关闭按钮(或 requestClose / 退出应用);false 取消
 // 状态只有一个方向: JS 拿到一份快照(自己创建的窗口在 create 的回复里, 宿主启动时创建的窗口查一次 getState),
 // 之后只靠上面的通知更新。回复与通知都从 platform 线程按序投递, JS 按到达顺序应用即可。
-// 能力在快照的 capabilities 里;不支持的方法回复 "unimplemented"。
+// 平台不支持的方法回复 "unimplemented"(没有另外的能力声明)。
 // 线程约定: 归属 platform 线程;处理器在 platform 线程运行。
 
 #include <memory>

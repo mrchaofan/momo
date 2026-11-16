@@ -54,7 +54,6 @@ class MacServices final : public momo::embedder::PlatformServices {
 // 应用级能力: NSApplication 的隐藏/显示/激活。
 class MacApp final : public momo::embedder::PlatformApp {
  public:
-  uint32_t capabilities() const override { return kAppCapabilityHide | kAppCapabilityActivate; }
   Status Hide() override {
     [NSApp hide:nil];  // applicationDidHide → Application::OnAppVisibilityChanged(false)
     return Status::Ok();

@@ -31,7 +31,6 @@ class WinApp final : public PlatformApp {
   // observer 可为空;非空时须比本对象活得久。
   explicit WinApp(WinAppObserver* observer) : observer_(observer) {}
 
-  uint32_t capabilities() const override { return kAppCapabilityActivate; }
   Status Activate(bool steal) override;
 
   // WM_ACTIVATEAPP(各顶层窗口都会收到同一次切换: 去重)。

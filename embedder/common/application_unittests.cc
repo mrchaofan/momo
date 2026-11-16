@@ -394,32 +394,25 @@ TEST_F(ApplicationTest, JsQuitReachesTheApplication) {
   EXPECT_EQ(app->state(), State::kTerminating);
 }
 
-// 应用级平台能力(momo/app hide / focus / getState)经 PlatformApp。
+// 应用级平台能力(momo/app hide / focus)经 PlatformApp。
 TEST_F(ApplicationTest, AppMethodsReachThePlatformApp) {
   WriteBundle();
   auto app = MakeApp();
   ASSERT_TRUE(LaunchAndWait(*app).ok());
   Application* raw = app.get();
   auto& mock_app = static_cast<testing::MockApp&>(raw->platform().app());
-  std::string state;
   SendFromJs(raw, "momo/app", {"hide", engine::EncodableValue()}, [&, raw](StatusOr<engine::EncodableValue> r) {
     EXPECT_TRUE(r.ok()) << r.status();
     SendFromJs(raw, "momo/app", {"focus", engine::EncodableMap{{"steal", true}}},
                [&, raw](StatusOr<engine::EncodableValue> r) {
                  EXPECT_TRUE(r.ok()) << r.status();
-                 SendFromJs(raw, "momo/app", {"getState", engine::EncodableValue()},
-                            [&, raw](StatusOr<engine::EncodableValue> r) {
-                              ASSERT_TRUE(r.ok()) << r.status();
-                              state = r->Find("state")->AsString().value_or("");
-                              raw->task_runners().platform->PostTask([raw] { raw->Exit(0); });
-                            });
+                 raw->task_runners().platform->PostTask([raw] { raw->Exit(0); });
                });
   });
   app->Run();
   EXPECT_TRUE(mock_app.hidden);
   EXPECT_EQ(mock_app.activations, 1);
   EXPECT_TRUE(mock_app.last_steal);
-  EXPECT_EQ(state, "running");
 }
 
 // 用户点击 Dock 图标(applicationShouldHandleReopen)→ momo/app activate;前台状态 → activeChanged。

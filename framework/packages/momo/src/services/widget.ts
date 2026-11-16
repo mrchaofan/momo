@@ -8,7 +8,7 @@
 //
 // 对象的生命周期: 窗口打开期间同一个 id 总是同一个 Widget;窗口关闭('closed')后对象作废(isDestroyed),
 // 方法变为空操作。JS 丢掉引用不会关闭窗口。
-// 状态(bounds / controls / state / isFocused / capabilities)只有一个来源、一个方向: 宿主给一份快照(Widget.create
+// 状态(bounds / controls / state / isFocused)只有一个来源、一个方向: 宿主给一份快照(Widget.create
 // 的回复;宿主启动时创建的窗口在对象建立时查一次), 之后只由宿主的通知更新。回复与通知按宿主发出的顺序到达,
 // 所以按到达顺序应用即可, 读取它们不产生任何调用。宿主没有注册 momo/window(headless 测试运行器)时方法是
 // 空操作, 状态保持初始值。
@@ -33,11 +33,6 @@ export interface WidgetState {
   readonly maximized: boolean;
   readonly fullscreen: boolean;
 }
-
-/** 宿主窗口的可选能力(不支持的能力对应的方法是空操作)。 */
-export type WidgetCapability =
-  | "alwaysOnTop" | "position" | "resizeOptions" | "hiddenTitleBar" | "windowDrag" | "moveLoop"
-  | "pointerCapture" | "platformViews" | "nonActivating" | "visibility" | "minMax";
 
 /** 打开窗口的参数(逻辑点)。 */
 export interface WidgetOptions {
@@ -210,7 +205,6 @@ export class Widget extends EventEmitter<WidgetEvents> {
   #controls: WidgetBounds | null = null;
   #state: WidgetState = kDefaultState;
   #focused = false;
-  #capabilities: ReadonlySet<WidgetCapability> | null = null;
 
   private constructor(id: number) {
     super();
@@ -250,12 +244,8 @@ export class Widget extends EventEmitter<WidgetEvents> {
   get isFocused(): boolean {
     return this.#focused;
   }
-  /** 可选能力;尚未取得时为 null。 */
-  get capabilities(): ReadonlySet<WidgetCapability> | null {
-    return this.#capabilities;
-  }
 
-  // ---- 方法(JS → 宿主;窗口已关闭或宿主不支持时为空操作) ----
+  // ---- 方法(JS → 宿主;窗口已关闭、或平台不支持这个操作时为空操作) ----
 
   /** 关闭窗口: 先触发 'close'(可取消), 与用户点关闭按钮相同。 */
   close(): void {
@@ -353,8 +343,6 @@ export class Widget extends EventEmitter<WidgetEvents> {
   /** 宿主给出的窗口快照: 与通知走同一组更新函数, 所以有变化的字段照常触发事件。 */
   #apply(snapshot: Record<string, unknown>): void {
     if (this.#destroyed) return;
-    const caps = snapshot["capabilities"];
-    this.#capabilities = new Set(Array.isArray(caps) ? (caps as WidgetCapability[]) : []);
     this.#setBounds(toRect(snapshot["frame"]));
     this.#setControls(toRect(snapshot["controls"]));
     const state = toState(snapshot["state"]);

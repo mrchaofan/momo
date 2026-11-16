@@ -780,13 +780,6 @@ void MacWindow::SetCursor(SystemCursor cursor) {
 
 TextInputConnection& MacWindow::text_input() { return *text_input_; }
 
-uint32_t MacWindow::capabilities() const {
-  return kCapabilityAlwaysOnTop | kCapabilityPosition | kCapabilityResizeOptions |
-         kCapabilityHiddenTitleBar | kCapabilityWindowDrag | kCapabilityMoveLoop |
-         kCapabilityPointerCapture | kCapabilityPlatformViews | kCapabilityNonActivating |
-         kCapabilityVisibility | kCapabilityMinMax;
-}
-
 void* MacWindow::native_handle() const { return (__bridge void*)view_; }
 
 Status MacWindow::SetAlwaysOnTop(bool on) {

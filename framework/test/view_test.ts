@@ -592,7 +592,6 @@ group("multi-window", () => {
     await t.flushMicrotasks();
     expect.equal(win.bounds?.x, 30);
     expect.deepEqual(moves, [30]);
-    expect.isTrue(win.capabilities?.has("moveLoop") ?? false);
   }, { mockOnly: true });
 
   // 拖动中并入另一个窗口(浏览器合并标签): 触发拖动的窗口被关闭, 捕获的序列照常交给捕获者;

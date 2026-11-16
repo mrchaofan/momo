@@ -61,7 +61,6 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   void* native_handle() const override;
   void Activate() override;
   WindowStateFlags state() const override;
-  uint32_t capabilities() const override;
   Status Hide() override;
   Status Minimize() override;
   Status Maximize() override;
