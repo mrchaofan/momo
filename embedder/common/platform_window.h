@@ -155,6 +155,10 @@ class PlatformWindow {
   virtual void RemovePlatformView(int64_t view_id) { (void)view_id; }
   // 把键盘焦点交给平台视图。
   virtual void FocusPlatformView(int64_t view_id) { (void)view_id; }
+  // 平台视图(或其内部)正持有键盘焦点时, 交还给窗口的 momo 内容;否则什么也不做。
+  // 键盘焦点在平台视图与 momo 内容之间的去向只由这两个方法决定, 即只跟随框架的焦点树: 在 momo 内容上的
+  // 鼠标操作本身不移动键盘焦点(点击自绘的按钮、标签, 网页照常持有焦点)。
+  virtual void BlurPlatformView(int64_t view_id) { (void)view_id; }
 
   platform::ViewportMetrics metrics() const { return {physical_size(), device_pixel_ratio()}; }
 

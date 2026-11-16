@@ -11,3 +11,6 @@ export * from "./keyboard_key";
 export * from "./hardware_keyboard";
 export * from "./platform_views";
 export * from "./widget";
+export * from "./accelerator";
+export * from "./menu";
+export * from "./tray";

@@ -238,8 +238,12 @@ PlatformWindow* WindowManager::FindWindow(ViewId view_id) {
   return controller != nullptr ? &controller->window() : nullptr;
 }
 
+WindowController* WindowManager::focused_window() const {
+  return focused_window_.has_value() ? window(*focused_window_) : nullptr;
+}
+
 TextInputConnection* WindowManager::FocusedTextInput() {
-  WindowController* controller = focused_window_.has_value() ? window(*focused_window_) : nullptr;
+  WindowController* controller = focused_window();
   if (controller == nullptr) {
     controller = front_window();
   }

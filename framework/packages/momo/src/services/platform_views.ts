@@ -51,6 +51,12 @@ export class PlatformViewController {
     await channel.invokeMethod("focus", { id: this.viewId });
   }
 
+  /** 原生视图正持有键盘焦点时, 交还给窗口的 momo 内容(否则什么也不做)。 */
+  async blur(): Promise<void> {
+    if (this.#disposed) return;
+    await channel.invokeMethod("blur", { id: this.viewId });
+  }
+
   /** 原生视图因用户操作获得键盘焦点时回调(null 取消)。 */
   setOnFocused(listener: FocusListener | null): void {
     if (this.#disposed) return;

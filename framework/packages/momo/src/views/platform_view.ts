@@ -42,8 +42,10 @@ export interface PlatformViewOptions {
  * 嵌入由扩展提供的系统原生视图(macOS: NSView, 如 WKWebView), docs/05 §9。
  * 视图与 momo 画面按绘制顺序叠放: 之后绘制的 momo 内容(对话框、浮层)盖在视图上, 且那片区域的点击归 momo。
  * 尺寸取约束的最大值(放进有界约束中, 如 SizedBox / Expanded)。
- * 焦点: 用户点击原生视图时, 本组件的 FocusNode 成为主焦点(momo 的输入框随之失焦);
- *       在 momo 里请求本组件焦点时, 键盘焦点交给原生视图。
+ * 焦点: 系统的键盘焦点与本组件的 FocusNode 保持一致, 只跟随 momo 的焦点树——
+ *       用户点击原生视图时, 本组件的 FocusNode 成为主焦点(momo 的输入框随之失焦);
+ *       在 momo 里请求本组件焦点时, 键盘焦点交给原生视图;焦点移到别的节点(如 momo 的输入框)时收回。
+ *       在 momo 内容上的鼠标操作本身不移动焦点: 点击自绘的按钮, 原生视图照常持有键盘焦点。
  * 限制: 只支持平移与缩放(旋转/斜切按包围盒近似);圆角裁剪只支持与可见区域贴合的一层。
  */
 export class PlatformView extends StatefulView {
@@ -107,6 +109,10 @@ export class PlatformViewState extends State<PlatformView> {
         this.setState(() => {
           this.#controller = controller;
         });
+        // 焦点在视图创建完成之前就到了本组件(新打开的页面): 现在交给原生视图。
+        if (this.#focusNode.hasPrimaryFocus) {
+          controller.focus().catch((e: unknown) => reportError(e, "focusing a platform view"));
+        }
         this.view.opts.onCreated?.(controller);
       },
       (e: unknown) => {
@@ -134,8 +140,13 @@ export class PlatformViewState extends State<PlatformView> {
     node.requestFocus();
   }
 
+  // 系统的键盘焦点跟随 momo 的焦点树: 本组件获得焦点 → 交给原生视图;失去焦点(到了 momo 的输入框等)→ 收回。
+  // 焦点没有变化时(点击自绘的按钮、标签)键盘焦点留在原生视图里。
   #onFocusChange = (focused: boolean): void => {
-    if (!focused) return;
+    if (!focused) {
+      this.#controller?.blur().catch((e: unknown) => reportError(e, "blurring a platform view"));
+      return;
+    }
     if (this.#focusFromNative) {
       this.#focusFromNative = false;
       return;

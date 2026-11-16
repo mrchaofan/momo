@@ -1,5 +1,5 @@
 // 在 mock 宿主下运行 examples/webview(多标签浏览器)并驱动交互: 新建/关闭标签(含缓动)、页面状态、地址栏。
-import { openedUrls, protocolResponses, viewCalls, webCommands } from "./browser_setup";
+import { applicationMenu, openedUrls, protocolResponses, viewCalls, webCommands } from "./browser_setup";
 import { webviewNative } from "../mock/ext_webview";
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/webview/src/main";
@@ -7,7 +7,10 @@ import { WebSession, WebViewController } from "../../../extensions/webview/js/in
 import { IconButton, Spinner } from "../../../examples/webview/src/icons";
 import { runRegisteredTests, test, expect } from "../harness";
 import { Phase, ViewTester, type PointerOptions } from "../tester";
-import { LogicalKeyboardKey, Offset, PhysicalKeyboardKey, Size, TextField, utf8Encode } from "../../packages/momo/src/index";
+import {
+  LogicalKeyboardKey, MethodCall, Offset, PhysicalKeyboardKey, PlatformViewsService, Size, StandardMethodCodec, TextField,
+  defaultBinaryMessenger, utf8Encode,
+} from "../../packages/momo/src/index";
 
 /** 某个视图(窗口)最近一帧场景里的平台视图 id。 */
 function platformViewsIn(view: number): number[] {
@@ -98,6 +101,58 @@ test("momo:webview: custom protocol serves the start page; sessions and cookies 
   ]);
 });
 
+type WireItem = Record<string, unknown>;
+/** 应用菜单里 menu 子菜单的各项(示例发给宿主的描述)。 */
+function menuItems(menu: string): WireItem[] {
+  return (applicationMenu.items.find((i) => i.label === menu)?.submenu ?? []) as WireItem[];
+}
+/** 以宿主的身份点击应用菜单里的一项(与按下它的快捷键相同)。 */
+async function clickMenu(t: ViewTester, menu: string, label: string): Promise<void> {
+  const item = menuItems(menu).find((i) => i.label === label);
+  if (item === undefined) throw new Error(`no menu item ${menu} > ${label}`);
+  const call = StandardMethodCodec.instance.encodeMethodCall(new MethodCall("itemClicked", { id: item.id }));
+  await defaultBinaryMessenger.handlePlatformMessage("momo/menu", call);
+  await settle(t);
+}
+
+test("examples/webview: application menu — edit roles for the page, shortcuts, find in page", async () => {
+  const t = new ViewTester(new Size(1000, 700));
+  await settle(t);
+  // 编辑菜单: 剪切/拷贝/粘贴等是 role(系统的标准动作, 作用于获得焦点的网页或文本框), 其后是查找。
+  const edit = menuItems("编辑");
+  expect.deepEqual(edit.filter((i) => i.role !== undefined).map((i) => i.role), ["undo", "redo", "cut", "copy", "paste", "selectAll"]);
+  expect.deepEqual(edit.filter((i) => i.accelerator !== undefined).map((i) => [i.label, (i.accelerator as WireItem).key]),
+    [["查找…", "f"], ["查找下一个", "g"], ["查找上一个", "g"]]);
+  expect.deepEqual(menuItems("文件").filter((i) => i.type === "normal" && i.role === undefined).map((i) => i.label),
+    ["新建标签页", "新建窗口", "关闭标签页"]);
+
+  // 查找…: 打开查找栏(第二个输入框)并聚焦;回车在活动标签的网页里查找。
+  const web = viewCalls.find((c) => c.method === "create")!.id;
+  expect.equal(t.byType(TextField).length, 1);
+  await clickMenu(t, "编辑", "查找…");
+  const fields = t.byType(TextField);
+  expect.equal(fields.length, 2, "the find bar is shown");
+  (fields[1]!.view as TextField).controller!.text = "momo";
+  await t.pressKey({ logical: LogicalKeyboardKey.enter.keyId, physical: PhysicalKeyboardKey.enter.keyId });
+  await settle(t);
+  expect.deepEqual(webCommands.at(-1), { id: web, method: "find", text: "momo", backwards: false });
+  expect.equal(t.byText("无匹配").length, 1, "the mock page has no match");
+  await clickMenu(t, "编辑", "查找上一个");
+  expect.deepEqual(webCommands.at(-1), { id: web, method: "find", text: "momo", backwards: true });
+
+  // Esc 关闭查找栏;查找词保留, "查找下一个"继续用它。
+  await t.pressKey({ logical: LogicalKeyboardKey.escape.keyId, physical: PhysicalKeyboardKey.escape.keyId });
+  await settle(t);
+  expect.equal(t.byType(TextField).length, 1, "closed by Escape");
+  await clickMenu(t, "编辑", "查找下一个");
+  expect.deepEqual(webCommands.at(-1), { id: web, method: "find", text: "momo", backwards: false });
+  expect.equal(t.byType(TextField).length, 1);
+
+  // 其余菜单项作用于获得焦点的窗口的活动标签。
+  await clickMenu(t, "显示", "重新载入此页");
+  expect.deepEqual(webCommands.at(-1), { id: web, method: "reload" });
+});
+
 test("examples/webview: open, switch and close tabs with eased insert/remove", async () => {
   const t = new ViewTester(new Size(1000, 700));
   await settle(t);
@@ -127,6 +182,8 @@ test("examples/webview: open, switch and close tabs with eased insert/remove", a
   await settle(t);
   const second = created()[1]!;
   expect.isTrue(second !== first);
+  // 新打开的标签页: 它的网页获得键盘焦点。
+  expect.equal(viewCalls.filter((c) => c.method === "focus").at(-1)?.id, second);
   // 只有活动标签的平台视图进入场景(另一个 Offstage)。
   const views = __mock.lastSceneOps.filter((o) => o.op === "addPlatformView").map((o) => o.args[0]);
   expect.deepEqual(views, [second]);
@@ -137,6 +194,35 @@ test("examples/webview: open, switch and close tabs with eased insert/remove", a
   expect.deepEqual(__mock.lastSceneOps.filter((o) => o.op === "addPlatformView").map((o) => o.args[0]), [first]);
   expect.equal(t.view(TextField).controller!.text, "https://example.com/");
   expect.isFalse(viewCalls.some((c) => c.method === "dispose"));
+
+  // ---- 键盘焦点: 只跟随焦点树, 按标签恢复 ----
+  // 用户点了第一个标签的网页: 原生视图获得键盘焦点, momo 的焦点跟到它的 PlatformView 上。
+  PlatformViewsService.debugNotifyFocused(first);
+  await settle(t);
+  const focusCalls = (): string[] => viewCalls.filter((c) => c.method === "focus" || c.method === "blur").map((c) => `${c.method}:${c.id}`);
+  const focusBefore = focusCalls().length;
+  // 点自绘的按钮(刷新)、点当前标签: 焦点不动, 网页照常持有键盘焦点。
+  await t.tap(t.one(t.byText("↻")));
+  await t.tap(t.one(t.byText("Example Domain")));
+  await settle(t);
+  expect.deepEqual(focusCalls().slice(focusBefore), []);
+  // 切到第二个标签(它的焦点也在自己的网页里): 键盘焦点从第一个网页到第二个网页。
+  await t.tap(t.one(t.byText("新标签页")));
+  await settle(t);
+  expect.deepEqual(focusCalls().slice(focusBefore), [`blur:${first}`, `focus:${second}`]);
+  // 切回第一个标签: 键盘焦点还给它的网页(网页内部聚焦在哪里由 WebView 自己保持)。
+  await t.tap(t.one(t.byText("Example Domain")));
+  await settle(t);
+  expect.deepEqual(focusCalls().slice(focusBefore + 2), [`blur:${second}`, `focus:${first}`]);
+  // 点地址栏(输入框): 从网页拿走键盘焦点;此后切到第二个标签再切回, 第一个标签的焦点仍在地址栏。
+  await t.tap(t.one(t.byType(TextField)));
+  await settle(t);
+  expect.deepEqual(focusCalls().slice(focusBefore + 4), [`blur:${first}`]);
+  await t.tap(t.one(t.byText("新标签页")));
+  await settle(t);
+  await t.tap(t.one(t.byText("Example Domain")));
+  await settle(t);
+  expect.deepEqual(focusCalls().slice(focusBefore + 5), [`focus:${second}`, `blur:${second}`]);
 
   // 标签右键 → 窗口内菜单。菜单与遮罩在平台视图之后加入场景, 即合成在网页之上。
   await t.tap(t.one(t.byText("Example Domain")), { buttons: 2 });

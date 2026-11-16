@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -212,8 +213,83 @@ class MockServices final : public PlatformServices {
   std::string clipboard_;
 };
 
+// 菜单与托盘的记录: 测试经 MockPlatformState::menus 检查, 并以 delegate 模拟用户点击。
+struct MockTrayState {
+  std::string image;
+  std::string tooltip;
+  std::optional<MenuModel> menu;
+  TrayDelegate* delegate = nullptr;
+};
+
+struct MockMenusState {
+  MenuDelegate* delegate = nullptr;
+  std::optional<MenuModel> application_menu;
+  int application_menu_sets = 0;
+  std::vector<MenuModel> popups;
+  std::optional<Point> popup_position;
+  PlatformWindow* popup_window = nullptr;
+  MoveOnlyFunction<void()> popup_closed;  // 非空 = 有打开着的菜单
+  std::map<int64_t, MockTrayState> trays;  // 存活的图标
+};
+
+class MockTray final : public PlatformTray {
+ public:
+  MockTray(std::shared_ptr<MockMenusState> state, int64_t id) : state_(std::move(state)), id_(id) {}
+  ~MockTray() override { state_->trays.erase(id_); }
+  Status SetImage(const std::string& path) override {
+    if (path.empty()) return InvalidArgumentError("mock: no image");
+    state_->trays[id_].image = path;
+    return Status::Ok();
+  }
+  void SetToolTip(std::string_view text) override { state_->trays[id_].tooltip = std::string(text); }
+  void SetContextMenu(const MenuModel* menu) override {
+    state_->trays[id_].menu = menu != nullptr ? std::optional<MenuModel>(*menu) : std::nullopt;
+  }
+  std::optional<Rect> bounds() const override { return Rect{1, 2, 3, 4}; }
+
+ private:
+  std::shared_ptr<MockMenusState> state_;
+  const int64_t id_;
+};
+
+class MockMenus final : public PlatformMenus {
+ public:
+  explicit MockMenus(std::shared_ptr<MockMenusState> state) : state_(std::move(state)) {}
+  void SetDelegate(MenuDelegate* delegate) override { state_->delegate = delegate; }
+  void SetApplicationMenu(const MenuModel* menu) override {
+    state_->application_menu = menu != nullptr ? std::optional<MenuModel>(*menu) : std::nullopt;
+    state_->application_menu_sets++;
+  }
+  void Popup(const MenuModel& menu, PlatformWindow* window, std::optional<Point> position,
+             MoveOnlyFunction<void()> on_closed) override {
+    ClosePopup();
+    state_->popups.push_back(menu);
+    state_->popup_window = window;
+    state_->popup_position = position;
+    state_->popup_closed = std::move(on_closed);
+  }
+  // 打开着的菜单关闭(测试也用它模拟用户关闭菜单)。
+  void ClosePopup() override {
+    if (auto closed = std::move(state_->popup_closed)) {
+      state_->popup_closed = nullptr;
+      closed();
+    }
+  }
+  StatusOr<std::unique_ptr<PlatformTray>> CreateTray(int64_t tray_id, const std::string& image_path,
+                                                     TrayDelegate* delegate) override {
+    auto tray = std::make_unique<MockTray>(state_, tray_id);
+    MOMO_RETURN_IF_ERROR(tray->SetImage(image_path));
+    state_->trays[tray_id].delegate = delegate;
+    return std::unique_ptr<PlatformTray>(std::move(tray));
+  }
+
+ private:
+  std::shared_ptr<MockMenusState> state_;
+};
+
 // 测试持有 State 的共享引用, 在 Application 接管(并销毁)集成之后仍可检查。
 struct MockPlatformState {
+  std::shared_ptr<MockMenusState> menus = std::make_shared<MockMenusState>();
   MockWindow* window = nullptr;  // 主窗口(第一个创建的)
   std::vector<MockWindow*> windows;  // 全部存活的窗口(含主窗口)
   int windows_created = 0;
@@ -260,6 +336,7 @@ class MockPlatformIntegration final : public PlatformIntegration {
   }
   MockServices& services() override { return services_; }
   MockApp& app() override { return app_; }
+  PlatformMenus* menus() override { return &menus_; }
   std::vector<DisplayInfo> displays() const override { return {{}}; }
   NativeLoop& native_loop() override { return native_loop_; }
 
@@ -270,6 +347,7 @@ class MockPlatformIntegration final : public PlatformIntegration {
   MockNativeLoop native_loop_;
   MockServices services_;
   MockApp app_;
+  MockMenus menus_{state_->menus};
 };
 
 }  // namespace momo::embedder::testing

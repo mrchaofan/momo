@@ -175,6 +175,7 @@ void TitleBarDoubleClick(NSWindow* window) {
       const int64_t view_id =
           [owner->platform_views() viewIdForResponder:view.window.firstResponder];
       if (view_id != 0) {
+        [owner->platform_views() noteFocusedViewId:view_id];
         owner->delegate()->OnPlatformViewFocused(view_id);
       }
     });
@@ -366,6 +367,37 @@ void TitleBarDoubleClick(NSWindow* window) {
   (void)selector;
 }
 
+// ---- 编辑菜单 ----
+// 菜单的 cut / copy / paste / selectAll(role 菜单项, mac_menu.h)沿响应链到达这里: 作为编辑命令交给框架里
+// 获得焦点的文本框。没有文本输入会话时不响应: 菜单项灰显, 快捷键照常作为按键送达框架。
+
+- (void)sendEditCommand:(const char*)command {
+  if (_owner != nullptr) {
+    _owner->delegate()->OnTextInput({.type = momo::embedder::TextInputEvent::Type::kCommand, .command = command});
+  }
+}
+- (void)cut:(id)sender {
+  [self sendEditCommand:"cut"];
+}
+- (void)copy:(id)sender {
+  [self sendEditCommand:"copy"];
+}
+- (void)paste:(id)sender {
+  [self sendEditCommand:"paste"];
+}
+- (void)selectAll:(id)sender {
+  [self sendEditCommand:"selectAll"];
+}
+
+- (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
+  const SEL action = item.action;
+  if (action == @selector(cut:) || action == @selector(copy:) || action == @selector(paste:) ||
+      action == @selector(selectAll:)) {
+    return _owner != nullptr && _owner->mac_text_input().active();
+  }
+  return YES;
+}
+
 - (void)setMarkedText:(id)string
         selectedRange:(NSRange)selectedRange
      replacementRange:(NSRange)replacementRange {
@@ -428,10 +460,20 @@ void TitleBarDoubleClick(NSWindow* window) {
 @interface MomoPanel : NSPanel <MomoNativeWindow>
 @end
 
+// 应用菜单的快捷键先于窗口里的内容: AppKit 的默认顺序是视图层级在前、主菜单在后, 而获得键盘焦点的平台视图
+// (WKWebView)会把带 Command 的按键全部收走, 菜单的快捷键在网页里就失效了。菜单项不可用(如没有可编辑内容时的
+// "粘贴")或没有这个快捷键时, 菜单不处理, 按键照常交给内容。
+static BOOL MomoMenuHandlesKeyEquivalent(NSEvent* event) {
+  return event.type == NSEventTypeKeyDown && [NSApp.mainMenu performKeyEquivalent:event];
+}
+
 @implementation MomoWindow
 @synthesize owner;
 - (BOOL)canBecomeKeyWindow {
   return YES;  // 隐藏标题栏后也能接收键盘
+}
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+  return MomoMenuHandlesKeyEquivalent(event) || [super performKeyEquivalent:event];
 }
 - (void)sendEvent:(NSEvent*)event {
   if (MacWindow* window = self.owner) {
@@ -458,6 +500,9 @@ void TitleBarDoubleClick(NSWindow* window) {
 }
 - (BOOL)canBecomeMainWindow {
   return NO;  // 应用主窗口保持 main 状态
+}
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+  return MomoMenuHandlesKeyEquivalent(event) || [super performKeyEquivalent:event];
 }
 - (void)sendEvent:(NSEvent*)event {
   if (MacWindow* window = self.owner) {
@@ -1055,12 +1100,10 @@ void MacWindow::SendToMomo(platform::PointerDataPacket packet, const PointerInpu
     data.scroll_delta_x *= scale;
     data.scroll_delta_y *= scale;
     if (data.phase == PointerPhase::kDown) {
-      // 序列的按下(startDrag 据此开始系统拖动)。按下由 momo 内容接收: 键盘焦点交还 momo(之前可能在网页里)。
+      // 序列的按下(startDrag 据此开始系统拖动)。键盘焦点不随按下移动: 它只跟随框架的焦点树
+      // (FocusPlatformView / BlurPlatformView), 点击自绘的按钮、标签时网页照常持有焦点。
       sequence_down_ = (__bridge NSEvent*)input.native;
       sequence_down_id_ = data.sequence_id;
-      if ([platform_views_ viewIdForResponder:window_.firstResponder] != 0) {
-        [window_ makeFirstResponder:view_];
-      }
     }
   }
   delegate_->OnPointerPacket(std::move(packet));
@@ -1097,6 +1140,8 @@ void MacWindow::RemovePlatformView(int64_t view_id) {
 }
 
 void MacWindow::FocusPlatformView(int64_t view_id) { [platform_views_ focusViewId:view_id]; }
+
+void MacWindow::BlurPlatformView(int64_t view_id) { [platform_views_ blurViewId:view_id]; }
 
 void MacWindow::SynchronizeLiveResize() {
   // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖。

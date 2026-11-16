@@ -1,7 +1,13 @@
 // examples/webview — 多窗口、多标签浏览器(平台视图 + 多视图示例, docs/05 §9、docs/02 §2)。黑白简约风格。
-//   - 标签: 新建(+ / ⌘T)、关闭(× / ⌘W)、切换(点击 / ⌃Tab、⌃⇧Tab), 插入与删除带缓动;
-//   - 工具栏: 后退、前进、刷新/停止, 地址栏(⌘L 聚焦;非网址按搜索处理), 加载进度细线;
-//   - 窗口: ⌘N 新窗口;每个窗口是一个 Widget(原生窗口对象), 内容由 RootView 渲染, 同一个 JS 运行时驱动,
+//   - 应用菜单(Menu.setApplicationMenu;macOS 菜单栏): 文件(新建标签页 ⌘T、新建窗口 ⌘N、关闭标签页 ⌘W)、
+//     编辑(撤销/重做/剪切/拷贝/粘贴/全选 + 查找 ⌘F、查找下一个 ⌘G、上一个 ⇧⌘G)、显示(重新载入 ⌘R、打开位置 ⌘L、
+//     切换标签页 ⌃Tab / ⌃⇧Tab)、窗口。全部快捷键都是菜单的快捷键: 由宿主在按键到达内容之前识别, 键盘焦点在
+//     网页里时同样有效。编辑菜单的剪切/拷贝/粘贴等是 role(系统的标准动作): 焦点在网页里就作用于网页,
+//     在地址栏里就作用于地址栏;
+//   - 页内查找: 工具栏下方的查找栏(回车 / ⌘G 下一个, ⇧⌘G 上一个, Esc 关闭), 用 WebView 的 find;
+//   - 标签: 新建(+)、关闭(×)、切换(点击), 插入与删除带缓动;
+//   - 工具栏: 后退、前进、刷新/停止, 地址栏(非网址按搜索处理), 加载进度细线;
+//   - 窗口: 每个窗口是一个 Widget(原生窗口对象), 内容由 RootView 渲染, 同一个 JS 运行时驱动,
 //     共享应用状态。所有窗口对等(runView): 启动窗口(Widget.fromId(0))由第一个浏览器窗口使用, 和其他窗口一样
 //     可以关闭、可以被并入别的窗口;最后一个窗口关闭后 macOS 上应用留在 Dock(点击图标重开窗口), 其他平台退出;
 //   - 标签右键: 窗口内菜单(momo 绘制, 叠在网页之上)——在新窗口中打开、在系统浏览器中打开;
@@ -15,7 +21,10 @@
 //     新窗口打开、并入另一个窗口)只改原生接收窗口(PointerCapture.moveToView), 触发拖动的窗口被并走关闭也不中断;
 //   - 每个标签一个系统 WebView。非活动标签用 Offstage 隐藏: 不参与合成(原生视图被隐藏), 但 WebView
 //     对象与页面状态保留, 切回时无需重新加载。
-// 注意: 键盘焦点在网页里时按键由 WebView 处理, 快捷键需先点击 momo 区域(标签栏/工具栏)。
+//   - 键盘焦点: 只有输入框(地址栏、查找栏)会从网页拿走键盘焦点;点击自绘的按钮、标签不动焦点, 网页照常
+//     接收按键(框架的规则)。新打开的标签页, 网页自动获得键盘焦点(⌘L 去地址栏)。每个标签记住焦点属于网页
+//     还是地址栏, 切换标签、窗口回到前台时据此恢复(本示例的
+//     策略: restoreFocus);标签换窗口时焦点随网页一起走。网页内部聚焦在哪个元素由各自的 WebView 保持。
 // 运行(macOS;WebView 是内置扩展 momo:webview, 随运行时提供):
 //   (cd examples/webview && npm run build) && out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev examples/webview
 // 打包成 .app:
@@ -24,21 +33,20 @@
 import {
   Actions, BorderRadius, GestureBinding, PointerCancelEvent, PointerUpEvent, Border, BorderSide, BoxDecoration, CallbackAction, Color, Column, Container, EdgeInsets,
   Expanded, FocusNode, Focus, FractionallySizedBox, Align, Alignment, InputDecoration, Intent, LogicalKeyboardKey,
-  MaterialApp, MediaQuery, Offstage, Positioned, Row, Shortcuts, SingleActivator, SizedBox, Stack, State,
+  MaterialApp, MediaQuery, Menu, Offstage, Positioned, Row, SchedulerBinding, Shortcuts, SingleActivator, SizedBox, Stack, State,
   StatefulView, TextEditingController, TextField, TextSelection, ThemeData, Title, ValueKey, ViewAnchor, RootView, Widget,
   WindowChrome, app, isApplePlatform, openUrl, reportError, runView,
-  type BuildContext, type Offset, type PointerCapture, type PointerEvent, type View,
+  type BuildContext, type MenuItem, type MenuItemOptions, type Offset, type PointerCapture, type PointerEvent, type View,
 } from "momo:framework";
 import { WebView, registerProtocol, type WebViewController, type WebViewState } from "momo:webview";
 import { showContextMenu } from "./context_menu";
 import { Palette, TextStyles, kStripLeadingPadding, kTabStripHeight, kTabStripTitleBarHeight, kTabStripTopInset, kToolbarHeight } from "./style";
 import { IconTap, Tab, TabStrip, dropIndex, tabWidthFor, type TabDrag } from "./tabs";
 import { DetachedPage, DetachedPlaceholder } from "./detached";
+import { FindBar } from "./find_bar";
 
 /** 起始页的内部地址(自定义协议 momo://, 见下方 registerProtocol: 真实地址, 刷新后仍是起始页)。 */
 export const kNewTabUrl = "momo://newtab";
-
-const primaryShortcut = isApplePlatform() ? { meta: true } : { control: true };
 
 const kStartPage = `<!doctype html>
 <html><head><meta charset="utf-8"><title>新标签页</title>
@@ -59,7 +67,7 @@ const kStartPage = `<!doctype html>
     <a href="https://github.com/">GitHub</a>
     <a href="https://developer.mozilla.org/">MDN</a>
   </nav>
-  <p>⌘T 新标签 · ⌘W 关闭 · ⌘L 地址栏 · ⌘R 刷新 · ⌃Tab 切换</p>
+  <p>⌘T 新标签 · ⌘W 关闭 · ⌘L 地址栏 · ⌘F 查找 · ⌘R 刷新 · ⌃Tab 切换</p>
 </main></body></html>`;
 
 // 浏览器的内部页面: momo://<页面名>。协议要在创建第一个 WebView 之前声明。
@@ -83,13 +91,8 @@ function addressOf(url: string): string {
   return url === "about:blank" || url.startsWith(kNewTabUrl) ? "" : url;
 }
 
-class NewTabIntent extends Intent {}
-class NewWindowIntent extends Intent {}
-class CloseTabIntent extends Intent {}
-class ReloadIntent extends Intent {}
-class FocusAddressIntent extends Intent {}
-class NextTabIntent extends Intent {}
-class PreviousTabIntent extends Intent {}
+/** Esc: 关闭查找栏。其余快捷键都在应用菜单里(BrowserAppState 的 #buildMenu)。 */
+class DismissIntent extends Intent {}
 
 // ---------------------------------------------------------------------------
 // 应用状态: 窗口与标签
@@ -187,11 +190,13 @@ export class BrowserAppState extends State<BrowserApp> {
     this.openTab(first, null);
     app.on("window-all-closed", this.#onAllClosed);
     app.on("activate", this.#onActivate);
+    Menu.setApplicationMenu(this.#buildMenu());
   }
 
   override dispose(): void {
     app.off("window-all-closed", this.#onAllClosed);
     app.off("activate", this.#onActivate);
+    Menu.setApplicationMenu(null);
     this.#drag?.capture.release();
     for (const w of this.#windows) for (const tab of w.tabs) tab.dispose();
     this.#detached = [];
@@ -220,21 +225,113 @@ export class BrowserAppState extends State<BrowserApp> {
     return this.#windows.find((w) => w.tabs.includes(tab)) ?? null;
   }
 
+  // ---- 应用菜单 ----
+
+  /** widget 对应的浏览器窗口(单独窗口、或没有窗口时为空)。 */
+  #browserWindowOf(widget: Widget | null): BrowserWindow | null {
+    return this.#windows.find((x) => x.widget !== null && x.widget === widget) ?? null;
+  }
+
+  /**
+   * 应用菜单。菜单项作用于获得焦点的浏览器窗口(click 的 widget 参数)。编辑菜单的前几项是 role: 由系统沿响应链
+   * 交给获得键盘焦点的内容——网页(WKWebView)自己响应, momo 的文本框经编辑命令响应——所以同一个"拷贝"对网页
+   * 和地址栏都有效, 这里不需要任何代码。
+   */
+  #buildMenu(): Menu {
+    type Click = (item: MenuItem, widget: Widget | null) => void;
+    // 作用于获得焦点的浏览器窗口及其页面(焦点在单独窗口、或没有窗口时不执行)。
+    const inWindow = (run: (w: BrowserWindow, page: BrowserPageState | null) => void): Click => (_item, widget) => {
+      const w = this.#browserWindowOf(widget);
+      if (this.mounted && w !== null) run(w, this.#pages.get(w) ?? null);
+    };
+    const separator: MenuItemOptions = { type: "separator" };
+    return Menu.buildFromTemplate([
+      // macOS 的应用菜单(其他平台没有这些 role, 整个菜单不显示)。
+      { role: "appMenu", submenu: [
+        { role: "about", label: "关于 MomoBrowser" }, separator,
+        { role: "services", label: "服务" }, separator,
+        { role: "hide", label: "隐藏 MomoBrowser" }, { role: "hideOthers", label: "隐藏其他" }, { role: "unhide", label: "全部显示" },
+        separator, { role: "quit", label: "退出 MomoBrowser" },
+      ] },
+      { label: "文件", submenu: [
+        { label: "新建标签页", accelerator: "CmdOrCtrl+T", click: (_item, widget) => {
+          const w = this.#browserWindowOf(widget);
+          if (w !== null) this.openTab(w, null);
+          else this.openWindow(null);  // 没有浏览器窗口在前: 新开一个
+        } },
+        { label: "新建窗口", accelerator: "CmdOrCtrl+N", click: () => this.openWindow(null) },
+        separator,
+        { label: "关闭标签页", accelerator: "CmdOrCtrl+W", click: (_item, widget) => {
+          const w = this.#browserWindowOf(widget);
+          const tab = w?.active ?? null;
+          if (w !== null && tab !== null) this.closeTab(w, tab);
+          else if (w === null) widget?.close();  // 单独窗口: 关闭窗口(其标签随之关闭)
+        } },
+        ...(isApplePlatform() ? [] : [separator, { role: "quit", label: "退出" } as MenuItemOptions]),
+      ] },
+      { label: "编辑", submenu: [
+        { role: "undo", label: "撤销" }, { role: "redo", label: "重做" }, separator,
+        { role: "cut", label: "剪切" }, { role: "copy", label: "拷贝" }, { role: "paste", label: "粘贴" },
+        { role: "selectAll", label: "全选" }, separator,
+        { label: "查找…", accelerator: "CmdOrCtrl+F", click: inWindow((_w, page) => page?.openFind()) },
+        { label: "查找下一个", accelerator: "CmdOrCtrl+G", click: inWindow((_w, page) => page?.find(false)) },
+        { label: "查找上一个", accelerator: "CmdOrCtrl+Shift+G", click: inWindow((_w, page) => page?.find(true)) },
+      ] },
+      { label: "显示", submenu: [
+        { label: "重新载入此页", accelerator: "CmdOrCtrl+R", click: inWindow((w) => void w.active?.controller?.reload()) },
+        { label: "打开位置…", accelerator: "CmdOrCtrl+L", click: inWindow((_w, page) => page?.focusAddress()) },
+        separator,
+        { label: "显示下一个标签页", accelerator: "Ctrl+Tab", click: inWindow((w) => this.cycle(w, 1)) },
+        { label: "显示上一个标签页", accelerator: "Ctrl+Shift+Tab", click: inWindow((w) => this.cycle(w, -1)) },
+      ] },
+      { role: "windowMenu", label: "窗口", submenu: [
+        { role: "minimize", label: "最小化" }, { role: "zoom", label: "缩放" }, separator,
+        { role: "front", label: "前置全部窗口" },
+      ] },
+    ]);
+  }
+
   // ---- 标签 ----
 
-  /** 在当前标签右侧插入新标签并激活;url 为空打开起始页并聚焦地址栏。 */
+  /** 在当前标签右侧插入新标签并激活(url 为空打开起始页);新标签的网页获得键盘焦点(selectTab → restoreFocus)。 */
   openTab(w: BrowserWindow, url: string | null): void {
     const tab = new Tab(this, url);
     const at = w.tabs.findIndex((t) => t.id === w.activeId);
     w.tabs.splice(at < 0 ? w.tabs.length : at + 1, 0, tab);
     void tab.animation.forward();
     this.selectTab(w, tab);
-    if (url === null) this.#pages.get(w)?.focusAddress();
   }
 
+  /**
+   * 切换到 tab。键盘焦点按标签恢复(同 Chromium): 切到的标签焦点属于网页就还给它的网页(restoreFocus), 否则——
+   * 如果焦点正在离开的那个网页里——交给地址栏;焦点本来就在窗口自己的界面上时不动。
+   */
   selectTab(w: BrowserWindow, tab: Tab): void {
+    const old = w.active;
     this.setState(() => (w.activeId = tab.id));
-    this.#pages.get(w)?.syncAddress(true);
+    const page = this.#pages.get(w);
+    page?.syncAddress(true);
+    if (old === tab) return;
+    if (tab.pageFocused) this.restoreFocus(w);
+    else if (old?.pageFocused) page?.focusAddress();
+  }
+
+  // ---- 键盘焦点 ----
+
+  /**
+   * 把键盘焦点还给窗口 w 活动标签的网页(焦点属于它的网页时, 见 Tab.pageFocused)。在活动标签变化(selectTab、
+   * 别的窗口的标签并入)和窗口获得系统焦点时调用;窗口不在前台时什么也不做(等它获得焦点)。
+   * 这是浏览器自己的策略, 用的是通用的焦点接口。标签换窗口(拖出成窗、并入、弹出与恢复)不需要它: 焦点随网页的
+   * 焦点节点一起移动, 宿主让持有焦点的网页在新窗口里照常取得键盘焦点。
+   */
+  restoreFocus(w: BrowserWindow): void {
+    const tab = w.active;
+    if (tab === null || !tab.pageFocused || tab.detached !== null) return;
+    // 标签的网页在下一帧才挂载、上屏: 帧结束后聚焦。
+    SchedulerBinding.instance.addPostFrameCallback(() => {
+      if (this.mounted && w.activeId === tab.id && !tab.closing && (w.widget?.isFocused ?? false)) tab.pageFocus.requestFocus();
+    });
+    SchedulerBinding.instance.scheduleFrame();
   }
 
   /** 关闭: 先播放删除动画(期间不可交互), 结束后移除;窗口的最后一个标签: 关闭窗口(所有窗口对等)。 */
@@ -304,9 +401,10 @@ export class BrowserAppState extends State<BrowserApp> {
     );
   }
 
-  /** 窗口被用户(或宿主)关闭: 从状态里移除。 */
+  /** 窗口被用户(或宿主)关闭: 从状态里移除。窗口获得系统焦点: 恢复活动标签的焦点。 */
   #watch(w: BrowserWindow): void {
     w.widget?.once("closed", () => this.closeWindow(w));
+    w.widget?.on("focus", () => this.restoreFocus(w));
   }
 
   #onWindowOpened(w: BrowserWindow, widget: Widget): void {
@@ -472,6 +570,7 @@ export class BrowserAppState extends State<BrowserApp> {
     });
     target.widget?.focus();
     this.#pages.get(target)?.syncAddress(true);
+    this.restoreFocus(target);  // 目标窗口的活动标签变了(同 selectTab)
     src.widget?.endMoveLoop();
     if (src.live.length === 0) {
       // 拖动中的窗口被并走、即将关闭(可能正是按下所在的窗口): 先把序列改交目标窗口, 再关闭——
@@ -609,6 +708,7 @@ export class BrowserAppState extends State<BrowserApp> {
     return new WebView({
       key: tab.pageKey,
       initialUrl: tab.initialUrl ?? kNewTabUrl,
+      focusNode: tab.pageFocus,
       onCreated: (web) => this.onWebCreated(tab, web),
     });
   }
@@ -629,6 +729,11 @@ class BrowserPage extends StatefulView {
 class BrowserPageState extends State<BrowserPage> {
   #address = new TextEditingController();
   #addressFocus = new FocusNode({ debugLabel: "address" });
+  // 页内查找(查找栏;查找词在关闭后保留, "查找下一个"继续用它)。
+  #findText = new TextEditingController();
+  #findFocus = new FocusNode({ debugLabel: "find" });
+  #findOpen = false;
+  #findMissing = false;
 
   get #app(): BrowserAppState {
     return this.view.o.app;
@@ -641,12 +746,22 @@ class BrowserPageState extends State<BrowserPage> {
     super.initState();
     this.#app.registerPage(this.#w, this);
     this.syncAddress(true);
+    this.#addressFocus.addListener(this.#onChromeFocus);
+    this.#findFocus.addListener(this.#onChromeFocus);
   }
+
+  /** 地址栏 / 查找栏获得焦点: 焦点不再属于活动标签的网页。 */
+  #onChromeFocus = (): void => {
+    const tab = this.#w.active;
+    if (tab !== null && (this.#addressFocus.hasFocus || this.#findFocus.hasFocus)) tab.pageFocused = false;
+  };
 
   override dispose(): void {
     this.#app.registerPage(this.#w, null);
     this.#address.dispose();
     this.#addressFocus.dispose();
+    this.#findText.dispose();
+    this.#findFocus.dispose();
     super.dispose();
   }
 
@@ -661,13 +776,55 @@ class BrowserPageState extends State<BrowserPage> {
     this.#address.selection = new TextSelection(0, this.#address.text.length);
   };
 
+  // ---- 页内查找 ----
+
+  /** 打开查找栏并聚焦输入框(已打开则只聚焦), 选中已有的查找词。 */
+  openFind = (): void => {
+    this.#findText.selection = new TextSelection(0, this.#findText.text.length);
+    if (this.#findOpen) {
+      this.#findFocus.requestFocus();
+      return;
+    }
+    this.setState(() => (this.#findOpen = true));
+    // 输入框在这一帧才挂载: 帧结束后聚焦。
+    SchedulerBinding.instance.addPostFrameCallback(() => {
+      if (this.mounted && this.#findOpen) this.#findFocus.requestFocus();
+    });
+  };
+
+  closeFind = (): void => {
+    if (!this.#findOpen) return;
+    this.setState(() => {
+      this.#findOpen = false;
+      this.#findMissing = false;
+    });
+    this.#w.active?.controller?.focus();  // 键盘焦点回到网页(回到网页里原来聚焦的元素)
+  };
+
+  /** 在活动标签的网页里查找下一处(backwards: 上一处)。还没有查找词时打开查找栏。 */
+  find = (backwards: boolean): void => {
+    const text = this.#findText.text;
+    const web = this.#w.active?.controller;
+    if (text === "") {
+      this.openFind();
+      return;
+    }
+    if (!web) return;
+    web.find(text, { backwards }).then(
+      (found) => {
+        if (this.mounted && this.#findMissing === found) this.setState(() => (this.#findMissing = !found));
+      },
+      (e: unknown) => reportError(e, "finding in the page"),
+    );
+  };
+
   #go = (text: string): void => {
     const url = toUrl(text);
     const web = this.#w.active?.controller;
     if (url === null || !web) return;
     this.#address.text = url;
     void web.loadUrl(url);
-    void web.focus();  // 键盘焦点交给网页
+    web.focus();  // 键盘焦点交给网页
   };
 
   /** 标签右键菜单: 在新窗口中打开(同一 JS 运行时的新 momo 窗口)、在系统浏览器中打开。 */
@@ -780,31 +937,24 @@ class BrowserPageState extends State<BrowserPage> {
           }),
           this.#toolbar(active),
           this.#progress(active),
+          ...(this.#findOpen ? [new FindBar({
+            controller: this.#findText,
+            focusNode: this.#findFocus,
+            missing: this.#findMissing,
+            onChanged: () => { if (this.#findMissing) this.setState(() => (this.#findMissing = false)); },
+            onFind: this.find,
+            onClose: this.closeFind,
+          })] : []),
           new Expanded({ child: pages }),
         ],
       }),
     });
 
+    // 快捷键都在应用菜单里(宿主识别);这里只有 Esc: 关闭查找栏。
     return new Shortcuts({
-      shortcuts: new Map([
-        [new SingleActivator(LogicalKeyboardKey.keyT, primaryShortcut), new NewTabIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyN, primaryShortcut), new NewWindowIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyW, primaryShortcut), new CloseTabIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyR, primaryShortcut), new ReloadIntent()],
-        [new SingleActivator(LogicalKeyboardKey.keyL, primaryShortcut), new FocusAddressIntent()],
-        [new SingleActivator(LogicalKeyboardKey.tab, { control: true }), new NextTabIntent()],
-        [new SingleActivator(LogicalKeyboardKey.tab, { control: true, shift: true }), new PreviousTabIntent()],
-      ]),
+      shortcuts: new Map([[new SingleActivator(LogicalKeyboardKey.escape), new DismissIntent()]]),
       child: new Actions({
-        actions: new Map([
-          [NewTabIntent, new CallbackAction<NewTabIntent>({ onInvoke: () => app.openTab(w, null) })],
-          [NewWindowIntent, new CallbackAction<NewWindowIntent>({ onInvoke: () => app.openWindow(null) })],
-          [CloseTabIntent, new CallbackAction<CloseTabIntent>({ onInvoke: () => { const t = w.active; if (t) app.closeTab(w, t); } })],
-          [ReloadIntent, new CallbackAction<ReloadIntent>({ onInvoke: () => void w.active?.controller?.reload() })],
-          [FocusAddressIntent, new CallbackAction<FocusAddressIntent>({ onInvoke: this.focusAddress })],
-          [NextTabIntent, new CallbackAction<NextTabIntent>({ onInvoke: () => app.cycle(w, 1) })],
-          [PreviousTabIntent, new CallbackAction<PreviousTabIntent>({ onInvoke: () => app.cycle(w, -1) })],
-        ]),
+        actions: new Map([[DismissIntent, new CallbackAction<DismissIntent>({ onInvoke: this.closeFind })]]),
         // 无边框窗口: 标签栏顶到窗口上沿, 系统窗口控制按钮与标签行垂直居中。
         child: new WindowChrome({ titleBarHeight: kTabStripTitleBarHeight, child: new Focus({ autofocus: true, child: body }) }),
       }),

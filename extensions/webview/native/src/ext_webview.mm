@@ -19,7 +19,8 @@
 // 命令(JS → 原生, JSON):
 //   视图命令 {"id": <viewId>, "method", ...}:
 //       loadUrl {url} | loadHtml {html, baseUrl?} | goBack | goForward | reload | stop |
-//       evaluateJavaScript {script}
+//       evaluateJavaScript {script} |
+//       find {text, backwards?, caseSensitive?} → bool   页内查找: 选中并滚动到下一处(或上一处)匹配, 到头回绕
 //   会话命令 {"session": <会话键>, "method", ...}:
 //       cookies.get {url?} → [cookie] | cookies.set {cookie} | cookies.delete {name, url?, domain?, path?} |
 //       session.clearData {kinds?: ["cookies"|"cache"|"storage"]} | session.dispose
@@ -678,6 +679,18 @@ class WebViewExtension {
                 ReplyResult(token, JsonSafe(result));
               }
             }];
+      return;
+    } else if ([method isEqualToString:@"find"]) {
+      // 从当前选区继续查找: 重复同一个词即"下一个"。结果(是否找到)在主线程回调里应答。
+      WKFindConfiguration* config = [[WKFindConfiguration alloc] init];
+      config.backwards = [NumberField(call, @"backwards") boolValue];
+      config.caseSensitive = [NumberField(call, @"caseSensitive") boolValue];
+      config.wraps = YES;
+      [web findString:StringField(call, @"text") ?: @""
+          withConfiguration:config
+          completionHandler:^(WKFindResult* result) {
+            ReplyResult(token, @(result.matchFound));
+          }];
       return;
     } else {
       ReplyError(token, [@"unknown method " stringByAppendingString:method]);

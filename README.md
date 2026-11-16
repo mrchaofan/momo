@@ -262,6 +262,8 @@ window.scheduleFrame();
 | 应用 | `app.quit()`（可被 `before-quit` / 窗口 `close` / `will-quit` 取消）、`app.exit(code)`（不询问）、`app.hide()` / `app.focus()`；事件 `app.on("window-all-closed" / "activate" / "state-changed", ...)`。**最后一个窗口关闭后应用不会自动退出**，单窗口应用写 `app.on("window-all-closed", () => app.quit())` |
 | 拦截关闭 | 关窗：`widget.on("close", (e) => e.preventDefault())`；退出应用（Cmd+Q）：`app.on("before-quit", (e) => e.preventDefault())`。需要异步确认时用 `e.waitUntil(promise)`（例如提示"有未保存内容"） |
 | 窗口 | `await Widget.create({ title, width, height, show, ... })` 打开窗口（`Widget.fromId(0)` 是启动窗口），内容用 `ViewAnchor({ views: [new RootView({ widget, child })] })` 渲染；`Title` / `MaterialApp({ title })` 设置所在窗口的标题；窗口方法 `close` / `destroy` / `show` / `hide` / `minimize` / `maximize` / `restore` / `focus` / `setPosition`，事件 `closed` / `focus` / `minimize` / `move` / `resize` / `ready-to-show`… |
+| 菜单 | `Menu.buildFromTemplate([{ role: "appMenu" }, { label: "File", submenu: [{ label: "New", accelerator: "CmdOrCtrl+N", click }] }, { role: "editMenu" }])`；`Menu.setApplicationMenu(menu)` 设为应用菜单（macOS 菜单栏、Windows 每个窗口的菜单栏）；`await menu.popup({ widget, x, y })` 弹出上下文菜单。菜单项的 `label` / `enabled` / `visible` / `checked` 可随时修改；`role` 是由系统执行的标准动作（退出、复制、最小化…） |
+| 托盘 | `const tray = new Tray("trayTemplate.png")`（相对应用的 `assets/`；macOS 用 PNG，文件名以 `Template` 结尾为模板图像；Windows 用 `.ico`）；`tray.setToolTip(...)`、`tray.setContextMenu(menu)`、`tray.on("click", ...)`、`tray.destroy()` |
 | 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`，两侧留白用 `windowControlsPadding`（macOS 在左、Windows 在右，一份代码适配）；`WindowDragArea` 声明可拖动窗口的区域 |
 | 窗口能力 | `widget.capabilities`、`widget.bounds`、`widget.state`（平台不支持的能力是空操作，可先查询） |
 | 网页 | 内置扩展 `momo:webview`（macOS）：`import { WebView } from "momo:webview"`（见 [extensions/webview/README.md](extensions/webview/README.md)） |
@@ -329,7 +331,7 @@ MyApp.app/Contents/
 
 ## 原生扩展
 
-框架内置的 API 不够用时（数据库、托盘、音视频、硬件、现有 C/C++ SDK……），可以写**原生扩展**。Momo 的 JS 运行在 Node.js 环境里，所以原生扩展就是 **Node.js 原生插件**（`.node`，Node-API）：一个普通的 npm 包 = JS 门面 + 一个 `.node` 文件，npm 上现成的原生包按设计也用同一条路加载（没有拿真实的 npm 原生包测过）。JS 与原生之间只用 Node-API；需要引擎能力（平台线程、外部纹理、平台视图）的扩展另外使用一张很小的宿主能力表 [momo_host.h](extensions/sdk/include/momo/momo_host.h)（稳定的纯 C ABI，只在末尾追加）。
+框架内置的 API 不够用时（数据库、音视频、硬件、现有 C/C++ SDK……），可以写**原生扩展**。Momo 的 JS 运行在 Node.js 环境里，所以原生扩展就是 **Node.js 原生插件**（`.node`，Node-API）：一个普通的 npm 包 = JS 门面 + 一个 `.node` 文件，npm 上现成的原生包按设计也用同一条路加载（没有拿真实的 npm 原生包测过）。JS 与原生之间只用 Node-API；需要引擎能力（平台线程、外部纹理、平台视图）的扩展另外使用一张很小的宿主能力表 [momo_host.h](extensions/sdk/include/momo/momo_host.h)（稳定的纯 C ABI，只在末尾追加）。
 
 扩展有两种来源：
 
@@ -526,7 +528,7 @@ C++ 测试经 CTest 运行（gtest + golden 像素比对）；框架测试同时
 
 - M0–M5 已实现，并在 macOS 上构建与测试：CTest 215 项全部通过（其中 9 项因沙箱环境没有 GPU、显示器或端口绑定而跳过）；框架 TS 测试在 Node mock 与真实引擎 headless 两种宿主下均通过。
 - M6 完成了 V8 code cache、精简版 Material、`.app` / DMG 打包；多窗口、无障碍、崩溃上报、性能浮层未做。
-- **Windows**：平台层（与 macOS 同一套指针派发、窗口能力、应用生命周期）与 D3D12 GPU 后端已实现，但**未在 Windows 上编译运行验证**（macOS 上只做了单测与交叉编译检查）；不支持平台视图。
+- **Windows**：平台层（与 macOS 同一套指针派发、窗口能力、应用生命周期、菜单与托盘）与 D3D12 GPU 后端已实现，但**未在 Windows 上编译运行验证**（macOS 上只做了单测与交叉编译检查；菜单与托盘 `win_menu.cc` 连交叉编译检查也没有做）；不支持平台视图。
 - 技术选型：C++20（禁用异常与 RTTI）· V8 · Skia（macOS 走 Metal，CPU 光栅为回退）· SkParagraph（含 ICU）· CMake + Ninja。
 
 逐项状态见 [docs/11-roadmap.md](docs/11-roadmap.md)。

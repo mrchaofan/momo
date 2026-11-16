@@ -31,7 +31,11 @@
 // 视图挂入(初始隐藏)/移出。native 由扩展所有, 挂入期间本对象持有强引用。
 - (void)addView:(NSView*)native viewId:(int64_t)viewId;
 - (void)removeViewId:(int64_t)viewId;
+// 键盘焦点(规则见 .mm 的 gFocusedView): 框架的焦点到了 / 离开了该视图。
 - (void)focusViewId:(int64_t)viewId;
+- (void)blurViewId:(int64_t)viewId;
+// 用户直接点击原生视图使它获得了键盘焦点(框架随后会得知): 先行记下。
+- (void)noteFocusedViewId:(int64_t)viewId;
 // 合成帧(调用方已开启 CATransaction)。overlayLayers 与 layout.overlays 等长, 元素可为 nil。
 - (void)applyLayout:(const momo::engine::platform::CompositionLayout&)layout
       overlayLayers:(const std::vector<CAMetalLayer*>&)overlayLayers;

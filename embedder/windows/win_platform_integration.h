@@ -6,7 +6,7 @@
 // 必须在 OS 主线程调用, 且在此之前进程已声明 Per-Monitor-V2 DPI 感知(入口的
 // WinAppDelegate::EnablePerMonitorDpiAwareness)。内部: 本线程 CoInitializeEx(STA, ShellExecuteW 需要)、
 // 隐藏消息窗口实现的 NativeLoop(win_native_loop.h)、进程内唯一的指针输入(WinMouseInput)、显示器布局
-// (WinDisplays)、应用对象(WinApp)、HWND 窗口(win_window.h)、DwmFlush vsync(win_vsync_dwm.h)、
+// (WinDisplays)、应用对象(WinApp)、菜单与托盘(WinMenus)、HWND 窗口(win_window.h)、DwmFlush vsync(win_vsync_dwm.h)、
 // 剪贴板/打开 URL(win_services.h)。
 
 #include <memory>

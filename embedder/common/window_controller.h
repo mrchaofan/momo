@@ -73,6 +73,7 @@ class WindowController final : public Object,
   void OnPlatformViewCreated(int64_t view_id, void* native_view) override;
   void OnPlatformViewDisposed(int64_t view_id) override;
   void OnPlatformViewFocusRequested(int64_t view_id) override;
+  void OnPlatformViewBlurRequested(int64_t view_id) override;
   void OnFirstFramePresented() override;
 
  private:

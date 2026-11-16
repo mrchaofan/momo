@@ -1,6 +1,7 @@
 // 全部测试文件(按依赖层次)。
 import "./foundation_test";
 import "./services_test";
+import "./menu_test";
 import "./animation_test";
 import "./smoke_test";
 import "./views_test";

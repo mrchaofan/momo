@@ -138,6 +138,8 @@ void WindowController::OnPlatformViewDisposed(int64_t view_id) { window_->Remove
 
 void WindowController::OnPlatformViewFocusRequested(int64_t view_id) { window_->FocusPlatformView(view_id); }
 
+void WindowController::OnPlatformViewBlurRequested(int64_t view_id) { window_->BlurPlatformView(view_id); }
+
 
 void WindowController::OnFirstFramePresented() {
   if (first_frame_) {

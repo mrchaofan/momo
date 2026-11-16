@@ -23,7 +23,6 @@ int main(int argc, const char* argv[]) {
     auto platform = momo::embedder::macos::CreateMacPlatformIntegration();  // 初始化 NSApp
     MacAppDelegate* delegate = [[MacAppDelegate alloc] init];
     NSApp.delegate = delegate;
-    [MacAppDelegate installMainMenuWithAppName:@(config->window.title.c_str())];
 
     momo::embedder::Application::Options options;
     options.config = std::move(config).value();

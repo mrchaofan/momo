@@ -221,6 +221,14 @@ MOMO_SWALLOW_MOUSE_EVENTS
 
 // ---------------------------------------------------------------------------
 
+// 框架的焦点所在的平台视图(0 = 焦点不在平台视图上)。进程内一个, 各窗口共用: 框架只有一个主焦点, 平台视图的
+// id 是全局的, 视图会换窗口。
+// 键盘焦点的唯一规则: **这个视图只要显示在某个窗口里, 就是那个窗口的第一响应者。** 它由框架的焦点树决定
+// (focusViewId 设置, blurViewId 清除;用户直接点击原生视图时 noteFocusedViewId 先行记下), 与视图此刻是否显示
+// 无关——所以焦点可以先于视图显示(刚创建、所在的标签刚切到前面), 视图被隐藏、换窗口(标签拖出成窗、并入另一个
+// 窗口)之后再次显示时也照常取回, 不需要为每一种情况单独处理。
+static int64_t gFocusedView = 0;
+
 @implementation MomoPlatformViews {
   NSView* __weak _content;
   MomoPlatformViewsHostView* _host;
@@ -286,7 +294,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
   [self notifyGeometryChanged];
 }
 
-// 被隐藏的平台视图不能继续持有键盘焦点(否则按键发给看不见的视图): 交还给内容视图。
+// container 里的视图持有键盘焦点时交还给内容视图。
 - (void)resignFocusIfInside:(NSView*)container {
   NSView* content = _content;
   NSWindow* window = content.window;
@@ -296,14 +304,41 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
 }
 
-- (void)focusViewId:(int64_t)viewId {
-  auto it = _containers.find(viewId);
-  NSView* content = _content;
-  // 只有当前承载该原生视图的窗口响应(请求被广播给所有窗口)。
-  if (it == _containers.end() || content.window == nil || it->second.native.superview != it->second) {
+// 让显示着的 container 里的原生视图成为第一响应者(焦点已在它内部时不动: 不打断它内部的焦点)。
+- (void)takeFocus:(MomoPlatformViewContainer*)container {
+  NSView* native = container.native;
+  NSWindow* window = container.window;
+  if (window == nil || native.superview != container || container.hidden) {
     return;
   }
-  [content.window makeFirstResponder:it->second.native];
+  NSResponder* responder = window.firstResponder;
+  if ([responder isKindOfClass:[NSView class]] && [(NSView*)responder isDescendantOf:native]) {
+    return;
+  }
+  [window makeFirstResponder:native];
+}
+
+// 请求被广播给所有窗口: 此刻显示着该视图的窗口立即给它焦点;没有显示时等它显示(applyLayout)。
+- (void)focusViewId:(int64_t)viewId {
+  gFocusedView = viewId;
+  auto it = _containers.find(viewId);
+  if (it != _containers.end()) {
+    [self takeFocus:it->second];
+  }
+}
+
+- (void)blurViewId:(int64_t)viewId {
+  if (gFocusedView == viewId) {
+    gFocusedView = 0;
+  }
+  auto it = _containers.find(viewId);
+  if (it != _containers.end() && it->second.native.superview == it->second) {
+    [self resignFocusIfInside:it->second];
+  }
+}
+
+- (void)noteFocusedViewId:(int64_t)viewId {
+  gFocusedView = viewId;
 }
 
 - (MomoOverlayView*)overlayAt:(size_t)index layer:(CAMetalLayer*)layer {
@@ -337,8 +372,10 @@ MOMO_SWALLOW_MOUSE_EVENTS
     if (it != _containers.end()) {
       MomoPlatformViewContainer* container = it->second;
       const std::optional<momo::Rect> visible = VisibleRect(g);
-      if (visible && container.native.superview != container) {
-        // 接管原生视图(可能正挂在另一个窗口里): 若它持有键盘焦点, 先交还给原窗口的内容视图。
+      const bool attaching = visible && container.native.superview != container;
+      if (attaching) {
+        // 接管原生视图(可能正挂在另一个窗口里): 若它持有键盘焦点, 先交还给原窗口的内容视图(框架的焦点仍在
+        // 它上面的话, 下面显示时在本窗口取回)。
         NSView* native = container.native;
         NSWindow* old_window = native.window;
         if (old_window != nil && [old_window.firstResponder isKindOfClass:[NSView class]] &&
@@ -368,9 +405,13 @@ MOMO_SWALLOW_MOUSE_EVENTS
           occluders.push_back(ToPoints(r, scale));
         }
         [container setOccluders:std::move(occluders)];
+        const bool appeared = container.hidden || attaching;  // 刚显示, 或刚从别的窗口接管
         container.hidden = NO;
         shown[g.view_id] = true;
         _zOrder.push_back(g.view_id);
+        if (appeared && gFocusedView == g.view_id) {
+          [self takeFocus:container];
+        }
       }
     }
     // overlays[i] 位于 views[i] 之上(即使视图本身不可见, overlay 仍承载其后的内容)。
@@ -408,6 +449,7 @@ MOMO_SWALLOW_MOUSE_EVENTS
   }
   for (auto& [id, container] : _containers) {
     if (!shown.count(id) && !container.hidden) {
+      // 被隐藏的平台视图不能继续持有键盘焦点(否则按键发给看不见的视图): 交还给内容视图。
       [self resignFocusIfInside:container];
       container.hidden = YES;
     }

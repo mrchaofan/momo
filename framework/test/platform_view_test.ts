@@ -124,6 +124,14 @@ group("platform views", () => {
       const focus = calls.filter((c) => c.method === "focus");
       expect.equal(focus.length, 1);
       expect.equal(focus[0]!.args.id, id);
+
+      // momo 的焦点离开 PlatformView → 原生视图交还键盘焦点(每次离开一次)。
+      const blursBefore = calls.filter((c) => c.method === "blur").length;
+      other.requestFocus();
+      await t.pump();
+      const blurs = calls.filter((c) => c.method === "blur");
+      expect.equal(blurs.length, blursBefore + 1);
+      expect.equal(blurs.at(-1)!.args.id, id);
       await t.pumpView(new SizedBox({}));  // 卸载(dispose 仍走 mock)
       await t.pump();
     } finally {

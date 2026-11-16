@@ -90,7 +90,18 @@ new WebView({
 ```
 
 `WebViewController`: `loadUrl / loadHtml / goBack / goForward / reload / stop / evaluateJavaScript /
-postMessage / focus`, 以及上面的回调。
+find / postMessage / focus / blur`, 以及上面的回调。
+
+键盘焦点: `web.focus()` 把键盘焦点交给网页, `web.blur()` 让网页交出焦点, `web.hasFocus` 查询;`web.focusNode` 是它在
+框架焦点树里的节点(也可以经 `WebView({ focusNode })` 自己提供)。网页内部的焦点由网页自己保持——`blur()` 之后再
+`focus()`、或被隐藏后重新显示, 回到的是原来聚焦的元素。自绘界面里只有输入框会在点击时取得焦点, 按钮等不需要键盘
+的组件不影响网页的焦点;其余时机(例如切换标签后把焦点还给网页)由应用用这两个方法决定。
+
+页内查找: `await web.find("text", { backwards, caseSensitive })` 选中并滚动到下一处匹配(到头回绕), 返回是否找到;
+用同一个词重复调用就是"查找下一个"。
+
+网页里的剪切 / 拷贝 / 粘贴 / 全选 / 撤销不需要 WebView 的 API: 应用菜单里放上对应的 role 菜单项
+(`{ role: "editMenu" }`, 或逐项 `{ role: "copy" }`…), 键盘焦点在网页里时系统把这些动作直接交给网页。
 
 页面与应用互发消息(值经 JSON 传递), 两个平台写法相同。`window.momo` 存在于这个 WebView 加载的**每一个**页面里,
 包括跳转到的外部网站: `onMessage` 的第二个参数给出发送方的源, 处理前先核对。

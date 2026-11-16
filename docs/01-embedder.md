@@ -102,7 +102,7 @@ Quit(JS 可取消) / Exit(code): 窗口在流程里关闭(JS 还在, 收到各�
 ## 5. 平台入口差异
 
 - **Windows**:`wWinMain`;`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 必须在任何窗口创建前调用;消息循环即 platform runner,利用 `PostMessage` 到隐藏消息窗口实现跨线程投递任务。`WinAppDelegate`(对应 `MacAppDelegate`)经 `CreateWinPlatformIntegration(&delegate)` 接收 `WM_ACTIVATEAPP`(→ `OnAppActiveChanged`);单实例(按 exe 名)的后续启动转发给首个实例 = 重新激活(激活最前的可见窗口 + `OnReopen`, 同点击 Dock 图标);`WM_ENDSESSION` 时 `Exit(0)`(结束会话不等待应用, 无法询问 JS;销毁在消息循环结束后进行, 系统可能在那之前就结束进程)。所有窗口关闭后不退出, 由 JS 决定。
-- **macOS**:`main_mac.mm` 创建平台集成(内部 `[NSApplication sharedApplication]`)并设置 `MacAppDelegate`(含最小主菜单:隐藏/退出);platform runner 基于 GCD 主队列(由主 CFRunLoop 在 common modes 下服务,resize 拖拽期间同样执行),退出循环用 `[NSApp stop:]` + 唤醒事件;`applicationShouldTerminate` 返回 `NSTerminateCancel` 并转 `Quit`(JS 可取消), `applicationShouldTerminateAfterLastWindowClosed` 返回 NO,由我们自己有序关闭后让 `main` 正常返回。
+- **macOS**:`main_mac.mm` 创建平台集成(内部 `[NSApplication sharedApplication]`)并设置 `MacAppDelegate`(菜单栏归平台集成里的 `MacMenus`: 应用没有设置菜单时是只有隐藏/退出的默认菜单);platform runner 基于 GCD 主队列(由主 CFRunLoop 在 common modes 下服务,resize 拖拽期间同样执行),退出循环用 `[NSApp stop:]` + 唤醒事件;`applicationShouldTerminate` 返回 `NSTerminateCancel` 并转 `Quit`(JS 可取消), `applicationShouldTerminateAfterLastWindowClosed` 返回 NO,由我们自己有序关闭后让 `main` 正常返回。
 
 ### 命令行(`AppConfig::Parse`)
 

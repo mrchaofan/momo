@@ -115,7 +115,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | 要做的事 | 主要文件 | 别忘了同步 |
 |---|---|---|
 | 给 JS 新增/修改 `momo:ui` API | `engine/ui/*_bindings.cc`（用 `ClassBuilder`） | `framework/packages/momo/src/ui/momo-ui.d.ts`（JS⇄C++ 契约）、`framework/test/mock/momo_ui.ts`（Node mock） |
-| 新增平台服务（对话框、菜单…） | `embedder/common/platform_services.h` → `embedder/macos/mac_platform_integration.mm`（`MacServices`）→ `embedder/common/platform_channels.cc` 注册通道 | 框架 `services/` 加 JS 封装；`embedder/windows/win_services.cc`；mock 平台。**不改 engine** |
+| 新增平台服务（对话框…） | `embedder/common/platform_services.h` → `embedder/macos/mac_platform_integration.mm`（`MacServices`）→ `embedder/common/platform_channels.cc` 注册通道 | 框架 `services/` 加 JS 封装；`embedder/windows/win_services.cc`；mock 平台。**不改 engine** |
 | 新增窗口能力（全屏、透明、阴影…） | `embedder/common/platform_window.h`（可选能力 + `WindowCapability`）→ `embedder/macos/mac_window.mm` → `embedder/common/window_channel.cc` 里 `RegisterWindowMethod` 一行 | 框架 `services/widget.ts` 的 `Widget` 加方法/事件，需要声明式时加到 `WindowChrome`；Node mock 的宿主实现（`framework/test/mock/momo_ui.ts`）。**不改 engine** |
 | 新增应用能力（Dock 角标、激活策略…） | `embedder/common/platform_app.h`（`PlatformApp` + `AppCapability`）→ `embedder/macos/mac_platform_integration.mm` → `embedder/common/app_channel.cc` 里 `Register` 一行 | 框架 `services/app.ts` 的 `app` 加方法；Node mock 的 `momo/app`。**不改 engine** |
 | 应用生命周期、退出流程 | `embedder/common/application.cc`（`Quit` / `Exit` / `Terminate`）、`window_manager.cc` | `application_unittests.cc`（退出流程与关闭顺序有专门断言） |

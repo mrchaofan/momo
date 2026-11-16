@@ -15,6 +15,7 @@
 #include "embedder/common/fallback_surface.h"
 #include "embedder/windows/win_app.h"
 #include "embedder/windows/win_displays.h"
+#include "embedder/windows/win_menu.h"
 #include "embedder/windows/win_mouse_events.h"
 #include "embedder/windows/win_native_loop.h"
 #include "embedder/windows/win_services.h"
@@ -58,7 +59,7 @@ class WinPlatformIntegration final : public PlatformIntegration {
       return InvalidArgumentError("CreateWindow requires a delegate");
     }
     StatusOr<std::unique_ptr<WinWindow>> window =
-        WinWindow::Create(options, delegate, WinWindow::Context{mouse_input_, displays_, app_, d3d_device_});
+        WinWindow::Create(options, delegate, WinWindow::Context{mouse_input_, displays_, app_, menus_, d3d_device_});
     if (!window.ok()) {
       return window.status();
     }
@@ -72,6 +73,7 @@ class WinPlatformIntegration final : public PlatformIntegration {
 
   PlatformServices& services() override { return services_; }
   PlatformApp& app() override { return app_; }
+  PlatformMenus* menus() override { return &menus_; }
 
   std::vector<DisplayInfo> displays() const override { return displays_.displays(); }
 
@@ -83,6 +85,8 @@ class WinPlatformIntegration final : public PlatformIntegration {
   WinApp app_;
   // 显示器布局缓存(displays() 为 const 接口, 缓存的刷新不改变可观察状态)。
   mutable WinDisplays displays_;
+  // 应用菜单、上下文菜单与托盘图标;窗口先于本对象销毁。
+  WinMenus menus_{displays_};
   // 进程内唯一的指针输入(PointerDispatcher), 注入每个窗口;窗口先于本对象销毁。
   WinMouseInput mouse_input_;
   // 应用级的 Direct3D 设备与命令队列: 全部窗口共用(引擎因此只建一个 GPU 后端)。为空 = 软件呈现。

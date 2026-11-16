@@ -11,7 +11,7 @@
 //
 // 职责: 持有 PlatformIntegration、OS 主线程的 EventLoop(经 base::NativeMessagePump 跑原生消息循环)、
 //       ui/raster/io 线程、引擎 Shell、窗口注册表(WindowManager);注册宿主通道(momo/app、momo/window、
-//       平台服务);退出状态机;按 docs/01 §4 严格有序关闭。
+//       momo/menu、momo/tray、平台服务);执行没有系统标准动作的菜单 role;退出状态机;按 docs/01 §4 严格有序关闭。
 // 退出(同 Electron 的 app.quit / app.exit;没有"直接终止"的入口):
 //   Quit()  —— Cmd+Q、菜单退出、JS app.quit():  beforeQuit → 逐个询问窗口 closeRequested 并关闭 → willQuit →
 //              Shutdown;任一步被 JS 取消即中止。启动期间(bundle 还在执行)同样走这条流程: 询问排在 bundle
@@ -35,8 +35,10 @@
 #include "base/status.h"
 #include "embedder/common/app_channel.h"
 #include "embedder/common/app_config.h"
+#include "embedder/common/menu_channel.h"
 #include "embedder/common/platform_channels.h"
 #include "embedder/common/platform_integration.h"
+#include "embedder/common/tray_channel.h"
 #include "embedder/common/window_channel.h"
 #include "embedder/common/window_manager.h"
 #include "engine/common/task_runners.h"
@@ -45,7 +47,10 @@
 
 namespace momo::embedder {
 
-class Application final : public Object, private WindowManager::Observer, private AppChannel::Host {
+class Application final : public Object,
+                          private WindowManager::Observer,
+                          private AppChannel::Host,
+                          private MenuChannel::Host {
  public:
   enum class State { kNotRunning, kLaunching, kRunning, kSuspended, kTerminating };
 
@@ -147,6 +152,10 @@ class Application final : public Object, private WindowManager::Observer, privat
   Status FocusApp(bool steal) override;
   engine::EncodableValue GetAppState() override;
 
+  // MenuChannel::Host
+  PlatformWindow* FindWindow(engine::platform::ViewId view) override;
+  void PerformMenuRole(MenuRole role) override;
+
   Options options_;
   State state_ = State::kNotRunning;
   int exit_code_ = 0;
@@ -168,6 +177,8 @@ class Application final : public Object, private WindowManager::Observer, privat
   std::unique_ptr<AppChannel> app_channel_;
   std::unique_ptr<WindowChannel> window_channel_;
   std::unique_ptr<PlatformChannels> platform_channels_;
+  std::unique_ptr<MenuChannel> menu_channel_;
+  std::unique_ptr<TrayChannel> tray_channel_;
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(Application);
 };

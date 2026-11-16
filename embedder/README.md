@@ -22,12 +22,10 @@
 
 | 目录 | 状态 | 说明 |
 |---|---|---|
-| `common/` | ✅ | Application 状态机、退出流程(Quit/Exit)与有序关闭、WindowManager(所有窗口对等;最后一个窗口关闭不退出)、OS 主线程 EventLoop(base::NativeMessagePump)、WindowController、宿主通道(HostChannel: momo/app、momo/window…)、AppConfig;gtest `momo_embedder_unittests`(mock 平台) |
-| `macos/` | ✅ | 窗口、原生循环、CVDisplayLink vsync(按需启停)、鼠标/触控板/滚轮/键盘归一化(keycode→HID 全表)、NSTextInputClient、NSCursor、CAMetalLayer surface(失败回退 IOSurface 软件 surface;`MOMO_SOFTWARE_RENDERING=1` 强制软件);产物 `Momo.app`;gtest `momo_embedder_macos_unittests` |
-| `windows/` | 🟡 已实现,**未在 Windows 上编译运行验证**(macOS 上: `momo_embedder_windows_portable_unittests` 覆盖纯逻辑, 其余经 mingw-w64 交叉编译检查) | 与 macOS 同构: 进程内唯一的 WinMouseInput → PointerDispatcher(原生捕获跟随序列)、WinApp(激活)+ 入口 WinAppDelegate(WM_ACTIVATEAPP、再次启动 = 重新激活、WM_ENDSESSION);Win32 窗口(Per-Monitor-V2, 混合 DPI 的全局逻辑坐标)、内侧缩放边框、隐藏标题栏 + 宿主绘制的控制按钮、系统拖动、移动循环、置顶、显示/隐藏/最小化/最大化;D3D12 交换链 surface(回退 GDI 软件 surface, 拖拽缩放等帧)、DwmFlush vsync、IMM32 输入法、剪贴板/OpenUrl;不支持平台视图、非激活窗口;`win_platform_unittests.cc` 待在 Windows 上运行 |
+| `common/` | ✅ | Application 状态机、退出流程(Quit/Exit)与有序关闭、WindowManager(所有窗口对等;最后一个窗口关闭不退出)、OS 主线程 EventLoop(base::NativeMessagePump)、WindowController、宿主通道(HostChannel: momo/app、momo/window、momo/menu、momo/tray…)、菜单描述(MenuModel)与没有系统标准动作的平台上的 role 执行、AppConfig;gtest `momo_embedder_unittests`(mock 平台) |
+| `macos/` | ✅ | 窗口、原生循环、CVDisplayLink vsync(按需启停)、鼠标/触控板/滚轮/键盘归一化(keycode→HID 全表)、NSTextInputClient、NSCursor、菜单与托盘(NSMenu / NSStatusItem)、CAMetalLayer surface(失败回退 IOSurface 软件 surface;`MOMO_SOFTWARE_RENDERING=1` 强制软件);产物 `Momo.app`;gtest `momo_embedder_macos_unittests` |
+| `windows/` | 🟡 已实现,**未在 Windows 上编译运行验证**(macOS 上: `momo_embedder_windows_portable_unittests` 覆盖纯逻辑, 其余经 mingw-w64 交叉编译检查) | 与 macOS 同构: 进程内唯一的 WinMouseInput → PointerDispatcher(原生捕获跟随序列)、WinApp(激活)+ 入口 WinAppDelegate(WM_ACTIVATEAPP、再次启动 = 重新激活、WM_ENDSESSION);Win32 窗口(Per-Monitor-V2, 混合 DPI 的全局逻辑坐标)、内侧缩放边框、隐藏标题栏 + 宿主绘制的控制按钮、系统拖动、移动循环、置顶、显示/隐藏/最小化/最大化;D3D12 交换链 surface(回退 GDI 软件 surface, 拖拽缩放等帧)、DwmFlush vsync、IMM32 输入法、剪贴板/OpenUrl、菜单与托盘(`win_menu.cc`: 菜单栏、快捷键、TrackPopupMenu、Shell_NotifyIcon;**连交叉编译检查也没有做**);不支持平台视图、非激活窗口;`win_platform_unittests.cc` 待在 Windows 上运行 |
 | `headless/` | ✅ | `HeadlessSmoke`、`FrameworkTests.EngineHeadless` |
-
-未创建:应用菜单/右键菜单接口(规划中)。
 
 CMake target:`momo_embedder_common`、`momo_embedder_macos` / `momo_embedder_windows`(+ `momo_embedder_windows_portable`)、可执行 `momo_app_mac`(Momo.app)/ `momo_app_win`(Momo.exe)、`momo_headless`、`momo_builtin`。
 

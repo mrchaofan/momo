@@ -18,7 +18,7 @@ packages/momo/src/
 │                #   container.ts、text.ts、image.ts、gesture_detector.ts、focus.ts、
 │                #   scroll/*.ts、inherited.ts
 ├── material/    # (M6)button.ts、text_field.ts、dialog.ts、theme.ts
-└── services/    # message_channel.ts、standard_codec.ts、clipboard.ts、menu.ts、
+└── services/    # message_channel.ts、standard_codec.ts、clipboard.ts、menu.ts、tray.ts、
                  #   shortcuts.ts、lifecycle.ts、text_input.ts
 test/            # headless 引擎驱动的框架测试 + golden
 ```
