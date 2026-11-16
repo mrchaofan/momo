@@ -3,8 +3,8 @@
 // 外部纹理(docs/07 §3 纹理注入): 扩展在自己的线程生成帧, 引擎合成时采样最新帧。
 //   Texture         一个外部纹理: 任意线程 UpdateRgba 推送新帧(拷贝为不可变 Image), raster 线程读取最新帧。
 //   TextureRegistry id → Texture 的线程安全表;帧可用时回调监听者(引擎据此请求新帧)。
-// DisplayList(drawTexture)与 TextureLayer 直接持有 shared_ptr<Texture>, 绘制时取当时的最新帧,
-// 因此含纹理的绘制不进入 SkPicture 缓存(见 display_list.h)。
+// 纹理只经 TextureLayer 进入画面: 它持有 shared_ptr<Texture>, 绘制时取当时的最新帧。DisplayList 不含纹理,
+// 所以它记录后不可变, 总能缓存为 SkPicture。
 // 首期支持 CPU 位图帧;GPU 共享句柄(IOSurface / D3D 共享纹理)为后续扩展点。
 // 线程约定: 全部方法线程安全。
 

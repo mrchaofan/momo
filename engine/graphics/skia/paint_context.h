@@ -56,10 +56,8 @@ SkM44 ToSkM44(const Matrix& matrix);
 
 // DisplayList 一次性转换成的 SkPicture: SkPaint/SkShader/SkPath 只创建一次, 其 genID 跨帧稳定
 // (GPU 后端的路径/细分缓存得以命中)。嵌套 DisplayList 引用各自缓存的 picture。
-// 动态列表(含外部纹理, DisplayList::is_dynamic)不录制 picture, 每次按指令重放(paints 预先转换)。
 struct DisplayList::RasterCache {
   sk_sp<SkPicture> picture;
-  std::vector<SkPaint> paints;
 };
 
 struct Image::Impl {

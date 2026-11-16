@@ -59,8 +59,7 @@ class AppDriver {
   // 一帧: 期间对各视图调用 client.Render 提交本帧。
   virtual void BeginFrame(TimePoint frame_start) = 0;
   virtual void OnPointerPacket(ViewId, const platform::PointerDataPacket&) {}
-  // 返回 true 表示应用已消费。
-  virtual bool OnKeyData(ViewId, const platform::KeyData&) { return false; }
+  virtual void OnKeyData(ViewId, const platform::KeyData&) {}
   virtual void OnVisibilityChanged(ViewId, bool) {}
   // 视图加入/移除(驱动创建前已绑定的视图由驱动在创建时从 client.views() 读取, 不会通知加入)。
   virtual void OnViewAdded(ViewId) {}

@@ -125,7 +125,7 @@ view.render(scene: Scene): void
 事件对象使用预分配的 TypedArray 视图复用,避免每事件分配。
 
 已全部实现(含 M2 的 onPointerPacket(Float64Array 平铺, 缓冲复用)/onKeyData/onFocusChanged、setCursor、setMinSize,
-M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS 声明见
+M3 的 Paragraph/Image/Codec/loadAsset, M5 的 addTexture);完整 TS 声明见
 `framework/packages/momo/src/ui/momo-ui.d.ts`。消息通道实现: `engine/common/message_channel_hub.h`(回复总是投递,
 不在 JS 调用栈内同步重入)、`engine/common/standard_codec.h`、JS 端 `momo:services`(`engine/ui/services_bindings.cc`)。
 内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/platform_views。

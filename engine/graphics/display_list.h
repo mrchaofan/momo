@@ -20,7 +20,6 @@
 #include "engine/graphics/image.h"
 #include "engine/graphics/paint.h"
 #include "engine/graphics/path.h"
-#include "engine/graphics/texture.h"
 
 namespace momo::engine::graphics {
 
@@ -53,7 +52,6 @@ class DisplayList {
     kDrawImage,        // paint(可 kNoPaint), aux=image index, a0=x a1=y
     kDrawImageRect,    // paint(可 kNoPaint), aux=image index, a0..a3 = dst, a4 = rects() 中 src 的索引
     kDrawExternal,     // aux=externals() index, a0=x a1=y
-    kDrawTexture,      // aux=textures() index, a0..a3 = dst
   };
 
   static constexpr uint32_t kNoPaint = 0xFFFFFFFF;
@@ -77,9 +75,6 @@ class DisplayList {
   const std::vector<std::shared_ptr<const ExternalPicture>>& externals() const {
     return externals_;
   }
-  const std::vector<std::shared_ptr<Texture>>& textures() const { return textures_; }
-  // 含外部纹理(自身或嵌套): 内容随纹理帧变化, 每次重放而不缓存为 SkPicture。
-  bool is_dynamic() const { return dynamic_; }
 
   // 绘制内容在本地坐标系下的保守包围盒(已考虑记录期的变换与裁剪)。
   // 含无界绘制(drawColor/drawPaint)且无 cull rect 时为 nullopt。
@@ -105,10 +100,8 @@ class DisplayList {
   std::vector<std::shared_ptr<const Image>> images_;
   std::vector<Rect> rects_;
   std::vector<std::shared_ptr<const ExternalPicture>> externals_;
-  std::vector<std::shared_ptr<Texture>> textures_;
   std::optional<Rect> bounds_;
   std::vector<Rect> hit_regions_;
-  bool dynamic_ = false;
 
   mutable std::once_flag raster_cache_once_;
   mutable std::shared_ptr<const RasterCache> raster_cache_;
@@ -155,7 +148,6 @@ class DisplayListBuilder {
   // local_bounds: 内容在本地坐标(相对 offset)的包围盒。
   void DrawExternal(std::shared_ptr<const ExternalPicture> picture, Point offset,
                     const Rect& local_bounds);
-  void DrawTexture(std::shared_ptr<Texture> texture, const Rect& dst);
   // 记录一块可命中区域(本地坐标;不绘制)。
   void AddHitRegion(const Rect& rect);
 

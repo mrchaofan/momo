@@ -6,7 +6,7 @@
 //
 // JS 与原生之间是 Node-API;宿主能力表(momo_host.h)只用到纹理的三个函数。出帧线程按自己的节奏
 // (约 60 fps)渲染等离子特效并 texture_update_pixels: 宿主拷贝像素并请求引擎出一帧。JS 侧用框架的
-// Texture 视图(或 SceneBuilder.addTexture / Canvas.drawTexture)显示这个纹理 id。
+// Texture 视图(或 SceneBuilder.addTexture)显示这个纹理 id。
 
 #include <atomic>
 #include <chrono>

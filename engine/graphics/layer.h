@@ -21,9 +21,10 @@
 #include <vector>
 
 #include "base/geometry.h"
-#include "engine/platform/platform_view.h"
 #include "base/matrix.h"
 #include "engine/graphics/display_list.h"
+#include "engine/graphics/texture.h"
+#include "engine/platform/platform_view.h"
 
 namespace momo::engine::graphics {
 

@@ -141,7 +141,7 @@ Momo.app/Contents/Resources/        # Windows: Momo.exe 同级(目前没有 webv
   驱动(框架的 Ticker)或插件自己定时。
 
 **外部纹理**是"扩展借助引擎绘制能力"的途径: 扩展不直接拿 SkCanvas(Skia 的 C++ ABI 不稳定), 而是在自己的线程
-生成像素并推给纹理, JS 侧用 `Texture` 视图(或 `SceneBuilder.addTexture` / `Canvas.drawTexture`)按 id 显示,
+生成像素并推给纹理, JS 侧用 `Texture` 视图(或 `SceneBuilder.addTexture`)按 id 显示,
 引擎在 LayerTree 中以 TextureLayer 合成。目前只有 CPU 像素帧。
 
 **平台视图**用于"本身就是系统视图、需要原生输入 / IME / 无障碍"的内容(WebView、地图、系统控件)。扩展只负责

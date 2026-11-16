@@ -1,6 +1,6 @@
 // ViewTester:对标 flutter_test,通过 window / view 回调驱动帧、指针、键盘,经 BinaryMessenger 模拟平台消息。
 // 只依赖框架公开的 momo:ui 回调与 messenger,因此在 mock 宿主和真实引擎宿主下都可用。
-import { viewports, platformDispatcher } from "momo:ui";
+import { viewports, platformDispatcher, type KeyData } from "momo:ui";
 import { currentHost } from "./harness";
 import { fakeClock } from "./fake_clock";
 import {
@@ -238,8 +238,9 @@ export class ViewTester {
 
   /** 发送一条 KeyData;返回框架是否消费。 */
   sendKeyData(type: "down" | "up" | "repeat", logicalKey: number, physicalKey: number, o: { character?: string; modifiers?: number } = {}): boolean {
-    const r = viewports.get(0)?.onKeyData?.({ type, timeStampUs: this.now * 1000, physicalKey, logicalKey, character: o.character ?? "", modifiers: o.modifiers ?? 0 });
-    return r === true;
+    // 引擎不使用回调的返回值;框架的回调返回焦点树是否消费了按键。
+    const handler = viewports.get(0)?.onKeyData as ((data: KeyData) => unknown) | null | undefined;
+    return handler?.({ type, timeStampUs: this.now * 1000, physicalKey, logicalKey, character: o.character ?? "", modifiers: o.modifiers ?? 0 }) === true;
   }
 
   /** 按下并抬起一个键, 之后出一帧。返回按下是否被消费。 */
