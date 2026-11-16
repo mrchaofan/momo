@@ -19,7 +19,7 @@
 
 namespace momo::engine::runtime {
 
-class JsRuntimeImpl;
+class JsRuntime;
 
 struct WrapperTypeInfo {
   const char* class_name;
@@ -51,7 +51,7 @@ class Wrappable {
   static void OnWeak(const v8::WeakCallbackInfo<Wrappable>& info);
 
   v8::Global<v8::Object> wrapper_;
-  JsRuntimeImpl* runtime_ = nullptr;
+  JsRuntime* runtime_ = nullptr;
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(Wrappable);
 };

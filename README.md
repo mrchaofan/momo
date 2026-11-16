@@ -74,7 +74,7 @@ cd framework && npm install
 ### 4. 运行一个 View 示例
 
 ```bash
-node tools/momo-cli/momo.mjs bundle examples/counter
+node framework/packages/cli/momo.mjs bundle examples/counter
 ```
 
 ```bash
@@ -155,16 +155,14 @@ runApp(new MaterialApp({ title: "MyApp", home: new CounterPage() }));
 把 TS 打成单文件 ESM bundle（只保留 `momo:*` / `ext:*` 外部导入，引擎会以内置模块提供），再用 `--dev` 启动运行时：
 
 ```bash
-node tools/momo-cli/momo.mjs bundle my-app
+node framework/packages/cli/momo.mjs bundle my-app
 ```
 
 ```bash
 out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=my-app/dist/bundle.js
 ```
 
-重新构建后重启运行时即可看到改动。
-
-**热重启（实验性，默认关闭）**：加上 `--experimental-hot-restart` 后，运行时每 500ms 检查一次 bundle 文件，重新构建后窗口自动 hot restart（重建 JS 运行时、从根重新构建界面，不保留 JS 状态）。新 bundle 有错误或暂时不存在时会退回占位画面，修好后再次构建即可恢复。这个功能还在打磨，行为可能变化。
+重新构建后重启运行时即可看到改动。Momo 不支持热重启：一个进程里只有一个 JS 运行时，换 bundle 就是换进程。
 
 ### 写给 Flutter 开发者
 
@@ -259,22 +257,26 @@ window.scheduleFrame();
 
 ## 打包发布
 
-`tools/momo-cli` 把应用打包成可分发的 `.app`（可选 DMG）。它会：用 esbuild 打 bundle → 收集依赖中声明的原生扩展、生成 `extensions.manifest` 并拷贝动态库 → 复制预编译的运行时 `Momo.app` 为 `<Name>.app`，并把 bundle、`assets/`、扩展放进 `Contents/Resources/`。
+命令行工具是 npm 包 `@momo/cli`（源码在 `framework/packages/cli`，命令名 `momo`），随每个版本发布（`momo-cli-v<version>.tgz`）。它不依赖源码树：装进自己的工程后即可使用，仓库内则直接用 `node framework/packages/cli/momo.mjs` 运行。
+
+`momo build` 把应用打包成可分发的 `.app`（可选 DMG）。它会：用 esbuild 打 bundle → 收集依赖中声明的原生扩展、生成 `extensions.manifest` 并拷贝动态库 → 复制运行时 `Momo.app` 为 `<Name>.app`，并把 bundle、`assets/`、扩展放进 `Contents/Resources/`。
+
+运行时不随 CLI 分发，用 `--runtime=` 或环境变量 `MOMO_RUNTIME` 指定：可以是发布产物 `momo-v<version>-<platform>.zip` 解压出的 `Momo.app`，也可以是自己构建的。
 
 ```bash
-node tools/momo-cli/momo.mjs build my-app --out=out/apps
+node framework/packages/cli/momo.mjs build my-app --out=out/apps --runtime=out/debug/embedder/Momo.app
 ```
 
 ```bash
-node tools/momo-cli/momo.mjs build my-app --out=out/apps --minify --dmg
+node framework/packages/cli/momo.mjs build my-app --out=out/apps --runtime=out/debug/embedder/Momo.app --minify --dmg
 ```
 
 | 选项 | 说明 |
 |---|---|
 | `--out=<dir>` | 输出目录 |
 | `--name=<App>` | 应用名（默认取 `package.json` 的 `momo.name`，其次是 `name`） |
-| `--runtime=<Momo.app>` | 使用的运行时，默认 `out/debug/embedder/Momo.app`（发布时请用 Release 构建的运行时） |
-| `--native-dir=<dir>` | 到哪里找扩展的原生库，默认 `out/debug/extensions` |
+| `--runtime=<Momo.app>` | 使用的运行时（必填，或设环境变量 `MOMO_RUNTIME`；发布时请用 Release 构建的运行时） |
+| `--native-dir=<dir>` | 扩展包里声明的预编译原生库还不存在时，到这个目录里按文件名找（扩展的本地构建目录，如 `out/debug/extensions`）。不给则只用包里已有的 |
 | `--minify` | 压缩 bundle |
 | `--dmg` | 额外用 `hdiutil` 产出 `<Name>.dmg` |
 
@@ -341,7 +343,7 @@ console.log(add(1, 2), greet("Momo"), await hash(new Uint8Array([1, 2, 3])));
 ### 编写扩展
 
 ```bash
-node tools/momo-cli/momo.mjs ext create my-ext --id=acme.myext
+node framework/packages/cli/momo.mjs ext create my-ext --id=acme.myext
 ```
 
 生成的骨架包含 C 模板、TS 门面和 CMake 文件。用 C++ 写时，继承 `momo::ext::Extension`，用 `MOMO_EXTENSION` 宏导出入口：
@@ -417,7 +419,7 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | `extensions/examples/hello-extension` | 纯 C：同步函数、字符串/字节、worker 线程 + Promise、消息通道 |
 | `extensions/examples/texture-extension` | C++ 封装：纹理注入，帧回调驱动 worker 渲染动画并推帧 |
 
-`node tools/momo-cli/momo.mjs ext verify <lib>` 检查动态库只导出 `momo_ext_init`、不链接引擎内部库。设计细节见 [docs/07-extension-system.md](docs/07-extension-system.md)。
+`node framework/packages/cli/momo.mjs ext verify <lib>` 检查动态库只导出 `momo_ext_init`、不链接引擎内部库。设计细节见 [docs/07-extension-system.md](docs/07-extension-system.md)。
 
 ---
 
@@ -432,9 +434,8 @@ MOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out
 | `--title=<text>` | 初始窗口标题 |
 | `--width=<px>` / `--height=<px>` | 初始窗口尺寸（逻辑像素） |
 | `--dev` | 开发模式：启用 Inspector |
-| `--experimental-hot-restart` | 实验性，默认关闭（隐含 `--dev`）：bundle 修改后 hot restart |
 | `--inspect-port=<n>` | Inspector 端口（默认 9229，`-1` 关闭） |
-| `--inspect-brk` | 执行 bundle 前等待调试器连接 |
+| `--inspect-brk` | 执行 bundle 前等待调试器连接（等待期间窗口照常响应；此时退出应用，要等调试器连上并断开后才完成） |
 
 | 环境变量 | 说明 |
 |---|---|
@@ -465,7 +466,7 @@ View 示例都是独立 npm 工程，可以用 `momo bundle` 构建后以 `--bun
 | `base/` | C++ 基础库：Object 模型、EventLoop、TaskRunner、Status |
 | `extensions/` | 扩展 SDK（C ABI 头 + JS 类型）与示例扩展 |
 | `examples/` | 示例应用 |
-| `tools/` | `fetch_deps.py`（依赖下载）、`momo-cli`（打包、扩展脚手架） |
+| `tools/` | `fetch_deps.py`（依赖下载）、`package_release.py`（发布产物） |
 | `cmake/`、`third_party/` | CMake 模块与第三方依赖 |
 | `docs/` | 设计文档 |
 

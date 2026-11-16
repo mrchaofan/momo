@@ -105,9 +105,8 @@ class PlaceholderDriver final : public AppDriver {
 // 以下两个函数的实现由链接决定: 有 V8 为 js_app_driver.cc / extension_bindings.cc, 否则为 app_driver_no_js.cc。
 
 // 按 settings 创建驱动(bundle 为空时为占位驱动)。bundle 加载/执行失败返回错误(消息含 JS 栈)。
-// runtime_generation: 这个 JS 运行时的代数(首个为 1;Engine::StartRuntime 传入)。
 StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings, WindowClient& client,
-                                                     const AppHost& host, uint64_t runtime_generation);
+                                                     const AppHost& host);
 
 // 扩展 C ABI 的 JS 部分(MomoCallApi 与 builder_add_function), 供 ExtensionHost 构造时填入函数表。
 const ExtensionJsGlue& GetExtensionJsGlue();

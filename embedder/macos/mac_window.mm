@@ -11,6 +11,7 @@
 
 #include "base/event_loop.h"
 #include "base/logging.h"
+#include "embedder/common/fallback_surface.h"
 #include "embedder/macos/mac_key_mapping.h"
 #include "embedder/macos/mac_mouse_events.h"
 #include "embedder/macos/mac_platform_view_input.h"
@@ -40,11 +41,6 @@ NSColor* ToNSColor(uint32_t argb) {
                              green:((argb >> 8) & 0xFF) / 255.0
                               blue:(argb & 0xFF) / 255.0
                              alpha:((argb >> 24) & 0xFF) / 255.0];
-}
-
-bool SoftwareRenderingForced() {
-  const char* value = std::getenv("MOMO_SOFTWARE_RENDERING");
-  return value != nullptr && value[0] != '\0' && std::strcmp(value, "0") != 0;
 }
 
 // 在 theme frame 上命中测试(隐藏标题栏后, 透明标题栏视图与红绿灯浮在内容之上)。
@@ -196,12 +192,15 @@ void TitleBarDoubleClick(NSWindow* window) {
 
 - (void)setFrameSize:(NSSize)size {
   [super setFrameSize:size];
-  if (_owner != nullptr && _owner->metal_surface() != nullptr) {
+  if (_owner == nullptr) {
+    return;
+  }
+  if (_owner->metal_surface() != nullptr) {
     _owner->metal_surface()->UpdateGeometry();
-    if (self.inLiveResize) {
-      // 拖拽缩放: 等一帧新尺寸的内容, 与新窗口尺寸在同一事务里提交(否则旧帧被拉伸到松手)。
-      _owner->SynchronizeLiveResize();
-    }
+  }
+  if (self.inLiveResize) {
+    // 拖拽缩放: 等一帧新尺寸的内容, 与新窗口尺寸在同一事务里提交(否则旧帧被拉伸到松手)。
+    _owner->SynchronizeLiveResize();
   }
 }
 
@@ -535,7 +534,8 @@ void TitleBarDoubleClick(NSWindow* window) {
 
 namespace momo::embedder::macos {
 
-MacWindow::MacWindow(const WindowOptions& options, WindowDelegate* delegate, MacMouseInput& mouse)
+MacWindow::MacWindow(const WindowOptions& options, WindowDelegate* delegate, MacMouseInput& mouse,
+                     std::shared_ptr<const MacMetalDevice> metal_device)
     : delegate_(delegate), mouse_(mouse) {
   NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                             NSWindowStyleMaskMiniaturizable;
@@ -577,24 +577,23 @@ MacWindow::MacWindow(const WindowOptions& options, WindowDelegate* delegate, Mac
   view_.layerContentsRedrawPolicy = NSViewLayerContentsRedrawNever;
   window_.contentView = view_;
 
-  // Surface: Metal 优先;强制软件或无 Metal 设备时用 IOSurface 软件 surface。
-  if (SoftwareRenderingForced()) {
-    MOMO_LOG(INFO) << "MOMO_SOFTWARE_RENDERING set: using the software surface.";
+  // 呈现队列: 平常由 GCD 主队列唤醒本线程执行;拖拽缩放时在 SynchronizeLiveResize 里就地等待。
+  presents_ = PresentQueue::Create([](std::shared_ptr<PresentQueue> queue) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      queue->Drain();
+    });
+  });
+  // Surface: 有 Metal 设备时为 Metal + 软件回退, 否则只有 IOSurface 软件 surface。
+  auto software = std::make_unique<MacSoftwareSurface>(view_, presents_);
+  if (metal_device != nullptr) {
+    auto metal = std::make_unique<MacMetalSurface>(view_, std::move(metal_device), presents_);
+    metal_surface_ = metal.get();
+    surface_ = std::make_unique<FallbackSurface>(std::move(metal), std::move(software));
   } else {
-    StatusOr<std::unique_ptr<MacMetalSurface>> metal = MacMetalSurface::Create(view_);
-    if (metal.ok()) {
-      metal_surface_ = metal->get();
-      surface_ = std::move(metal).value();
-    } else {
-      MOMO_LOG(WARNING) << "Metal surface unavailable (" << metal.status()
-                        << "); using the software surface.";
-    }
-  }
-  if (surface_ == nullptr) {
-    surface_ = std::make_unique<MacSoftwareSurface>(view_);
+    surface_ = std::move(software);
   }
 
-  // 平台视图宿主(只在 Metal surface 上支持合成;软件 surface 下视图保持隐藏)。
+  // 平台视图宿主(只在 Metal surface 上支持合成;软件呈现时视图保持隐藏)。
   platform_views_ = [[MomoPlatformViews alloc] initWithContentView:view_];
   if (metal_surface_ != nullptr) {
     metal_surface_->SetPlatformViews(platform_views_);
@@ -1101,9 +1100,7 @@ void MacWindow::FocusPlatformView(int64_t view_id) { [platform_views_ focusViewI
 
 void MacWindow::SynchronizeLiveResize() {
   // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖。
-  // 等待上限: 应用在此之内出帧则缩放无拉伸, 否则暂时拉伸旧内容(窗口拖动保持跟手)。
-  constexpr TimeDelta kLiveResizeFrameWait = std::chrono::milliseconds(100);
-  if (metal_surface_ == nullptr || resize_waiting_ || !metal_surface_->has_presented()) {
+  if (resize_waiting_ || !presents_->has_presented()) {  // 还没出过帧时等待只会超时
     NotifyMetricsChanged();
     return;
   }
@@ -1111,12 +1108,12 @@ void MacWindow::SynchronizeLiveResize() {
   // 先把新尺寸交给引擎(windowDidResize 随后的重复通知由 WindowController 去重), 再等它画出这个尺寸的帧。
   NotifyMetricsChanged();
   EventLoop* loop = EventLoop::Current();
-  const bool got_frame = metal_surface_->WaitForFrame(
-      physical_size(), kLiveResizeFrameWait, [loop] {
-        if (loop != nullptr) {
-          loop->RunDueTasksNested();
-        }
-      });
+  const bool got_frame = presents_->WaitForFrame(physical_size(), kLiveResizeFrameWait, [loop] {
+    if (loop != nullptr) {
+      loop->RunDueTasksNested();
+    }
+    return true;
+  });
   if (!got_frame) {
     MOMO_LOG(VERBOSE) << "Live resize: no frame of the new size within the timeout; content is stretched.";
   }

@@ -9,8 +9,6 @@
 //   --title=<text>      窗口标题
 //   --width=<px> --height=<px>  初始窗口逻辑尺寸
 //   --dev               开发模式: 开 Node inspector(默认端口 9229)
-//   --experimental-hot-restart  实验性, 默认关闭(隐含 --dev): bundle 文件变化时 hot restart——销毁 JS 运行时并
-//                       重新执行 bundle, 不保留 JS 状态
 //   --inspect-port=<n>  inspector 端口(0 = 系统分配;-1 = 不启动 inspector)
 //   --inspect-brk       执行 bundle 前等待调试器连接(隐含 --dev)
 //   --no-startup-window 不创建启动窗口(隐式视图 0): 窗口全部由 JS 打开(Widget.create)
@@ -33,8 +31,6 @@ struct AppConfig {
   // 启动时创建并显示隐式视图 0 的窗口(JS bundle 执行前即可见, runApp 渲染到这里)。
   bool startup_window = true;
   bool dev_mode = false;
-  // 实验性: bundle 变化时 hot restart(只在 dev_mode 下有效)。默认关闭。
-  bool hot_restart = false;
   int inspector_port = 9229;
   bool inspector_wait = false;
 

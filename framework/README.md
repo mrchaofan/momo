@@ -27,14 +27,14 @@ test/            # headless 引擎驱动的框架测试 + golden
 
 ```bash
 cd framework
-npm install                      # esbuild + typescript(devDependencies)
+npm install                      # 工作区的两个包(packages/momo、packages/cli)+ esbuild、typescript
 npx tsc --noEmit                 # 类型检查(strict;含 test/ 与 examples/counter、examples/todo)
 npm test                         # 构建并运行全部测试(Node + mock momo:ui/momo:services)
 node out/test/node_main.mjs <过滤子串>   # 只跑名称包含子串的测试(先 npm run build:tests)
 
 # 示例 → 单文件 ESM bundle(只保留 `import ... from "momo:*"`)
-node ../tools/momo-cli/momo.mjs bundle ../examples/counter   # → ../examples/counter/dist/bundle.js
-node ../tools/momo-cli/momo.mjs bundle ../examples/todo
+node packages/cli/momo.mjs bundle ../examples/counter   # → ../examples/counter/dist/bundle.js
+node packages/cli/momo.mjs bundle ../examples/todo
 #   可选 --out=<dir> / --minify(压缩且不带 sourcemap)
 ```
 

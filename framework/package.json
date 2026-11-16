@@ -2,7 +2,7 @@
   "name": "@momo/framework-workspace",
   "private": true,
   "version": "0.4.0",
-  "description": "Momo UI framework (TypeScript) workspace root. The published package is packages/momo (@momo/framework).",
+  "description": "Momo npm workspace root. Published packages: packages/momo (@momo/framework, the UI framework) and packages/cli (@momo/cli, the command line).",
   "type": "module",
   "workspaces": [
     "packages/*"

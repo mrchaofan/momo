@@ -188,8 +188,10 @@ void WinAppDelegate::OnSecondInstance(std::vector<std::string> args) {
 
 void WinAppDelegate::OnEndSession() {
   if (application_ != nullptr && application_->state() != Application::State::kTerminating) {
-    MOMO_LOG(INFO) << "Session is ending; shutting down";
-    application_->Terminate(0);
+    // 不询问(系统已经决定结束会话): 关闭窗口并让消息循环结束, 销毁随后在 Run 返回前进行。系统可能在那之前
+    // 就结束本进程。
+    MOMO_LOG(INFO) << "Session is ending; exiting";
+    application_->Exit(0);
   }
 }
 

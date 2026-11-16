@@ -596,8 +596,8 @@ export abstract class StatefulView extends View {
 }
 
 /**
- * StatefulView 的可变状态。也是 TickerProvider(便于 `new AnimationController({ vsync: this })`),
- * 卸载时会释放仍存活的 Ticker。
+ * StatefulView 的可变状态。也是 TickerProvider(便于 `new AnimationController({ vsync: this })`):
+ * 创建的 Ticker 跟随所在子树的 {@link TickerMode}(禁用时静音), 卸载时释放仍存活的 Ticker。
  */
 export abstract class State<W extends StatefulView = StatefulView> implements TickerProvider {
   /** @internal */ _view: W | null = null;
@@ -644,6 +644,8 @@ export abstract class State<W extends StatefulView = StatefulView> implements Ti
   /** TickerProvider:创建与本 State 生命周期绑定的 Ticker。 */
   createTicker(onTick: TickerCallback): Ticker {
     const t = new Ticker(onTick, this.constructor.name);
+    // 依赖 TickerMode: 它变化时本 State 重建, 届时 _syncTickerMode 更新全部 Ticker。不在树里的 State 不受管。
+    if (this._element !== null) t.muted = !TickerMode.of(this._element);
     const tickers = (this.#tickers ??= new Set());
     tickers.add(t);
     // 单个 Ticker 提前 dispose(如 AnimationController.dispose / resync)时立即移出,
@@ -652,6 +654,14 @@ export abstract class State<W extends StatefulView = StatefulView> implements Ti
       this.#tickers?.delete(ticker);
     };
     return t;
+  }
+
+  /** @internal 重建前调用: 让 Ticker 跟上所在子树当前的 TickerMode(位置或祖先变化之后)。 */
+  _syncTickerMode(): void {
+    const tickers = this.#tickers;
+    if (tickers === null || tickers.size === 0 || this._element === null) return;
+    const muted = !TickerMode.of(this._element);
+    for (const t of tickers) t.muted = muted;
   }
 
   /** @internal */
@@ -694,6 +704,7 @@ export class StatefulElement extends ComponentElement {
   }
 
   protected override performRebuild(): void {
+    this.state._syncTickerMode();
     if (this.#didChangeDependencies) {
       this.#didChangeDependencies = false;
       try {
@@ -814,6 +825,40 @@ export class InheritedElement extends ProxyElement {
     for (const d of [...this.#dependents]) {
       if (d.lifecycle === "active") d.didChangeDependencies();
     }
+  }
+}
+
+/** {@link TickerMode} 在子树里的生效值(祖先任一层禁用即禁用)。 */
+class EffectiveTickerMode extends InheritedView {
+  readonly enabled: boolean;
+  constructor(o: { enabled: boolean; child: View }) {
+    super(o);
+    this.enabled = o.enabled;
+  }
+  updateShouldNotify(old: EffectiveTickerMode): boolean {
+    return old.enabled !== this.enabled;
+  }
+}
+
+/**
+ * 子树里由 State 创建的 Ticker(动画)是否运行(对标 Flutter TickerMode)。禁用时它们静音: 不回调、不请求帧,
+ * 时间照常流逝;重新启用后从当前时间继续。嵌套时任一层禁用即禁用。用于画面不会被看到的子树——
+ * RootView 在窗口关闭后禁用自己的子树。
+ */
+export class TickerMode extends StatelessView {
+  readonly enabled: boolean;
+  readonly child: View;
+  constructor(o: { key?: Key | null; enabled: boolean; child: View }) {
+    super(o.key);
+    this.enabled = o.enabled;
+    this.child = o.child;
+  }
+  /** context 所在子树的 Ticker 是否运行(注册依赖;没有 TickerMode 时为 true)。 */
+  static of(context: BuildContext): boolean {
+    return context.dependOnInheritedViewOfExactType(EffectiveTickerMode)?.enabled ?? true;
+  }
+  build(context: BuildContext): View {
+    return new EffectiveTickerMode({ enabled: this.enabled && TickerMode.of(context), child: this.child });
   }
 }
 

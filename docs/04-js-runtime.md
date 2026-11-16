@@ -29,7 +29,7 @@
   循环里继续——泵送的只有 uv, 等下去的话 ui 线程上的引擎任务(平台通道应答、帧)无法执行, 启动会卡住。因此入口里
   应当同步调用 `runApp`, 不要把它放在顶层 await 之后。加载错误与同步部分的求值错误以
   Promise 拒绝返回宿主,转成 `Status`(含 JS 栈);顶层 await 之后的错误只记录日志。
-- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):`JsRuntimeImpl::Call` 在 `node::CallbackScope`
+- **从 momo 进入 JS**(帧回调、输入、通道回复、图片解码、扩展 Promise):`JsRuntime::Call` 在 `node::CallbackScope`
   里调用(同 `node::MakeCallback`),最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask(nextTick 先于
   Promise)。入口都是 ui 线程上的任务,与 uv 回调同属一个循环,顺序即到达顺序。之后 `DrainMicrotasks()` 唤醒 poll 线程。
 - **错误**:C++ 调用 JS 的异常收敛为 `Status` 并记日志;uv 回调里的未捕获异常与未处理的 Promise 拒绝由 bootstrap 注册的
@@ -39,21 +39,20 @@
 - V8 配置跟随 Node 默认:pointer compression 关、sandbox 关;ICU 数据编入 libnode。
 - ui 线程由 `base::Thread` 以 8 MiB 栈创建(macOS 次线程默认 512 KiB 不足以容纳 V8 的栈上限);poll 线程 256 KiB。
 - 关闭:停 poll 线程(`embed_closed_` + 信号量 + 唤醒 + join)→ 关闭保活句柄 → 退出 isolate、释放 Locker →
-  `CommonEnvironmentSetup` 析构(FreeEnvironment 运行循环直到句柄关闭、销毁 isolate、关闭 uv 循环)。hot restart 每次新建环境。
+  `CommonEnvironmentSetup` 析构(FreeEnvironment 运行循环直到句柄关闭、销毁 isolate、关闭 uv 循环)。一个进程里只有一个运行时: `Shell::Run` 创建, `Shell::Shutdown` 销毁。
 
-**已实现**(`engine/runtime/`):`JsRuntime`(公共头无 V8 类型)、`JsRuntimeImpl`(Node 环境、ESM 入口、`momo:*` 原生模块、异常转 `Status`(含 JS 栈))、`NodeBindings`(libuv ↔ ui 线程)、`Wrappable` + `ClassBuilder<T>`(宿主类绑定, 类型校验无需 RTTI, GC 弱回调 + 销毁时兜底释放)、`js_args.h`(参数解码)、`js_tags.h`(V8 指针类型标签分配表)。
+**已实现**(`engine/runtime/`):`JsRuntime`(Node 环境、ESM 入口、`momo:*` 原生模块、异常转 `Status`(含 JS 栈);头文件含 V8 类型, 只被 runtime 与 ui 的实现文件包含——引擎的其余部分经不含 V8 的 `ui::AppDriver` 驱动 JS)、`NodeBindings`(libuv ↔ ui 线程)、`Wrappable` + `ClassBuilder<T>`(宿主类绑定, 类型校验无需 RTTI, GC 弱回调 + 销毁时兜底释放)、`js_args.h`(参数解码)、`js_tags.h`(V8 指针类型标签分配表)。
 
 ## 2. V8 封装的边界
 
 不另做一层通用 handle 封装(早期草案中的 `JsScope/JsValue/JsObject` 没有实现):`v8.h` 只允许出现在 `runtime/` 与 `ui/` 的实现文件里,这些文件直接使用 V8 API;其余模块只看到不含 V8 类型的接口。
 
-- `runtime/js_runtime.h`:`JsRuntime`(公共头,无 V8 类型)——创建/销毁、`RunMainModule(bundle)`、`DrainMicrotasks()`。
-- `runtime/js_runtime_impl.h`:`JsRuntimeImpl`——拥有 `v8::Isolate` 与主 `Context`;`Call(fn, recv, argv, label)` 把 JS 异常收敛为 `Status`(含 JS 栈),C++ 侧无异常。
+- `runtime/js_runtime.h`:`JsRuntime`——拥有 Node 环境(`v8::Isolate` 与主 `Context`):创建/销毁、`RunMainModule(bundle)`、`DrainMicrotasks()`;`Call(fn, recv, argv, label)` 把 JS 异常收敛为 `Status`(含 JS 栈),C++ 侧无异常。
 - `runtime/js_args.h`:绑定函数的参数解码(`ArgNumber`、`ArgWrapped<T>`、`ToUtf8`…),类型不符时抛 JS `TypeError`。
 
 ## 3. 原生绑定基建
 
-**模块**:`JsRuntimeImpl::RegisterNativeModule(specifier, factory)` 注册一个 synthetic ESM 模块(如 `momo:ui`),`factory(isolate, context, exports)` 在模块首次被 import 时填充导出。`momo:ui` / `momo:services` 由 `ui::UiBindings::Install` 注册,`ext:*` 由 `ui/extension_bindings.cc` 注册。
+**模块**:`JsRuntime::RegisterNativeModule(specifier, factory)` 注册一个 synthetic ESM 模块(如 `momo:ui`),`factory(isolate, context, exports)` 在模块首次被 import 时填充导出。`momo:ui` / `momo:services` 由 `ui::UiBindings::Install` 注册,`ext:*` 由 `ui/extension_bindings.cc` 注册。
 
 **宿主类**:C++ 对象继承 `Wrappable`,用 `ClassBuilder<T>` 暴露为 JS 类:
 
@@ -120,20 +119,21 @@ M3 的 Paragraph/Image/Codec/loadAsset, M5 的 drawTexture/addTexture);完整 TS
 `framework/packages/momo/src/ui/momo-ui.d.ts`。消息通道实现: `engine/common/message_channel_hub.h`(回复总是投递,
 不在 JS 调用栈内同步重入)、`engine/common/standard_codec.h`、JS 端 `momo:services`(`engine/ui/services_bindings.cc`)。
 内置通道 momo/app、momo/window、momo/clipboard、momo/url、momo/textinput、momo/extensions(JS 查询扩展加载错误: `getErrors`)、momo/platform_views。
-消息带着发出时的 JS 运行时代数, 换代后不再送达;代数由引擎在运行时启动/停止时显式设置(`SetJsGeneration`)。
+JS 运行时销毁时移除 JS 端点, 之后发往 JS 的消息(含在途的)回复空;已投递给 native handler 的消息由 handler 的注册方自己判活。
 
 ## 7. 调试与诊断
 
 - `--dev` 启动时启用 **Node 的 inspector**(`--inspect=127.0.0.1:<port>`,默认 9229,`--inspect-port=` 修改;`--inspect-brk`
-  映射为 Node 的 `--inspect-wait`:执行 bundle 前等待调试器连接)。Chrome DevTools / VS Code 直连:断点、console、profile、
-  heap snapshot。inspector 选项是进程级的,以第一次创建运行时时为准;hot restart 后新环境重新监听。
+  映射为 Node 的 `--inspect-wait`:执行 bundle 前等待调试器连接, 期间 ui 线程阻塞, 主线程照常泵消息。此时退出应用,
+  销毁要等 ui 线程——即等到调试器连上并断开——才完成, 不强行打断)。Chrome DevTools / VS Code 直连:断点、console、profile、
+  heap snapshot。inspector 选项是进程级的。
 - `console.*` 是 Node 的 console(写 stdout/stderr,连着 inspector 时同时送到 DevTools)。
 - 未捕获异常/未处理 rejection:打印到 stderr 并继续运行(见 §1)。
 
-## 8. 热重载(开发体验,M4+)
+## 8. 热重启: 不支持
 
-已实现 hot restart(**实验性, 默认关闭**, 以 `--experimental-hot-restart` 开启): embedder 每 500ms 检查 bundle 修改时间, 变化时 `Shell::RequestHotRestart` →
-ui 线程销毁 JS 运行时(整个 Node 环境, `Engine::StopRuntime`), 再走与首次启动相同的链路(`Engine::StartRuntime`)新建并重新执行 bundle
-(新 bundle 出错时退回占位驱动, 全部视图照常出帧, 修复后可再次重启)。
-
-监听 bundle 文件变化 → 重建 Context(保留 Isolate)→ 重新执行 bundle → 框架层从根重建树。状态保持(类似 Flutter hot reload)不做首期承诺,先做秒级 hot restart。
+一个进程里只有一个 JS 运行时。曾经有过实验性的热重启(bundle 变化时销毁运行时、新建一个重新执行), 已删除:
+重置 JS 而不重置宿主, 意味着每个 JS 模块、每个扩展都要能正确撤销自己留在宿主里的状态(窗口、平台视图、在途的通道
+请求、按 id 登记的对象), 这类错误只在热重启时出现, 测不到;而最需要重启的场景(顶层抛异常、死循环)恰恰没有机会
+执行任何撤销逻辑。开发循环是重新打 bundle 后重启进程。随之消失的还有: 运行时的代数、通道消息的代际、扩展的
+生命周期监听(`RuntimeStarting` / `RuntimeStopped`)——扩展里属于 JS 的状态与扩展自身同寿, 在 `on_detach` 清理。

@@ -1,8 +1,9 @@
 // 多窗口: Widget(原生窗口对象)的方法与事件、RootView 把内容渲染进窗口、各窗口独立 MediaQuery/Overlay/渲染、
 // 共享状态、GlobalKey 跨窗口迁移;app 的退出流程与窗口全部关闭。
 import {
-  Builder, Center, ColoredBox, Colors, Column, Focus, FocusManager, FocusNode, GestureDetector, GlobalKey, MediaQuery,
-  MouseRegion, Offset, Positioned, RootView, SchedulerBinding, SizedBox, Stack, State, StatefulView, Text, ViewAnchor,
+  AnimationController, Builder, Center, ColoredBox, Colors, Column, Focus, FocusManager, FocusNode, GestureDetector,
+  GlobalKey, MediaQuery, MouseRegion, Offset, Positioned, RootView, SchedulerBinding, SizedBox, Stack, State,
+  StatefulView, Text, Texture, TickerMode, ViewAnchor,
   Widget, WindowChrome, app, LogicalKeyboardKey, PhysicalKeyboardKey,
   ViewsBinding, EdgeInsets, GestureBinding, MediaQueryData, Rect, Size, runView, type BuildContext, type View,
 } from "../packages/momo/src/index";
@@ -24,6 +25,30 @@ class CounterState extends State<Counter> {
   count = 0;
   build(_c: BuildContext): View {
     return new Text(`count ${this.count}`);
+  }
+}
+
+/** 一直在跑的动画: 数它 tick 了多少次。 */
+class Spinner extends StatefulView {
+  constructor(readonly onTick: () => void) {
+    super();
+  }
+  createState(): State {
+    return new SpinnerState();
+  }
+}
+class SpinnerState extends State<Spinner> {
+  #controller!: AnimationController;
+  override initState(): void {
+    this.#controller = new AnimationController({ duration: 1000, vsync: this });
+    this.#controller.addListener(() => this.view.onTick());
+    void this.#controller.repeat();
+  }
+  override dispose(): void {
+    this.#controller.dispose();
+  }
+  build(_c: BuildContext): View {
+    return new SizedBox({ width: 10, height: 10 });
   }
 }
 
@@ -68,6 +93,71 @@ group("multi-window", () => {
     await t.pump();
     expect.deepEqual(mock.openViews(), []);
     expect.isFalse(ViewsBinding.instance.viewHosts.has(win.id), "the closed window's RootView is unregistered");
+  }, { mockOnly: true });
+
+  // 窗口关闭后仍留在树里的 RootView: 子树照常构建、状态保留, 但画面没有人看——其中的动画停下, 不再请求帧。
+  testViews("a RootView left in the tree after its window closed stops its tickers", async (t) => {
+    let ticks = 0;
+    const win = await Widget.create({ width: 200, height: 100 });
+    const root = withWindows(new SizedBox(), [{ widget: win, child: new Spinner(() => ticks++) }]);
+    await t.pumpView(root);
+    await t.pump(16);
+    await t.pump(16);
+    expect.isTrue(ticks > 0, "the animation runs while the window is open");
+    expect.isTrue(SchedulerBinding.instance.hasScheduledFrame, "a running animation keeps requesting frames");
+
+    win.destroy();
+    await t.flushMicrotasks();
+    await t.pump(16);  // RootView 重建: TickerMode 禁用, ticker 静音
+    const afterClose = ticks;
+    await t.pump(16);
+    await t.pump(16);
+    expect.equal(ticks, afterClose, "no ticks after the window closed");
+    expect.isFalse(SchedulerBinding.instance.hasScheduledFrame, "and no frames are requested for it");
+  }, { mockOnly: true });
+
+  // TickerMode: 禁用时子树里 State 创建的 ticker 静音, 重新启用后继续;嵌套时任一层禁用即禁用。
+  testViews("TickerMode mutes and resumes the tickers of its subtree", async (t) => {
+    let ticks = 0;
+    const tree = (outer: boolean, inner: boolean): View => new TickerMode({
+      enabled: outer,
+      child: new TickerMode({ enabled: inner, child: new Spinner(() => ticks++) }),
+    });
+    const settle = async (view: View): Promise<number> => {
+      await t.pumpView(view);
+      await t.pump(16);
+      const before = ticks;
+      await t.pump(16);
+      await t.pump(16);
+      return ticks - before;
+    };
+    expect.isTrue(await settle(tree(true, true)) > 0);
+    expect.equal(await settle(tree(false, true)), 0, "disabled by an ancestor");
+    expect.equal(await settle(tree(true, false)), 0, "disabled by the nearest TickerMode");
+    expect.isTrue(await settle(tree(true, true)) > 0, "resumes when enabled again");
+  });
+
+  // 画面里有外部纹理的窗口每帧都提交: 纹理内容由扩展更新, 窗口自己没有变脏。别的窗口变脏引出的帧里, 没有纹理
+  // 也没有变化的窗口不提交。
+  testViews("a window showing an external texture is committed on every frame", async (t, ctx) => {
+    const mock = ctx.host.mock!;
+    const video = await Widget.create({ width: 200, height: 100 });
+    const idle = await Widget.create({ width: 200, height: 100 });
+    await t.pumpView(withWindows(new SizedBox(), [
+      { widget: video, child: new Texture({ textureId: 7 }) },
+      { widget: idle, child: new SizedBox({ width: 10, height: 10 }) },
+    ]));
+    await t.pump();
+    await t.pump();
+    const videoScene = mock.sceneOpsByView.get(video.id);
+    const idleScene = mock.sceneOpsByView.get(idle.id);
+    expect.isTrue((videoScene ?? []).some((o) => o.op === "addTexture"), "the texture is in the window's scene");
+
+    t.renderView.markNeedsPaint();  // 主窗口变脏: 框架请求的一帧
+    expect.isTrue(SchedulerBinding.instance.hasScheduledFrame);
+    await t.pump();
+    expect.isTrue(mock.sceneOpsByView.get(video.id) !== videoScene, "the texture window got a new scene");
+    expect.isTrue(mock.sceneOpsByView.get(idle.id) === idleScene, "the unchanged window was skipped");
   }, { mockOnly: true });
 
   // 标题栏: 应用只声明自己的标题栏高度;系统控制按钮占用的区域由宿主报告, 经 MediaQuery.windowControls 提供。

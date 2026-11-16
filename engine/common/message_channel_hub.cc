@@ -58,38 +58,24 @@ void MessageChannelHub::SetJsEndpoint(std::shared_ptr<TaskRunner> ui_runner, JsE
   js_endpoint_ = std::move(endpoint);
 }
 
-void MessageChannelHub::SetJsGeneration(uint64_t generation) {
-  MutexLock lock(mutex_);
-  js_generation_ = generation;
-}
-
 void MessageChannelHub::SendToNative(const std::string& channel, MessageBytes message,
                                      std::shared_ptr<TaskRunner> reply_runner,
                                      MessageReply::Callback reply) {
   Handler handler;
-  uint64_t generation = 0;
   {
     MutexLock lock(mutex_);
     auto it = handlers_.find(channel);
     if (it != handlers_.end()) {
       handler = it->second;
     }
-    generation = js_generation_;
   }
   MessageReply reply_handle(std::move(reply_runner), std::move(reply));
   if (!handler.fn) {
     return;  // reply_handle 析构 → 回复 nullopt
   }
-  // 执行时(handler 的线程)核对代数: 发出这条消息的 JS 运行时在投递之后已销毁(热重启、关闭)则不再送达——
-  // 否则旧运行时的消息会在 handler 已经为新运行时清理过状态之后到来。回复句柄随任务析构, 回复 nullopt。
-  handler.runner->PostTask([self = shared_from_this(), generation, fn = std::move(handler.fn),
-                            message = std::move(message), reply = std::move(reply_handle)]() mutable {
-    {
-      MutexLock lock(self->mutex_);
-      if (generation != self->js_generation_) {
-        return;
-      }
-    }
+  // 已投递的消息在 handler 被移除后仍会送达: handler 的注册方自己判活(弱引用)。
+  handler.runner->PostTask([fn = std::move(handler.fn), message = std::move(message),
+                            reply = std::move(reply_handle)]() mutable {
     fn(std::move(message), std::move(reply));
   });
 }
@@ -98,23 +84,21 @@ void MessageChannelHub::SendToJs(const std::string& channel, MessageBytes messag
                                  std::shared_ptr<TaskRunner> reply_runner,
                                  MessageReply::Callback reply) {
   std::shared_ptr<TaskRunner> runner;
-  uint64_t generation = 0;
   {
     MutexLock lock(mutex_);
     runner = js_runner_;
-    generation = js_generation_;
   }
   MessageReply reply_handle(std::move(reply_runner), std::move(reply));
   if (runner == nullptr) {
     return;
   }
-  // 执行时(ui 线程)再取端点并核对代数: 端点在投递之后被移除/替换(JS 运行时已销毁)则不调用。
-  runner->PostTask([self = shared_from_this(), generation, channel, message = std::move(message),
+  // 执行时(ui 线程)再取端点: 端点在投递之后被移除(JS 运行时已销毁)则不调用。
+  runner->PostTask([self = shared_from_this(), channel, message = std::move(message),
                     reply = std::move(reply_handle)]() mutable {
     JsEndpoint endpoint;
     {
       MutexLock lock(self->mutex_);
-      if (generation != self->js_generation_ || !self->js_endpoint_) {
+      if (!self->js_endpoint_) {
         return;
       }
       endpoint = self->js_endpoint_;

@@ -95,11 +95,12 @@ void Shell::Shutdown() {
   InvalidateWeakPtrs();
   hub_->SetNativeHandler("momo/platform_views", nullptr, nullptr);
   hub_->SetNativeHandler("momo/extensions", nullptr, nullptr);
-  // 1) JS 运行时: 与 hot restart 相同的拆除顺序(运行时销毁 → 平台视图 → RuntimeStopped)。
-  StopRuntime(kMomoLifecycleReasonShutdown);
-  // 2) ui: 销毁 Engine(Animator)。此前投递到 ui 的任务按 FIFO 已执行完毕, 之后不再投递。
-  //    必须在线程 join 前同步销毁(docs/01 §4), 所以这里同步汇合。
+  // 1) ui: 销毁 Engine(JS 运行时与 Animator)。此前投递到 ui 的任务按 FIFO 已执行完毕(包括尚未执行的
+  //    Run), 之后不再投递。必须在线程 join 前同步销毁(docs/01 §4), 所以这里同步汇合。返回后没有 JS 在
+  //    运行, 引擎不再出帧、不再执行扩展帧回调。
   PostTaskAndWait(*task_runners_.ui, [this] { engine_.reset(); });
+  // 2) JS 创建的平台视图: 先移出窗口再交给扩展释放(JS 已不在, 不会与扩展的 JS 函数并发)。
+  DisposeAllPlatformViews();
   // 3) 扩展 on_detach(platform 线程, 线程 join 之前;docs/08 §5)。
   if (extensions_) {
     extensions_->DetachAll();
@@ -113,67 +114,24 @@ void Shell::Shutdown() {
 }
 
 // ---------------------------------------------------------------------------
-// JS 运行时的启动与停止
+// JS 运行时
 
 void Shell::Run(RunCallback done) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MOMO_DCHECK(runtime_generation_ == 0) << "Shell::Run may only be called once";
-  if (shut_down_ || runtime_started_) {
+  MOMO_DCHECK(!run_called_) << "Shell::Run may only be called once";
+  if (shut_down_ || run_called_) {
     return;
   }
-  StartRuntime(kMomoLifecycleReasonLaunch, std::move(done));
-}
-
-void Shell::RequestHotRestart(RunCallback done) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (shut_down_ || !runtime_started_) {
-    return;
-  }
-  MOMO_LOG(INFO) << "Hot restart.";
-  StopRuntime(kMomoLifecycleReasonHotRestart);
-  if (!done) {
-    done = [](Status status) {
-      if (!status.ok()) MOMO_LOG(ERROR) << "Hot restart failed: " << status;
-    };
-  }
-  StartRuntime(kMomoLifecycleReasonHotRestart, std::move(done));
-}
-
-void Shell::StartRuntime(MomoLifecycleReason reason, RunCallback done) {
-  MOMO_DCHECK(!runtime_started_);
-  runtime_started_ = true;
-  const uint64_t generation = ++runtime_generation_;
-  // 此刻没有 JS 运行时: 扩展先得知新一代即将开始, 它发来的消息一定晚于这个事件。
-  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, reason, generation);
-  // 捕获 this 安全: 同 PostToEngine。结果经弱引用回到 platform(Shell 已关闭则丢弃)。
-  task_runners_.ui->PostTask(
-      [this, generation, weak = weak_this_, done = std::move(done)]() mutable {
-        if (engine_ == nullptr) {
-          return;
-        }
-        Status status = engine_->StartRuntime(generation);
-        if (done) {
-          PostToObject(weak, [done = std::move(done), status = std::move(status)](Shell&) mutable {
-            done(std::move(status));
-          });
-        }
+  run_called_ = true;
+  // 结果经弱引用回到 platform(Shell 已关闭则丢弃)。
+  PostToEngine([weak = weak_this_, done = std::move(done)](Engine& engine) mutable {
+    Status status = engine.StartRuntime();
+    if (done) {
+      PostToObject(weak, [done = std::move(done), status = std::move(status)](Shell&) mutable {
+        done(std::move(status));
       });
-}
-
-void Shell::StopRuntime(MomoLifecycleReason reason) {
-  if (!runtime_started_) {
-    return;
-  }
-  runtime_started_ = false;
-  // 1) ui: 销毁运行时。同步汇合: 返回后没有 JS 在运行(排在前面、尚未执行的 StartRuntime 也已执行完),
-  //    引擎不再出帧、不再执行扩展帧回调, 旧运行时在途的通道消息已作废。
-  PostTaskAndWait(*task_runners_.ui, [this] {
-    if (engine_) engine_->StopRuntime();
+    }
   });
-  // 2) 旧运行时创建的平台视图: 先移出窗口再交给扩展释放(JS 已不在, 不会与扩展的 JS 函数并发)。
-  DisposeAllPlatformViews();
-  // 3) 扩展清理属于这一代运行时的状态。
-  extensions_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, reason, runtime_generation_);
 }
 
 std::unique_ptr<VsyncWaiter> Shell::MakeVsyncWaiter(WeakPtr<platform::VsyncSource> source) const {
@@ -335,7 +293,7 @@ void Shell::SetAppSuspended(bool suspended) {
 //
 // 扩展通道(momo/extensions, JS→引擎):
 //   getErrors  → string[]   加载失败的扩展("<id>: <原因>");全部成功为空数组
-// 这是可查询的状态而不是事件: 任何时刻、任何一代 JS 运行时都能问到同样的结果。
+// 这是可查询的状态而不是事件: 任何时刻都能问到同样的结果。
 
 namespace {
 

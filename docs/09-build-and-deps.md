@@ -63,9 +63,9 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 
 ## 4. JS/TS 构建
 
-- framework/ 独立 npm workspace;框架不单独打包,应用 bundle 把 `@momo/framework` 直接解析到 `framework/packages/momo/src`(esbuild 选项在 `framework/scripts/common.mjs`)。
-- 打应用 bundle 只有一个入口:`tools/momo-cli/momo.mjs bundle <app> [--out=<dir>]`,调 esbuild 产出 `<out>/bundle.js`,扫描依赖产出 `<out>/extensions/{extensions.manifest, 原生库}`(`<out>` 默认 `<app>/dist`;开发循环用它,再以 `Momo --dev --bundle=` 运行)。
-- 应用打包不走 CMake,由 `tools/momo-cli/momo.mjs build` 完成:复制运行时,把 `momo bundle` 的产物与 `assets/` 放进:
+- framework/ 是 npm workspace, 里面两个发布的包:`packages/momo`(`@momo/framework`, 以 TS 源码发布, 不预先打包)与 `packages/cli`(`@momo/cli`, 命令 `momo`)。CLI 不依赖源码树:应用的依赖按 Node 的规则解析(装在 `node_modules` 里的包), 以 `file:` 指向目录的本地包则直接按它的 `package.json` 解析、不要求先安装(仓库内的示例这样引用框架与扩展)。"Momo 的 JS 怎么打包"只有一份设置(`packages/cli/bundle_options.mjs`), 框架自己的测试打包(`framework/scripts/common.mjs`)复用它。
+- 打应用 bundle 只有一个入口:`framework/packages/cli/momo.mjs bundle <app> [--out=<dir>]`,调 esbuild 产出 `<out>/bundle.js`,扫描依赖产出 `<out>/extensions/{extensions.manifest, 原生库}`(`<out>` 默认 `<app>/dist`;开发循环用它,再以 `Momo --dev --bundle=` 运行)。
+- 应用打包不走 CMake,由 `framework/packages/cli/momo.mjs build` 完成:复制运行时(`--runtime=` 或环境变量 `MOMO_RUNTIME` 给出;发布产物解压后的内容或自己的构建),把 `momo bundle` 的产物与 `assets/` 放进:
   - macOS: `<Name>.app/Contents/Resources/{bundle.js, assets/, extensions/}`
   - Windows: `<Name>/{<Name>.exe, libnode.dll, bundle.js, assets/, extensions/}`(exe 同级即资源目录;`momo build --runtime=<含 Momo.exe 的目录>`, 未验证)
 - CMake 只做一件相关的事:把 `MOMO_APP_DEFAULT_BUNDLE`(默认 `examples/hello_frame/main.js`)拷进 `Momo.app` 作为默认 bundle。
@@ -80,7 +80,7 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 
 ## 6. 打包与分发
 
-`momo-cli build` 面向应用开发者:预编译的 engine 运行时 + 用户 JS/资源/扩展 → 产出 .app / 目录(后续 MSIX/DMG)。即应用开发者**无需本机编译 C++**,只有扩展作者需要工具链——这是 npm 式开发体验的关键。
+`momo build`(`@momo/cli`)面向应用开发者:预编译的 engine 运行时 + 用户 JS/资源/扩展 → 产出 .app / 目录(后续 MSIX/DMG)。即应用开发者**无需本机编译 C++**,只有扩展作者需要工具链——这是 npm 式开发体验的关键。
 
 ### 6.1 发布产物
 
@@ -92,6 +92,7 @@ momo_ext_sdk          (INTERFACE: 扩展 C ABI 头)
 | `momo-headless-v<version>-<p>.zip` | `momo_headless` + libnode:无窗口运行 bundle 的测试运行器 |
 | `momo-ext-sdk-v<version>.zip` | 扩展 SDK:`include/`、`lib/cmake/MomoExtSdk/`、`types/`(与平台无关) |
 | `momo-framework-v<version>.tgz` | `@momo/framework` 的 npm 包(与平台无关) |
+| `momo-cli-v<version>.tgz` | `@momo/cli` 的 npm 包(与平台无关;版本与 `@momo/framework` 相同, 打包时校验) |
 | `SHASUMS256.txt` | 以上全部文件的 SHA256 |
 
 - **版本号**只有一个来源:`framework/packages/momo/package.json` 的 `version`。CMake 读它(`MOMO_VERSION`,写进 `Momo.app` 的 Info.plist),打包脚本读它,发布 tag 必须是 `v<version>`。
@@ -106,9 +107,9 @@ python3 tools/package_release.py --build-dir out/release --out out/dist --platfo
 
 ### 6.2 发布流程(`.github/workflows/release.yml`)
 
-1. 把 `framework/packages/momo/package.json`(以及 workspace 根的 `framework/package.json`)的 `version` 改为新版本并合入 `main`。
+1. 把 `framework/packages/momo/package.json`、`framework/packages/cli/package.json`(以及 workspace 根的 `framework/package.json`)的 `version` 改为新版本并合入 `main`。
 2. 推送 tag `v<version>`(带 `-` 的版本,如 `v0.5.0-beta.1`,发为 prerelease)。
-3. CI 在 `macos-15`(arm64)与 `windows-2022`(x64)上各自:校验 tag 与版本一致 → `fetch_deps.py` → Release 构建 → 打包 → **用解压出的 headless 包**跑 `embedder/headless/testdata/smoke.js`(验证包自带全部运行期依赖)。全部成功后汇总产物、生成 `SHASUMS256.txt`、创建 GitHub Release。
+3. CI 在 `macos-15`(arm64)与 `windows-2022`(x64)上各自:校验 tag 与版本一致 → `fetch_deps.py` → Release 构建 → 打包 → **用解压出的 headless 包**跑 `embedder/headless/testdata/smoke.js`(验证包自带全部运行期依赖);产出 npm 包的平台另在仓库之外只凭两个 npm 包安装并 `momo bundle` 一个应用(验证 CLI 不依赖源码树)。全部成功后汇总产物、生成 `SHASUMS256.txt`、创建 GitHub Release。
 
 - 手动触发,或改动发布链路(workflow、`package_release.py`、`build_libnode.py`、`fetch_deps.py`、`cmake/`)的 PR 与 `main` 提交,走同一套构建与打包,但产物只作为 workflow artifact 上传,不创建 Release。
 - libnode 从源码构建,在托管 runner 上以小时计,所以安装结果按 Node 版本 + `build_libnode.py` 内容缓存。tag 触发的运行只能读到默认分支上建立的缓存,由 `main` 上的运行预热;缓存 7 天无人访问会被回收,之后第一次运行会重新构建。

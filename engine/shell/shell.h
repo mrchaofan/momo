@@ -10,7 +10,7 @@
 //   raster:   Rasterizer(surface 与 GPU 资源)
 // 两阶段启动: Create 只组装子系统(没有 JS 运行时), 同步返回;宿主随后注册通道处理器、添加进程内扩展、
 //   绑定视图, 再调用 Run 异步启动 JS 运行时(ui 线程执行 bundle, 结果回到 platform 线程)。platform 线程
-//   从不等待 bundle 执行。首次启动(Run)与 hot restart(RequestHotRestart)走同一条"启动运行时"的链路。
+//   从不等待 bundle 执行。JS 运行时在进程里只有这一个: Run 启动它, Shutdown 销毁它。
 // 帧路径: Engine(ui)产出 FrameItem(各视图的 LayerTree)→ Pipeline(深度 2)→ raster 线程 Rasterizer::Draw。
 // 多视图: 每个视图(窗口)以 AttachView(view_id, …) 绑定自己的 Delegate 与 surface。帧时钟是应用级的
 //   (所有视图共用一个 Animator): 宿主以 SetVsyncSource 给出唯一的 VsyncSource, 没有时用定时器。视图的
@@ -89,9 +89,9 @@ class Shell final : public Object {
       std::function<void(int exit_code)> on_exit_requested = nullptr);
   ~Shell() override;  // 隐式 Shutdown()
 
-  // 启动 JS 运行时(只能调用一次): 向扩展派发 RuntimeStarting, 然后在 ui 线程创建运行时并执行 bundle。
-  // 立即返回;done(可空)在 bundle 的同步部分执行完后于 platform 线程回调(Shell 在此之前关闭则不回调)。
-  // 失败时引擎退回占位驱动, 是否退出由宿主决定。
+  // 启动 JS 运行时(只能调用一次): 在 ui 线程创建运行时并执行 bundle。立即返回;done(可空)在 bundle 的
+  // 同步部分执行完后于 platform 线程回调(Shell 在此之前关闭则不回调)。失败时引擎没有运行时、不出帧,
+  // 是否退出由宿主决定。
   void Run(RunCallback done = nullptr);
 
   // 帧时钟的来源(应用级, 与视图无关): 所有权移交 Shell, 之前的来源被释放(DeleteLater)。为空 = 按
@@ -111,8 +111,9 @@ class Shell final : public Object {
   // 已绑定的视图(platform 线程)。
   std::vector<platform::ViewId> attached_views() const;
 
-  // 有序关闭: 停止 JS 运行时(同 hot restart 的拆除顺序)→ ui(销毁 Engine)→ 扩展 on_detach →
-  // raster(释放 GPU 资源)。同步, 幂等。
+  // 有序关闭, JS 环境最先: ui(销毁 JS 运行时, 再是 Engine 的其余部分)→ 销毁全部平台视图 → 扩展 on_detach →
+  // raster(释放 GPU 资源)。同步, 幂等。与 ui 线程汇合: 此前投递给 JS 的事件都先执行完;JS 不返回(等待调试器
+  // 连接、脚本死循环)时本调用就等着它——不强行终止 JS。
   void Shutdown();
   bool is_shut_down() const { return shut_down_; }
 
@@ -134,10 +135,6 @@ class Shell final : public Object {
   void OnFocusChanged(bool focused) { OnFocusChanged(platform::kImplicitViewId, focused); }
   // 平台视图获得了键盘焦点(用户点击等)→ momo/platform_views 通道 "focused"(native→JS)。
   void OnPlatformViewFocused(int64_t view_id);
-  // 重新加载 bundle(实验性): 停止当前 JS 运行时(同步)再启动一个新的(异步, 与 Run 同一条链路;视图、
-  // 扩展、通道处理器都保留)。旧运行时创建的平台视图随之销毁;旧 JS 打开的窗口由宿主自行决定是否关闭
-  // (窗口归宿主)。Run 之前或关闭之后调用无效。done 同 Run。
-  void RequestHotRestart(RunCallback done = nullptr);
   // 应用整体挂起(宿主隐藏了应用)时停帧, 恢复时继续。应用生命周期本身属于宿主。
   void SetAppSuspended(bool suspended);
 
@@ -154,14 +151,6 @@ class Shell final : public Object {
  private:
   Shell(const TaskRunners& task_runners, const Settings& settings);
 
-  // "启动/停止 JS 运行时"的唯一链路(platform 线程)。首次启动 = Start;hot restart = Stop + Start;
-  // 关闭 = Stop。运行时的代数只在这里推进(runtime_generation_), 扩展的生命周期事件、消息通道的代际、
-  // Promise token 都取自它。
-  //   Start: RuntimeStarting(#n) → ui: Engine::StartRuntime(n)(异步;结果经 done 回到 platform)。
-  //   Stop:  ui: Engine::StopRuntime(同步汇合)→ 销毁全部平台视图 → RuntimeStopped(#n)。
-  void StartRuntime(MomoLifecycleReason reason, RunCallback done);
-  void StopRuntime(MomoLifecycleReason reason);
-
   // platform 线程 → ui 线程, Engine 存在时执行。
   void PostToEngine(MoveOnlyFunction<void(Engine&)> task);
   // 任意线程 → platform 线程, Shell 未关闭且视图已绑定时执行。
@@ -170,7 +159,7 @@ class Shell final : public Object {
   // source 未绑定时为回退定时器。
   std::unique_ptr<VsyncWaiter> MakeVsyncWaiter(WeakPtr<platform::VsyncSource> source) const;
 
-  // 销毁全部平台视图(StopRuntime;platform 线程): 先通知窗口移除, 再交给扩展释放。
+  // 销毁全部平台视图(Shutdown;platform 线程): 先通知窗口移除, 再交给扩展释放。
   void DisposeAllPlatformViews();
   // 引擎自己的通道: momo/platform_views、momo/extensions(platform 线程处理)。
   void RegisterEngineChannels();
@@ -189,10 +178,7 @@ class Shell final : public Object {
   // platform 线程。先于 Engine 创建(on_attach 注册的模块在 JS 运行时创建时安装), 在 Engine 销毁后 detach。
   std::unique_ptr<ExtensionHost> extensions_;
   bool shut_down_ = false;
-  // 仅 platform 线程。JS 运行时的代数: 首个为 1, 每次 StartRuntime 加一(唯一的真相源)。
-  uint64_t runtime_generation_ = 0;
-  // 已派发 RuntimeStarting、尚未派发对应的 RuntimeStopped。
-  bool runtime_started_ = false;
+  bool run_called_ = false;  // 仅 platform 线程
 
   // 仅 platform 线程访问。
   std::map<platform::ViewId, Delegate*> delegates_;

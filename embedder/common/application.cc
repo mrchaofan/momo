@@ -105,7 +105,8 @@ Application::Application(Options options, std::unique_ptr<PlatformIntegration> p
 
 Application::~Application() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  Terminate(exit_code_);
+  Shutdown();
+  TearDown();
   // 之后执行的任务(窗口/引擎回调)不再回到正在析构的 Application。
   InvalidateWeakPtrs();
   // 消息循环未运行(启动失败)或提前返回时, 在这里完成 platform EventLoop 的结束语义:
@@ -121,7 +122,9 @@ Status Application::Launch() {
 
   auto fail = [this](Status status) {
     MOMO_LOG(ERROR) << "Launch failed: " << status;
-    Terminate(1);
+    // 消息循环还没开始: 不会有 Run 来收尾, 在这里销毁已建好的部分。
+    Exit(1);
+    TearDown();
     return status;
   };
 
@@ -146,23 +149,12 @@ void Application::OnRuntimeStarted(Status status) {
   }
   if (!status.ok()) {
     MOMO_LOG(ERROR) << "Launch failed: " << status;
-    Terminate(1);
+    Exit(1);
     return;
   }
   TransitionTo(State::kRunning);
   // 启动期间应用可能已被隐藏。
   UpdateSuspended();
-
-  // --experimental-hot-restart: bundle 变化即 hot restart(docs/04 §8, 不保留 JS 状态)。实验性, 默认关闭。
-  if (options_.config.hot_restart && options_.hot_restart_poll > TimeDelta::zero()) {
-    std::error_code ec;
-    watched_bundle_mtime_ = std::filesystem::last_write_time(watched_bundle_, ec);
-    task_runner()->PostDelayedTask(
-        [weak = WeakPtr<Application>(this)] {
-          if (Application* self = weak.get()) self->PollBundleForChanges();
-        },
-        options_.hot_restart_poll);
-  }
 }
 
 Status Application::LaunchEngine() {
@@ -205,34 +197,10 @@ Status Application::LaunchEngine() {
   window_manager_->AttachEngine(*shell_, *window_channel_, *platform_channels_);
 
   // 启动 JS 运行时: ui 线程执行 bundle, 本线程回到事件循环;结果稍后到达。
-  watched_bundle_ = settings.bundle_path;
   shell_->Run([weak = WeakPtr<Application>(this)](Status status) {
     if (Application* self = weak.get()) self->OnRuntimeStarted(std::move(status));
   });
   return Status::Ok();
-}
-
-void Application::PollBundleForChanges() {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (shell_ == nullptr || state_ == State::kTerminating) {
-    return;
-  }
-  std::error_code ec;
-  const auto mtime = std::filesystem::last_write_time(watched_bundle_, ec);
-  if (!ec && mtime != watched_bundle_mtime_) {
-    watched_bundle_mtime_ = mtime;
-    MOMO_LOG(INFO) << "Bundle changed: hot restart.";
-    quitting_ = false;  // 旧 JS 的退出流程作废
-    ++ask_serial_;
-    ask_pending_ = false;
-    window_manager_->ResetForHotRestart(options_.config.startup_window);
-    shell_->RequestHotRestart();
-  }
-  task_runner()->PostDelayedTask(
-      [weak = WeakPtr<Application>(this)] {
-        if (Application* self = weak.get()) self->PollBundleForChanges();
-      },
-      options_.hot_restart_poll);
 }
 
 int Application::Run() {
@@ -241,6 +209,7 @@ int Application::Run() {
   if (state_ == State::kLaunching || state_ == State::kRunning || state_ == State::kSuspended) {
     platform_loop_->Run();  // 返回时已排空并清理 DeleteLater 对象
   }
+  TearDown();
   return exit_code_;
 }
 
@@ -309,54 +278,20 @@ engine::EncodableValue Application::GetAppState() {
 // ---------------------------------------------------------------------------
 // 退出
 
-uint64_t Application::BeginAsk() {
-  const uint64_t serial = ++ask_serial_;
-  ask_pending_ = true;
-  // JS 长时间不响应(ui 线程卡死, 如死循环)时强制退出: 有序关闭需要与 ui 线程同步汇合, 已不可能。
-  if (options_.close_timeout > TimeDelta::zero()) {
-    task_runner()->PostDelayedTask(
-        [weak = WeakPtr<Application>(this), serial] {
-          Application* self = weak.get();
-          if (self == nullptr || !self->ask_pending_ || self->ask_serial_ != serial ||
-              self->state_ == State::kTerminating) {
-            return;  // 已回复
-          }
-          MOMO_LOG(ERROR) << "The application did not answer the quit request within the timeout "
-                             "(UI thread hung?); forcing exit.";
-          if (self->options_.force_exit) {
-            self->options_.force_exit(1);
-          } else {
-            std::_Exit(1);
-          }
-        },
-        options_.close_timeout);
-  }
-  return serial;
-}
-
-bool Application::EndAsk(uint64_t serial) {
-  if (serial != ask_serial_ || state_ == State::kTerminating) {
-    return false;  // 过期的回复(热重启、已退出)
-  }
-  ask_pending_ = false;
-  return true;
-}
-
 void Application::Quit() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   if (state_ == State::kTerminating || quitting_) {
     return;  // 重复请求合并
   }
-  if (app_channel_ == nullptr || state_ == State::kLaunching) {
-    // 引擎尚未就绪, 或 bundle 还在执行(退出处理器尚未注册): 没有 JS 可询问。
-    Terminate(exit_code_);
+  quitting_ = true;
+  if (app_channel_ == nullptr) {  // 引擎尚未创建: 没有 JS 可询问
+    QuitCloseWindows();
     return;
   }
-  quitting_ = true;
-  const uint64_t serial = BeginAsk();
-  app_channel_->AskBeforeQuit([weak = WeakPtr<Application>(this), serial](bool allow) {
+  // 启动期间(bundle 还在执行)也照常询问: 消息排在 bundle 之后;JS 没有注册处理器时答复为"允许"。
+  app_channel_->AskBeforeQuit([weak = WeakPtr<Application>(this)](bool allow) {
     Application* self = weak.get();
-    if (self == nullptr || !self->EndAsk(serial)) return;
+    if (self == nullptr || !self->quitting_) return;  // 期间已经 Exit
     if (!allow) {
       self->AbortQuit("beforeQuit");
       return;
@@ -366,10 +301,9 @@ void Application::Quit() {
 }
 
 void Application::QuitCloseWindows() {
-  const uint64_t serial = BeginAsk();
-  window_manager_->RequestCloseAll([weak = WeakPtr<Application>(this), serial](bool all_closed) {
+  window_manager_->RequestCloseAll([weak = WeakPtr<Application>(this)](bool all_closed) {
     Application* self = weak.get();
-    if (self == nullptr || !self->EndAsk(serial)) return;
+    if (self == nullptr || !self->quitting_) return;
     if (!all_closed) {
       self->AbortQuit("a window refused to close");
       return;
@@ -380,18 +314,17 @@ void Application::QuitCloseWindows() {
 
 void Application::QuitWillQuit() {
   if (app_channel_ == nullptr) {
-    Terminate(exit_code_);
+    Shutdown();
     return;
   }
-  const uint64_t serial = BeginAsk();
-  app_channel_->AskWillQuit([weak = WeakPtr<Application>(this), serial](bool allow) {
+  app_channel_->AskWillQuit([weak = WeakPtr<Application>(this)](bool allow) {
     Application* self = weak.get();
-    if (self == nullptr || !self->EndAsk(serial)) return;
+    if (self == nullptr || !self->quitting_) return;
     if (!allow) {
       self->AbortQuit("willQuit");
       return;
     }
-    self->Terminate(self->exit_code_);
+    self->Shutdown();
   });
 }
 
@@ -406,30 +339,42 @@ void Application::Exit(int exit_code) {
     return;
   }
   exit_code_ = exit_code;
-  // 可能在宿主通道处理器的调用栈里(Terminate 会移除它): 延后到安全点。
-  task_runner()->PostTask([weak = WeakPtr<Application>(this), exit_code] {
-    if (Application* self = weak.get()) self->Terminate(exit_code);
-  });
+  // 不询问, 但窗口照常关闭(JS 收到各自的 'closed'): 退出时不留下还开着的窗口(同 Electron app.exit)。
+  window_manager_->CloseAll();
+  Shutdown();
 }
 
-void Application::Terminate(int exit_code) {
+void Application::Shutdown() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   if (state_ == State::kTerminating) {
     return;
   }
-  exit_code_ = exit_code;
-  TransitionTo(State::kTerminating);  // 会把 terminating 状态投递给 JS(排在关闭任务之前)
+  quitting_ = false;
+  TransitionTo(State::kTerminating);  // JS 收到 terminating(排在销毁之前, 照常执行)
+  // 本任务返回后(安全点)EventLoop 排空剩余任务、析构 DeleteLater 对象, 再退出原生循环;销毁在循环结束之后。
+  platform_loop_->Terminate();
+  NotifyShutdownStep(ShutdownStep::kMessageLoopQuit);
+}
 
-  // 1+2) 窗口先解绑(raster 不再使用它们的 surface)并断开通道 → 移除宿主通道处理器 →
-  //      ui: 停帧/卸扩展/销毁 JsRuntime → raster: 释放 GPU 资源。窗口在引擎关闭后再销毁。
+void Application::TearDown() {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  if (torn_down_) {
+    return;
+  }
+  torn_down_ = true;
+
+  // 1+2) JS 环境最先: ui 线程销毁 JS 运行时(此前投递给它的事件都已执行完), 再是引擎其余部分——平台视图
+  //      (移出窗口后交给扩展释放)、扩展 on_detach、raster 上的 GPU 资源(同步停用各窗口的 surface)。
+  //      窗口此时仍绑定着: 平台视图要从它们身上移除。与 ui 线程汇合: JS 不返回就在这里等它。
+  if (shell_ != nullptr) {
+    shell_->Shutdown();
+  }
+  // 已没有 JS, 也没有人使用 surface: 窗口放开引擎, 移除宿主通道。
   window_manager_->DetachEngine();
   app_channel_.reset();
   window_channel_.reset();
   platform_channels_.reset();
-  if (shell_ != nullptr) {
-    shell_->Shutdown();
-    shell_.reset();
-  }
+  shell_.reset();
   NotifyShutdownStep(ShutdownStep::kEngineShutdown);
 
   // 3) 销毁 RenderSurface 与 PlatformWindow(platform 线程)。
@@ -439,10 +384,6 @@ void Application::Terminate(int exit_code) {
   // 4) join ui → raster → io(顺序由 ThreadHost 保证)。
   thread_host_->Join();
   NotifyShutdownStep(ShutdownStep::kThreadsJoined);
-
-  // 本任务返回后(安全点)EventLoop 排空剩余任务、析构 DeleteLater 对象, 再退出原生循环。
-  platform_loop_->Terminate();
-  NotifyShutdownStep(ShutdownStep::kMessageLoopQuit);
   MOMO_LOG(INFO) << "Application terminated (exit code " << exit_code_ << ").";
 }
 

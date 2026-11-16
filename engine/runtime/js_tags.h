@@ -18,7 +18,7 @@ inline constexpr v8::ExternalPointerTypeTag kExtFnTag = 3;     // ui 扩展函�
 inline constexpr v8::EmbedderDataTypeTag kWrappableTag = 1;
 inline constexpr v8::EmbedderDataTypeTag kUiViewFieldTag = 2;  // ui::ViewBinding(视图对象 internal field 0)
 
-// v8::Isolate::SetData 槽位(0 由 JsRuntimeImpl 占用)。
+// v8::Isolate::SetData 槽位(0 由 JsRuntime 占用)。
 inline constexpr uint32_t kIsolateSlotUi = 1;  // ui::UiBindings::Impl*
 
 }  // namespace momo::engine::runtime

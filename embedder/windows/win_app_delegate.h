@@ -6,7 +6,7 @@
 //  - 重新激活: 用户再次启动应用(开始菜单、任务栏、快捷方式)= macOS 点击 Dock 图标。后续实例经 WM_COPYDATA 把命令行
 //    转发给首个实例并退出;首个实例把最前面的可见窗口带到前台(系统在 macOS 上做的事), 再调用
 //    Application::OnReopen(JS 的 app 'activate' 事件, 例如没有窗口时重新打开一个)。
-//  - 注销/关机: WM_QUERYENDSESSION 允许结束;WM_ENDSESSION 时有序关闭(Application::Terminate)——此后进程随时会被
+//  - 注销/关机: WM_QUERYENDSESSION 允许结束;WM_ENDSESSION 时不询问地退出(Application::Exit)——此后进程随时会被
 //    系统结束, 无法异步询问 JS(macOS 的注销会走可取消的 Quit, Windows 的结束会话不等待应用)。
 //  - 所有窗口关闭后应用不退出, 由 JS 决定(momo/app windowAllClosed)。Windows 没有应用级的"隐藏"。
 //  - 进程 DPI 感知: 必须在任何窗口创建前调用 SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)

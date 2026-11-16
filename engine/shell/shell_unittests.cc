@@ -281,7 +281,6 @@ TEST_F(ShellTest, CreateDoesNotStartTheRuntime) {
   settings.bundle_path = "/definitely/not/here/bundle.js";
   auto shell = Shell::Create(runners_, settings);
   ASSERT_TRUE(shell.ok()) << shell.status();
-  (*shell)->RequestHotRestart();  // Run 之前无效
   (*shell)->Shutdown();
 }
 
@@ -376,51 +375,32 @@ TEST_F(ShellTest, HostChannelsRegisteredBeforeRunSeeTopLevelCalls) {
   (*shell)->Shutdown();
 }
 
-// 扩展的生命周期事件与 JS 运行时的更替严格有序: Starting 早于该运行时发出的任何消息, Stopped 时它已经
-// 销毁(其平台视图也已 dispose), 热重启的 Stopped/Starting 之间没有 JS 在运行。首次启动、热重启、关闭
-// 走同一条链路, 代数连续。
-std::vector<std::string>* g_turnover_log = nullptr;
+// 扩展比 JS 运行时活得久: on_attach 早于运行时发出的任何消息, on_detach 时运行时已经销毁。
+std::vector<std::string>* g_extension_log = nullptr;
 
-bool InitTurnoverExtension(uint32_t version, MomoExtension* out) {
-  out->id = "test.turnover";
-  out->on_attach = [](void*, const MomoHostApi* api, MomoEngineRef engine) {
-    g_turnover_log->push_back("attach");
-    uint64_t id = 0;
-    api->lifecycle_add_listener(
-        engine,
-        [](void*, const MomoLifecycleInfo* info) {
-          g_turnover_log->push_back(
-              std::string(info->event == kMomoLifecycleRuntimeStarting ? "starting" : "stopped") + "#" +
-              std::to_string(info->runtime_generation) + "/" + std::to_string(info->reason));
-        },
-        nullptr, &id);
-  };
-  out->on_detach = [](void*) { g_turnover_log->push_back("detach"); };
+bool InitLoggingExtension(uint32_t version, MomoExtension* out) {
+  out->id = "test.logging";
+  out->on_attach = [](void*, const MomoHostApi*, MomoEngineRef) { g_extension_log->push_back("attach"); };
+  out->on_detach = [](void*) { g_extension_log->push_back("detach"); };
   return version >= 1;
 }
 
-TEST_F(ShellTest, ExtensionsAreToldAboutRuntimeTurnover) {
+TEST_F(ShellTest, ExtensionsOutliveTheRuntime) {
   Settings settings;
   settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
   std::vector<std::string> log;
-  g_turnover_log = &log;
-  // bundle 顶层会调用 momo/window setTitle: 作为"这个运行时发出的消息"记进同一份日志。
+  g_extension_log = &log;
+  // bundle 顶层会调用 momo/window setTitle: 作为"运行时发出的消息"记进同一份日志。
   auto shell = Launch(settings, [&](Shell& shell) {
     AttachStartupView()(shell);
     RecordCalls("momo/window", &log, runners_.platform)(shell);
-    ASSERT_TRUE(shell.extensions().AddExtension("test.turnover", &InitTurnoverExtension).ok());
+    ASSERT_TRUE(shell.extensions().AddExtension("test.logging", &InitLoggingExtension).ok());
   });
   ASSERT_TRUE(shell.ok()) << shell.status();
-  const auto messages = [&] { return std::count(log.begin(), log.end(), "setTitle:Momo · hello_frame"); };
-  ASSERT_TRUE(PumpUntil([&] { return messages() == 1; }));
-  (*shell)->RequestHotRestart();
-  ASSERT_TRUE(PumpUntil([&] { return messages() == 2; }));
+  ASSERT_TRUE(PumpUntil([&] { return log.size() == 2; }));
   (*shell)->Shutdown();
-  EXPECT_EQ(log, (std::vector<std::string>{
-                     "attach", "starting#1/0", "setTitle:Momo · hello_frame",
-                     "stopped#1/1", "starting#2/1", "setTitle:Momo · hello_frame",
-                     "stopped#2/2", "detach"}));
-  g_turnover_log = nullptr;
+  EXPECT_EQ(log, (std::vector<std::string>{"attach", "setTitle:Momo · hello_frame", "detach"}));
+  g_extension_log = nullptr;
 }
 
 // Run 之前绑定的视图在 bundle 顶层就可见(尺寸已就位);启动窗口不需要引擎预置"隐式视图"。
@@ -454,49 +434,57 @@ TEST_F(ShellTest, ViewsAttachedBeforeRunAreVisibleToTopLevelCode) {
   std::filesystem::remove(bundle);
 }
 
-// 热重启后的 bundle 有错: 结果报告给回调, 引擎退回占位驱动, 全部视图继续出帧;修复后可再次重启。
-TEST_F(ShellTest, FailedHotRestartFallsBackToPlaceholderForAllViews) {
-  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_hot_restart.mjs";
-  std::ofstream(bundle) << "globalThis.ok = true;\n";
+// bundle 有错: 结果报告给回调;引擎没有运行时, 不出帧, 照常关闭。
+TEST_F(ShellTest, FailedBundleLeavesTheEngineWithoutARuntime) {
+  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_broken_bundle.mjs";
+  std::ofstream(bundle) << "throw new Error('broken on purpose');\n";
   Settings settings;
   settings.bundle_path = bundle;
   settings.refresh_rate = 240;
   auto shell = Shell::Create(runners_, settings);
   ASSERT_TRUE(shell.ok());
-  FakeSurface a_surface, b_surface;
-  RecordingShellDelegate a, b;
-  (*shell)->AttachView(0, &a, &a_surface);
+  FakeSurface surface;
+  RecordingShellDelegate delegate;
+  (*shell)->AttachView(0, &delegate, &surface);
   (*shell)->OnMetricsChanged(0, Metrics(100, 100));
-  (*shell)->AttachView(1, &b, &b_surface);
-  (*shell)->OnMetricsChanged(1, Metrics(100, 100));
-  ASSERT_TRUE(RunAndWait(**shell).ok());
-
-  std::ofstream(bundle) << "throw new Error('broken on purpose');\n";
-  std::optional<Status> restarted;
-  (*shell)->RequestHotRestart([&](Status status) { restarted = std::move(status); });
-  ASSERT_TRUE(PumpUntil([&] { return restarted.has_value(); }));
-  EXPECT_FALSE(restarted->ok());
-  EXPECT_NE(restarted->message().find("broken on purpose"), std::string::npos) << *restarted;
-  const int a_before = a_surface.presented.load(), b_before = b_surface.presented.load();
+  const Status status = RunAndWait(**shell);
+  EXPECT_FALSE(status.ok());
+  EXPECT_NE(status.message().find("broken on purpose"), std::string::npos) << status;
   (*shell)->OnMetricsChanged(0, Metrics(120, 100));
-  (*shell)->OnMetricsChanged(1, Metrics(120, 100));
-  EXPECT_TRUE(WaitFor([&] {
-    return a_surface.presented.load() > a_before && b_surface.presented.load() > b_before;
-  }));
-
-  std::ofstream(bundle) << "globalThis.ok = true;\n";
-  restarted.reset();
-  (*shell)->RequestHotRestart([&](Status status) { restarted = std::move(status); });
-  ASSERT_TRUE(PumpUntil([&] { return restarted.has_value(); }));
-  EXPECT_TRUE(restarted->ok()) << *restarted;
+  EXPECT_FALSE(WaitFor([&] { return surface.acquired.load() > 0; }, std::chrono::milliseconds(60)));
   (*shell)->Shutdown();
   std::filesystem::remove(bundle);
 }
 
-// 扩展加载错误是可查询的状态: JS 任何时候(包括热重启之后的新运行时)都能经 momo/extensions getErrors 问到。
+// 关闭不打断正常运行中的 JS: 关闭前已经发给 JS 的消息(退出通知等)照常送达、执行完。
+TEST_F(ShellTest, ShutdownLetsQueuedJsEventsRun) {
+  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_last_events.mjs";
+  std::ofstream(bundle) << R"JS(
+    import { send, setHandler } from 'momo:services';
+    setHandler('test/last', (bytes) => { send('test/report', bytes); return null; });
+    send('test/report', new Uint8Array([0]));
+  )JS";
+  Settings settings;
+  settings.bundle_path = bundle;
+  std::vector<uint8_t> reports;
+  auto shell = Launch(settings, [&](Shell& shell) {
+    shell.hub()->SetNativeHandler("test/report", runners_.platform, [&](MessageBytes message, MessageReply) {
+      reports.push_back(message.empty() ? 255 : message[0]);
+    });
+  });
+  ASSERT_TRUE(shell.ok()) << shell.status();
+  ASSERT_TRUE(PumpUntil([&] { return reports.size() == 1; }));
+  (*shell)->hub()->SendToJs("test/last", {7});
+  (*shell)->Shutdown();  // 紧跟在消息之后
+  Pump();                // JS 的回报已投递到本线程
+  EXPECT_EQ(reports, (std::vector<uint8_t>{0, 7})) << "the message sent right before Shutdown was handled by JS";
+  std::filesystem::remove(bundle);
+}
+
+// 扩展加载错误是可查询的状态: JS 任何时候都能经 momo/extensions getErrors 问到。
 bool InitRejectingExtension(uint32_t, MomoExtension*) { return false; }
 
-TEST_F(ShellTest, ExtensionLoadErrorsCanBeQueriedByEveryRuntime) {
+TEST_F(ShellTest, ExtensionLoadErrorsCanBeQueried) {
   const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_ext_errors.mjs";
   // 手写 StandardMethodCodec: 方法名(string)+ 参数(null);回复的信封原样转发给测试解码。
   std::ofstream(bundle) << R"JS(
@@ -526,11 +514,8 @@ TEST_F(ShellTest, ExtensionLoadErrorsCanBeQueriedByEveryRuntime) {
   });
   ASSERT_TRUE(shell.ok()) << shell.status();
   ASSERT_TRUE(PumpUntil([&] { return reports.size() == 1; }));
-  (*shell)->RequestHotRestart();
-  ASSERT_TRUE(PumpUntil([&] { return reports.size() == 2; }));
   ASSERT_EQ(reports[0].size(), 1u);
   EXPECT_EQ(reports[0][0].rfind("test.broken: ", 0), 0u) << reports[0][0];
-  EXPECT_EQ(reports[1], reports[0]) << "the next runtime gets the same answer";
   (*shell)->Shutdown();
   std::filesystem::remove(bundle);
 }

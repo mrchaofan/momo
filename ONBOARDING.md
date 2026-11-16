@@ -56,7 +56,7 @@ cd framework && npm install && npm test
 out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev
 ```
 
-会运行默认的 `hello_frame` 动画。再按 README 构建并运行 `examples/counter`，在终端里看日志。加上 `--experimental-hot-restart`（实验性，默认关闭）后，修改 bundle 窗口会自动 hot restart。
+会运行默认的 `hello_frame` 动画。再按 README 构建并运行 `examples/counter`，在终端里看日志。
 
 ## 2. 阅读路线
 
@@ -125,7 +125,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | Material 控件 | `framework/packages/momo/src/material/` | `material_test.ts` |
 | 扩展 C ABI | `extensions/sdk/include/momo/momo_extension.h`、`engine/extension/extension_host.cc`、`engine/ui/extension_bindings.cc` | **只能在结构体末尾追加字段**（见 §4）；新增能力时同步 C++ 封装 `momo_extension.hpp` |
 | 扩展 SDK 打包 | `extensions/CMakeLists.txt`（`momo_ext_sdk_package`、install 规则）、`extensions/sdk/lib/cmake/MomoExtSdk/` | CTest `ExtensionSdk.StandaloneCxxBuild` |
-| 打包工具 | `tools/momo-cli/momo.mjs` | README「打包发布」 |
+| 打包工具 | `framework/packages/cli/momo.mjs` | README「打包发布」 |
 
 ## 4. 必须遵守的规则
 
@@ -144,7 +144,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 - 默认 `std::unique_ptr`。有线程归属的对象用 `ObjectPtr<T>`（释放 = `DeleteLater`，在归属线程的安全点析构）。
 - **不要用 `shared_ptr` 表达跨线程生命周期。** 别的线程只拿 `WeakPtr<T>`，并通过 `PostToObject(weak, fn)` 回到归属线程判活后调用。
 - 已被 `ObjectPtr` 持有的对象，不要再手动调用 `DeleteLater()`。
-- 关闭顺序（`Application::Terminate`）是有意设计的：先让 raster 停用 surface，再销毁窗口，最后 join 线程。调整前先读 ARCHITECTURE §3.8，并跑 `ApplicationTest`。
+- 退出与销毁是分开的两步，都是有意设计的（同 Electron）：退出流程（`Quit` / `Exit`）只关闭窗口并让消息循环结束，不销毁任何东西；销毁（`Application::TearDown`）在循环结束之后逐级进行，JS 环境最先，然后是引擎其余部分、窗口，最后 join 线程。没有“直接终止”的入口：不强行终止 JS，也不强杀进程，JS 不返回时退出就等着它。调整前先读 ARCHITECTURE §3.8，并跑 `ApplicationTest`。
 
 ### 4.3 错误处理
 
@@ -211,7 +211,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 ### 5.4 改 embedder 的 macOS 行为
 
-1. 改 `embedder/macos/*.mm`。所有 AppKit 调用都在主线程；raster 线程只会调用 surface 的 `AcquireFrame` / `present` / `FallBackToSoftware`。
+1. 改 `embedder/macos/*.mm`。所有 AppKit 调用都在主线程；raster 线程只会调用 surface 的 `AcquireFrame` / `present` / `FallBackToSoftware`。两个平台共有的 surface 逻辑在 `embedder/common`：GPU → 软件回退是 `FallbackSurface`，呈现队列与拖拽缩放同步是 `PresentQueue`（每个窗口一个，四种 surface 都经它上报）；GPU 设备是应用级的（`MacMetalDevice` / `WinD3DDevice`），不要在 surface 里各建一份。
 2. `momo_embedder_macos_unittests` 覆盖窗口、键码映射、surface、vsync；需要显示器的用例在沙箱里会跳过，所以**这类改动必须在真机上手动验证一次**。
 
 ## 6. 测试：什么时候跑什么
@@ -243,7 +243,7 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 
 - **日志**：`MOMO_LOG(INFO|WARNING|ERROR|VERBOSE) << ...`，输出到 stderr。Debug 构建会打印 `VERBOSE`（生命周期切换、metrics、surface 绑定等），Release 只打印 `INFO` 及以上。从终端启动 `Momo.app/Contents/MacOS/Momo` 就能看到。
 - **线程断言**：Debug 构建中，`MOMO_DCHECK_ON_AFFINITY_THREAD()` / `MOMO_DCHECK_RUNS_ON(runner)` 失败会打印"Called off the object's affinity thread"。看到它，就说明某处跨线程直接调用了对象。
-- **JS**：`--dev` 启动后用 Chrome DevTools 连 `localhost:9229`；`--inspect-brk` 在执行 bundle 前停下。
+- **JS**：`--dev` 启动后用 Chrome DevTools 连 `localhost:9229`；`--inspect-brk` 在执行 bundle 前停下（等待期间窗口照常响应；此时退出应用，要等调试器连上并断开后才完成）。
 - **渲染问题**：`MOMO_SOFTWARE_RENDERING=1` 切到 CPU 光栅。如果问题消失，就是 Metal 路径的问题。
 - **不开窗口复现**：`momo_headless --bundle=x.js --width=800 --height=600 --screenshot=out.png`。bundle 通过 `momo/test` 通道调 `screenshot` / `done`，用法见 `embedder/headless/headless_main.cc` 开头的注释。
 - **ThreadSanitizer**：`cmake -B out/tsan -DMOMO_ENABLE_TSAN=ON`。注意 sanitizer 构建里没有 V8（见 §8），JS 相关路径用占位驱动代替。
@@ -255,7 +255,8 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 - **沙箱里会跳过 9 项测试**：Inspector 网络用例需要绑定端口；Metal 和 CVDisplayLink 用例需要 GPU 或显示器。只在沙箱里测通过，不代表这些路径没问题。
 - **`nextDrawable` 可能返回 nil**：此时直接丢帧，不能阻塞等待。
 - **AppKit 的键盘怪癖**：按住 Command 时 `-[NSApplication sendEvent:]` 会吞掉 `keyUp`。`MomoContentView` 用本地事件监视器补发（Flutter macOS 也是这么做），并在 `keyUp:` 里按事件对象去重。`flagsChanged` 事件不能访问 `characters`（会抛 ObjC 异常），修饰键只看 `modifierFlags`。
-- **hot restart 不保留 JS 状态**，并且会销毁整个 JS 运行时。所以绑定层中所有异步回调都要用 `WeakPtr<Impl>` 判活（见 `ui_impl.h`）。
+- **JS 运行时先于引擎的其余部分销毁**（`Shell::Shutdown` 的第一步），而 io 线程上的解码、通道回复可能在这之后才回来。所以绑定层中所有异步回调都要用 `WeakPtr<Impl>` 判活（见 `ui_impl.h`）。
+- **没有热重启**：一个进程里只有一个 JS 运行时，`Shell::Run` 启动它，`Shell::Shutdown` 销毁它。扩展里“属于 JS”的状态因此与扩展自身同寿，在 `on_detach` 清理。
 - **框架代码不直接用 DOM/Node API**：延迟任务用 `SchedulerBinding.instance.scheduleDelayed`（内部由 `setTimeout` 驱动、等待期间不出帧，测试里换成假时钟），不要直接调 `setTimeout`。
 
 ## 9. 文档维护约定
@@ -282,8 +283,8 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 按优先级排列，供接手后挑选：
 
 1. **CI**：目前只有发布流程（`.github/workflows/release.yml`，见 docs/09 §6），它不跑测试。建议先在 macOS arm64 上跑 `ctest` 和 `npm test`，再加 TSan 任务。
-2. **Windows**：平台层、D3D12 后端、`node_bindings_win.cc`、libnode 的 Windows 构建脚本都已写好，但从未在 Windows 上编译运行。第一步是在 Windows 上跑 `ctest`（含 `momo_embedder_windows_unittests`）并手动验证窗口、拖动、隐藏标题栏、多 DPI、IME；之后补平台视图（子 HWND + 覆盖层合成）。
-3. **真机验证**：沙箱跳过的 9 项测试，以及 Metal 回退、IME 候选窗位置、多显示器切换，需要在真机上定期手动验证。
+2. **Windows**：平台层、D3D12 后端（含应用级共享设备 `WinD3DDevice`、经 `FallbackSurface` / `PresentQueue` 的回退与缩放同步）、`node_bindings_win.cc`、libnode 的 Windows 构建脚本都已写好，但从未在 Windows 上编译运行。第一步是在 Windows 上跑 `ctest`（含 `momo_embedder_windows_unittests`）并手动验证窗口、拖动、隐藏标题栏、多 DPI、IME；之后补平台视图（子 HWND + 覆盖层合成）。
+3. **真机验证**：沙箱跳过的 9 项测试，以及 Metal 回退、拖拽缩放时内容与窗口同步（自动化测试只覆盖到 `PresentQueue` 与 surface 的呈现路径，真实的拖拽驱动不了）、IME 候选窗位置、多显示器切换，需要在真机上定期手动验证。
 4. **raster cache**：设计中有，但没有实现，每帧完整重放所有 DisplayList。
 5. **`PlatformIntegration::displays()` 返回的信息过多**：目前只用到主显示器的刷新率，`DisplayInfo` 的其余字段没有用处。可以收窄为 `primary_refresh_rate()`。这要同时改 Windows 实现和 mock，所以暂未处理。
 6. 多窗口、无障碍、崩溃上报、性能浮层：见 docs/11 M6。

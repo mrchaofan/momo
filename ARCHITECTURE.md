@@ -271,9 +271,8 @@ Application::Launch() {
 }
 
 Application::OnRuntimeStarted(status) {   // Shell::Run 的结果, platform 线程
-  if (!status.ok()) return Terminate(1);  // bundle 加载/执行失败: 有序退出
+  if (!status.ok()) return Exit(1);       // bundle 加载/执行失败: 走退出流程, 退出码 1
   TransitionTo(kRunning);
-  if (hot_restart) 每 500ms 轮询 bundle 修改时间 → WindowManager::ResetForHotRestart → shell_->RequestHotRestart();
 }
 
 Application::LaunchEngine() {
@@ -401,8 +400,9 @@ DisplayPending():                         // main
 
 **选择与回退**：
 
-1. `MacWindow` 构造时：环境变量 `MOMO_SOFTWARE_RENDERING=1` 或没有 Metal 设备 → 直接用软件 surface。
-2. raster 线程 `Rasterizer::Setup` 时：按 `surface.kind()` 创建后端；Metal 后端建不出来（例如 `GrDirectContext` 创建失败）→ 调 `surface.FallBackToSoftware()`：`kind()` 变为 `kSoftware`，主线程移除 `CAMetalLayer`，之后的 `AcquireFrame` 委托给内部的 `MacSoftwareSurface` → 重建 `SoftwareBackend`。
+1. 平台集成启动时创建一次应用级的 Metal 设备与命令队列（`MacMetalDevice`），交给之后的每个窗口；环境变量 `MOMO_SOFTWARE_RENDERING=1` 或没有 Metal 设备 → 不创建，窗口直接用软件 surface。有设备时窗口的 surface 是 `FallbackSurface`（`embedder/common`）：Metal surface + 软件 surface 的组合。
+2. raster 线程 `Rasterizer::Setup` 时：按 `surface.kind()` 创建后端；Metal 后端建不出来（例如 `GrDirectContext` 创建失败）→ 调 `surface.FallBackToSoftware()`：`FallbackSurface` 停用 Metal surface（`Deactivate`：主线程移除 `CAMetalLayer`），`kind()` 变为 `kSoftware`，之后的 `AcquireFrame` 转给软件 surface → Rasterizer 换用 `SoftwareBackend`。回退逻辑只在 `FallbackSurface` 里有一份，Windows 的 D3D surface 用的是同一个类（设备丢失经 `GpuSurface::device_lost()` 报告，同样由它回退）。
+3. 全部窗口的 surface 报告同一个设备与队列，Rasterizer 据此让它们共用一个后端：整个应用一份 `GrDirectContext`。
 
 ### 3.6 VSync：按需启停的 CVDisplayLink
 
@@ -470,40 +470,49 @@ void OnTick() {
 
 ```cpp
 // 伪代码（embedder/common/application.cc）
-void Application::Quit() {                               // 重复请求合并
+void Application::Quit() {                               // 重复请求合并;启动期间同样走这条流程
   if (terminating || quitting_) return;
   quitting_ = true;
   ask momo/app beforeQuit          → false: 中止(quitting_ = false)
   WindowManager::RequestCloseAll   → 逐个询问窗口 closeRequested, 允许的关闭;有窗口拒绝: 中止
   ask momo/app willQuit            → false: 中止(应用无窗口继续运行)
-  Terminate(exit_code_);
-  // 每次询问都有看门狗(close_timeout): JS 卡死不回复时有序关闭已不可能, 强制退出 _Exit(1)
+  Shutdown();
 }
 
-void Application::Exit(int code) { PostTask([] { Terminate(code); }); }   // 可能在通道处理器栈内: 延后到安全点
+void Application::Exit(int code) {                       // 不询问
+  exit_code_ = code;
+  window_manager_->CloseAll();                           // 窗口照常关闭(JS 收到 closed)
+  Shutdown();
+}
 
-void Application::Terminate(int code) {                  // 幂等
-  TransitionTo(kTerminating);                            // 会把 terminating 状态发给 JS
-  window_manager_->DetachEngine();      // 0) 每个窗口 Shell::DetachView：raster 同步 RemoveView，不再碰 surface
-                                        //    （VsyncSource 归 Shell，在 Shell::Shutdown 里 DeleteLater）
+void Application::Shutdown() {                           // 幂等;不销毁任何东西
+  TransitionTo(kTerminating);                            // 把 terminating 状态发给 JS(相当于 Electron 的 'quit')
+  platform_loop_->Terminate();                           // 当前任务返回后排空、析构 DeleteLater 对象 → [NSApp stop:]
+}
+
+int Application::Run() { platform_loop_->Run(); TearDown(); return exit_code_; }
+
+void Application::TearDown() {                           // 消息循环结束之后;幂等。JS 环境最先, 逐级销毁
+  shell_->Shutdown();                   // 1) ui 同步：销毁 JS 运行时, 再是 Engine 其余部分（Animator）
+                                        //    平台视图移出窗口并交给扩展释放 → 扩展 on_detach（platform）
+                                        // 2) raster 同步：销毁 Rasterizer（GPU 资源, 停用各窗口的 surface）
+  window_manager_->DetachEngine();      //    窗口放开引擎
   app_channel_.reset(); window_channel_.reset(); platform_channels_.reset();   // 移除宿主通道处理器
-  shell_->Shutdown();                   // 1) ui 同步：销毁 Engine（JS 运行时、Animator）
-                                        //    扩展 on_detach（platform）
-                                        // 2) raster 同步：销毁 Rasterizer（GPU 资源）
-  window_manager_->DestroyAll();        // 3) 销毁 MacWindow 与 RenderSurface
+  window_manager_->DestroyAll();        // 3) 销毁还开着的 MacWindow 与 RenderSurface（正常退出时窗口已在流程里关闭）
   thread_host_->Join();                 // 4) join ui → raster → io
-  platform_loop_->Terminate();          // 5) 当前任务返回后的安全点排空、析构 DeleteLater 对象 → [NSApp stop:]
 }
 ```
 
-`process.exit()` 不能直接 `exit()`：它在 ui 线程上，platform、raster 线程还在运行。`JsRuntimeImpl` 用 `node::SetProcessExitHandler` 接管：停止 JS（`node::Stop`），把退出码经 `Shell::Create` 的 `on_exit_requested` 投递到 platform 线程，由 `Application::Exit` 有序关闭（同 Electron 把 `process.exit` 接到 `app.exit`）。处理器不能同步等待 platform 线程——`Terminate` 会与 ui 线程同步汇合。
+没有“直接终止”的入口（对照 Electron：`Browser::Quit` / `Exit` → `Shutdown` 只结束消息循环，`PostMainMessageLoopRun` 里先销毁 Node 环境再销毁其余）。销毁要与 ui 线程汇合：JS 不返回（`--inspect-brk` 等待调试器连接、脚本死循环）时退出就等着它，不强行终止 JS（没有 `TerminateExecution`），也不设超时强杀进程。
+
+`process.exit()` 不能直接 `exit()`：它在 ui 线程上，platform、raster 线程还在运行。`JsRuntime` 用 `node::SetProcessExitHandler` 接管：停止 JS（`node::Stop`），把退出码经 `Shell::Create` 的 `on_exit_requested` 投递到 platform 线程，由 `Application::Exit` 有序关闭（同 Electron 把 `process.exit` 接到 `app.exit`）。处理器不能同步等待 platform 线程——销毁时 platform 线程要与 ui 线程同步汇合。
 
 顺序不能乱：窗口必须在 raster 停用 surface **之后**销毁；线程必须在 Shell 关闭**且**窗口销毁之后 join。所以 `ThreadHost` 由 `Application` 持有，而不是 Shell。
 
 ### 3.9 开发模式
 
-- bundle：`--bundle=<path>` 给了就用它，否则用应用包内的默认 bundle（`<resources>/bundle.js`）。不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。`--experimental-hot-restart`（实验性，默认关闭，隐含 `--dev`）：每 500ms 检查 bundle 修改时间，变化即 hot restart（ui 线程销毁 JS 运行时，再走与首次启动相同的链路重新执行 bundle；新 bundle 出错时退回占位驱动，修好后可再次重启）。不保留 JS 状态。
-- `--dev` 同时启用 Node 的 inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。
+- bundle：`--bundle=<path>` 给了就用它，否则用应用包内的默认 bundle（`<resources>/bundle.js`）。不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。换 bundle 就是重启进程：没有热重启。
+- `--dev` 同时启用 Node 的 inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。等待调试器期间主线程照常泵消息、窗口可以关闭；此时退出应用，销毁会等到调试器连上（bundle 随之执行）并断开之后才完成——不强行打断等待。
 - 非 `--dev` 时启用 V8 code cache。缓存目录由平台入口给出（`Application::Options::cache_dir`，每个应用一个：macOS `~/Library/Caches/<bundle identifier>`，Windows `%LOCALAPPDATA%\<exe 名>`），code cache 在它的 `v8/` 下；`embedder/common` 不碰平台 API。
 
 ### 3.10 宿主通道：窗口管理与平台服务
@@ -520,7 +529,7 @@ void Application::Terminate(int code) {                  // 幂等
 
 - **能力是显式的**。`PlatformWindow` 的可选方法默认返回 `Unimplemented`，窗口经 `capabilities()` 声明自己支持哪些（`WindowCapability`：隐藏标题栏、系统拖动、移动循环、指针捕获、置顶、定位、平台视图…），JS 可经 `getState` 查询；不支持的调用回复错误码 `unimplemented`，框架把它当空操作。不会再有"接口默认空实现、平台静默无效"。
 - **所有窗口对等**。启动时创建的窗口是隐式视图 0（bundle 执行前就存在，`runApp` 渲染到这里；`--no-startup-window` 时没有），除此之外与 JS 打开的窗口没有区别：任何窗口的关闭按钮都先询问 JS（`closeRequested`，框架的 `Widget` `'close'` 事件），允许后只关这个窗口。**最后一个窗口关闭不退出应用**，只发 `momo/app windowAllClosed`。退出应用（Cmd+Q）是另一件事，见 §3.8。
-- **窗口注册表归 `WindowManager`**（`embedder/common/window_manager.h`）：创建、关闭询问、`RequestCloseAll`（退出流程用）、焦点与输入法路由、热重启重置。它不决定应用是否退出，只经 `Observer::OnAllWindowsClosed` 通知 `Application`。
+- **窗口注册表归 `WindowManager`**（`embedder/common/window_manager.h`）：创建、关闭询问、`RequestCloseAll`（退出流程用）、焦点与输入法路由。它不决定应用是否退出，只经 `Observer::OnAllWindowsClosed` 通知 `Application`。
 - **标题栏**。应用只声明自己的标题栏高度（`setTitleBar {hidden, height}`），宿主让系统控制按钮在这个高度内垂直居中，并报告它们在内容区里占用的矩形（`controlsChanged`；框架的 `MediaQuery.windowControls`）。平台差异（红绿灯在左、Windows 按钮在右）都在宿主内部；自绘标题栏用 `MediaQueryData.windowControlsPadding` 得到左右留白。Windows 隐藏标题栏后系统不再画控制按钮，由宿主自己绘制（`WinCaptionButtons`），对应用的表现与红绿灯相同。
 - **拖动窗口**。宿主与框架都不保存拖动几何，也不提供拖动区域：哪里可拖由应用决定（例如浏览器示例的 `WindowDragArea`，按下时经命中测试与手势竞技场决定）。应用以那次按下的序列请求 `startDrag {view, sequenceId}`，宿主校验它是本窗口进行中的 momo 序列后，以序列的按下开始系统拖动（macOS `performWindowDragWithEvent:`，双击按系统设置缩放/最小化）；系统拖动结束时序列随之结束（momo 收到抬起）。
 - **移动循环**。窗口跟随指针（拖动标签成窗）由宿主完成：`startMoveLoop {grab}` 之后，宿主在每个鼠标拖动事件上同步移动窗口（内容区左上角 = 指针屏幕位置 − grab），直到松开，不经 ui 线程往返。
@@ -565,7 +574,7 @@ void Application::Terminate(int code) {                  // 幂等
 | `platform/` | 平台契约（纯接口 + POD），由 embedder 实现：engine 对宿主的全部要求 | `render_surface.h`、`vsync_source.h`、`input_types.h`、`viewport_metrics.h`、`view.h`、`platform_view.h` |
 | `common/` | 无 V8/Skia 的公共设施 | `settings.h`、`task_runners.h`、`message_channel_hub.h`、`standard_codec.h` |
 | `shell/` | 协调中枢：Shell、Engine、Animator、VsyncWaiter、Rasterizer、RenderBackend、ThreadHost | `shell.cc`、`engine.cc`、`animator.cc`、`rasterizer.cc` |
-| `runtime/` | Node.js 环境（isolate、uv 循环接入 ui 线程）、ESM 入口与 `momo:*` 模块、宿主类绑定 | `js_runtime_impl.cc`、`node_bindings.cc`、`node_bootstrap.cc`、`class_builder.h`、`wrappable.h` |
+| `runtime/` | Node.js 环境（isolate、uv 循环接入 ui 线程）、ESM 入口与 `momo:*` 模块、宿主类绑定 | `js_runtime.cc`、`node_bindings.cc`、`node_bootstrap.cc`、`class_builder.h`、`wrappable.h` |
 | `ui/` | `momo:ui` / `momo:services` / `ext:*` 绑定；`AppDriver` | `platform_dispatcher_binding.cc`、`painting_bindings.cc`、`scene_bindings.cc`、`text_bindings.cc`、`image_bindings.cc`、`js_app_driver.cc` |
 | `graphics/` | DisplayList、LayerTree、软件光栅、Metal 光栅（Skia） | `display_list.h`、`layer.h`、`software_rasterizer.cc`、`gpu/metal_rasterizer.mm` |
 | `text/` | 字体集合（系统 + 内嵌 + 回退）、段落排版（SkParagraph） | `font_collection.cc`、`paragraph.cc` |
@@ -594,24 +603,21 @@ StatusOr<unique_ptr<Shell>> Shell::Create(runners, settings, on_exit_requested) 
   return shell;
 }
 
-// 首次启动与 hot restart 共用的一条链路。runtime_generation_ 是"第几代运行时"唯一的计数。
-void Shell::Run(done)               { StartRuntime(Launch, done); }
-void Shell::RequestHotRestart(done) { StopRuntime(HotRestart); StartRuntime(HotRestart, done); }
-
-void Shell::StartRuntime(reason, done) {
-  generation = ++runtime_generation_;
-  extensions_->NotifyLifecycle(RuntimeStarting, reason, generation);
-  runners.ui->PostTask([=] {
-    // hub 换代 → 创建 V8、安装绑定、执行 bundle → 把已绑定视图的尺寸/焦点/可见性交给它；失败退回占位驱动
-    status = engine_->StartRuntime(generation);
+// JS 运行时在进程里只有一个: Run 启动(只能一次), Shutdown 销毁。
+void Shell::Run(done) {
+  PostToEngine([=](Engine& engine) {
+    // 创建 V8、安装绑定、执行 bundle → 把已绑定视图的尺寸/焦点/可见性交给它；失败则没有运行时(不出帧)
+    status = engine.StartRuntime();
     PostToObject(weak_shell, [=] { done(status); });     // 结果回到 platform 线程
   });
 }
 
-void Shell::StopRuntime(reason) {   // 同步；Shutdown 的第一步也是它
-  PostTaskAndWait(ui, [&] { engine_->StopRuntime(); });  // 销毁运行时, hub 代数归零(在途消息作废)
+void Shell::Shutdown() {             // 同步
+  PostTaskAndWait(ui, [&] { engine_.reset(); });         // JS 环境最先: 销毁 JS 运行时, 再是 Engine 其余部分。
+                                                         // 排在此前投递给 JS 的事件之后;JS 不返回就等着, 不强行终止
   DisposeAllPlatformViews();                             // JS 已不在: 移出窗口, 交给扩展释放
-  extensions_->NotifyLifecycle(RuntimeStopped, reason, runtime_generation_);
+  extensions_->DetachAll();                              // on_detach
+  PostTaskAndWait(raster, [&] { rasterizer_.reset(); }); // 释放 GPU 资源
 }
 
 void Shell::SetVsyncSource(ObjectPtr<VsyncSource> source) {         // 帧时钟是应用级的: 一个来源, 与视图无关
@@ -703,9 +709,10 @@ void Animator::Render(unique_ptr<LayerTree> tree) {
 // 伪代码（engine/shell/rasterizer.cc）—— raster 线程
 void Rasterizer::Setup(RenderSurface* s) {
   surface_ = s;
-  backend_ = CreateRenderBackend(*s);                       // 按 s->kind()：Metal / Software / Null
+  backend_ = AcquireBackend(*s);                            // 按 s->kind() 与 s->gpu_context()：同一设备上的视图
+                                                            // 共用一个后端(一份 GrDirectContext)，没有才新建
   if (!backend_ && s->kind() is GPU && s->FallBackToSoftware())
-    backend_ = CreateRenderBackend(*s);                     // GPU 不可用：降回软件
+    backend_ = AcquireBackend(*s);                          // GPU 不可用：降回软件
   DrawLastLayerTree();                                      // 绑定前就收到的最新一帧：立即补画，替换闪屏
 }
 
@@ -725,7 +732,7 @@ void Rasterizer::DrawToSurface(LayerTree& tree) {
 
 | 后端 | 条件 | 实现 |
 |---|---|---|
-| `MetalBackend` | `SurfaceKind::kMetal` | `graphics::MetalRasterizer`：持有 Skia Ganesh `GrDirectContext`（用 surface 提供的 `MTLDevice` + `MTLCommandQueue` 创建） |
+| `MetalBackend` | `SurfaceKind::kMetal` | `graphics::MetalRasterizer`：持有 Skia Ganesh `GrDirectContext`（建在 surface 报告的 `MTLDevice` + `MTLCommandQueue` 上；设备是应用级的，所以全部窗口共用这一个后端） |
 | `SoftwareBackend` | `SurfaceKind::kSoftware` | `graphics::RasterizeLayerTree` 直接画进 surface 给出的 BGRA 预乘缓冲 |
 | `NullBackend` | `SurfaceKind::kNone` | 只走 present（测试） |
 
@@ -765,10 +772,10 @@ raster cache（缓存不变子树为纹理）目前**没有实现**，每帧都�
 
 ### 4.6 runtime：V8 与 Node.js 集成
 
-- 每个 Shell 一个 **Node.js 环境**（libnode：libuv 循环 + `v8::Isolate` + 主 `Context` + `node::Environment`），只在 ui 线程使用。公共头 `js_runtime.h` 不含任何 V8/Node 类型；细节都在 `JsRuntimeImpl`。JS 可用 `node:*`、npm 包和 Node 的定时器/IO。
+- 每个 Shell 一个 **Node.js 环境**（libnode：libuv 循环 + `v8::Isolate` + 主 `Context` + `node::Environment`），只在 ui 线程使用。`JsRuntime`（`js_runtime.h`）就是这个环境；它的头文件含 V8 类型，只被 runtime 与 ui 的实现文件包含，引擎的其余部分经不含 V8 的 `ui::AppDriver` 驱动 JS。一个进程里只有一个运行时，没有热重启。JS 可用 `node:*`、npm 包和 Node 的定时器/IO。
 - **libuv 跑在 ui 线程**（`NodeBindings`，对照 Electron）：poll 线程只等 `uv_backend_fd`，有事件就向 ui 投递 `UvRunOnce`（`uv_run(NOWAIT)`），两者以 `uv_sem` 交替；uv 回调都在 ui 线程执行。
 - **ESM 模块**：`RunMainModule(bundle)` 经 Node 的 ESM 加载器导入 bundle，并以 `uv_run` 泵送直到求值完成。`momo:*`、`ext:*` 由 `RegisterNativeModule(specifier, factory)` 注册为 Node 的 linked binding，bootstrap 的模块钩子把它们映射成 ESM 模块，被 import 时才调用 factory 填充导出。
-- **从 C++ 进入 JS**（帧回调、事件、消息回复）经 `JsRuntimeImpl::Call`：与 `node::MakeCallback` 相同，在 `node::CallbackScope` 里调用，最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask——每次进入 JS 都是一个完整的宏任务。入口都是 ui 线程上的任务，与 libuv 回调同属一个循环，顺序就是到达顺序，不另经 uv 排队。绑定层随后调用 `DrainMicrotasks()` 唤醒 poll 线程按新的定时器/IO 状态等待。
+- **从 C++ 进入 JS**（帧回调、事件、消息回复）经 `JsRuntime::Call`：与 `node::MakeCallback` 相同，在 `node::CallbackScope` 里调用，最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask——每次进入 JS 都是一个完整的宏任务。入口都是 ui 线程上的任务，与 libuv 回调同属一个循环，顺序就是到达顺序，不另经 uv 排队。绑定层随后调用 `DrainMicrotasks()` 唤醒 poll 线程按新的定时器/IO 状态等待。
 - **宿主类绑定**：C++ 对象继承 `Wrappable`，用 `ClassBuilder<T>` 暴露成 JS 类。`this` 的类型校验不依赖 RTTI；GC 弱回调释放 C++ 对象，运行时销毁时兜底释放剩余的。
 
 ```cpp
@@ -863,8 +870,8 @@ Shell::Create → ExtensionHost 读 <Resources>/extensions/extensions.manifest
        register_module("ext:x", setup)   → JS 运行时创建时在 ui 线程注册为 Node 的 linked binding
        channel_set_handler("x/y", runner, fn)
   … 运行期：post_task(platform/ui/io/worker_pool)、promise_resolve、texture_update_pixels、get_window_handle …
-  → Shell::Run / hot restart / Shutdown：JS 运行时的更替经生命周期事件告知扩展（RuntimeStarting / RuntimeStopped）
-  → Shell::Shutdown：JS 运行时销毁后 on_detach，排空扩展的 worker，拒绝之后的一切调用（动态库不卸载）
+  → Shell::Run：创建 JS 运行时（进程里只有这一个，晚于 on_attach）
+  → Shell::Shutdown：JS 运行时销毁、它创建的平台视图全部 dispose 之后 on_detach，排空扩展的 worker，拒绝之后的一切调用（动态库不卸载）
 ```
 
 单个扩展加载失败只禁用它自己，错误记在宿主里，JS 经 `momo/extensions` 通道的 `getErrors` 查询。`MomoHostApi` 函数表在 `on_attach` 之前一次填好、之后不变（JS 相关的部分由 ui 模块在链接期提供）。纹理注入（`TextureLayer`）是扩展"借助引擎绘制"的方式：扩展在自己的线程生成像素，引擎合成时取最新帧；v1 只支持 CPU 像素帧。
@@ -1114,7 +1121,7 @@ handlePointerPacket(data: Float64Array, count, dpr) {
 | `ext_hello` / `ext_texture` | 示例扩展的动态库（纯 C / C++ 封装各一个） |
 | `*_unittests` | `momo_base_unittests`、`momo_engine_unittests`、`momo_embedder_unittests`（mock 平台）、`momo_embedder_macos_unittests` 等，经 CTest 运行 |
 
-`tools/momo-cli/momo.mjs build <app>` 把一个应用打包成可分发的 `.app`：esbuild 打 bundle（`momo:*` / `ext:*` 保持外部导入）→ 收集依赖中声明的扩展、生成 `extensions.manifest`、拷贝原生库 → 复制预编译的 `Momo.app` 为 `<Name>.app` 并放入资源（`--dmg` 时再产出 DMG）。
+`framework/packages/cli/momo.mjs build <app>` 把一个应用打包成可分发的 `.app`：esbuild 打 bundle（`momo:*` / `ext:*` 保持外部导入）→ 收集依赖中声明的扩展、生成 `extensions.manifest`、拷贝原生库 → 复制预编译的 `Momo.app` 为 `<Name>.app` 并放入资源（`--dmg` 时再产出 DMG）。
 
 测试分层：
 
@@ -1132,5 +1139,5 @@ handlePointerPacket(data: Float64Array, count, dpr) {
 - **新增一个窗口能力**（例如全屏）：`PlatformWindow` 加可选方法与 `WindowCapability` 位 → 平台实现 → `window_channel.cc` 里 `RegisterWindowMethod` 一行 → 框架 `Widget` 加方法（宿主推送的变化加事件）。不改 engine。
 - **新增一个应用能力**（例如 Dock 角标）：`PlatformApp` 加方法与 `AppCapability` 位 → 平台实现 → `app_channel.cc` 里 `Register` 一行 → 框架 `app` 加方法。不改 engine。
 - **新增一个 `momo:ui` API**：在 `engine/ui/*_bindings.cc` 用 `ClassBuilder` 绑定 → 同步更新 `momo-ui.d.ts` 与框架测试的 mock（`framework/test/mock/`）。
-- **写一个三方扩展**：`node tools/momo-cli/momo.mjs ext create <dir> --id=<acme.thing>` 生成 C ABI 模板与 TS 门面，参考 `extensions/examples/`。
+- **写一个三方扩展**：`node framework/packages/cli/momo.mjs ext create <dir> --id=<acme.thing>` 生成 C ABI 模板与 TS 门面，参考 `extensions/examples/`。
 - **移植新平台**：在 `embedder/<os>/` 实现 embedder 的抽象 `PlatformIntegration`、`PlatformWindow`（可选能力按平台逐项实现并在 `capabilities()` 声明）、`NativeLoop`、`PlatformServices`、`TextInputConnection`，以及 engine 契约 `RenderSurface`、`VsyncSource`；写一个只做翻译的入口；如需 GPU，在 `engine/shell/render_backend.cc` 增加对应后端。`embedder/common` 和整个 engine 不需要改动。

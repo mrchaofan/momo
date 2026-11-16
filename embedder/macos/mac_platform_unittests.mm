@@ -18,6 +18,7 @@
 #include "embedder/macos/mac_text_input.h"
 #include "embedder/macos/mac_vsync_displaylink.h"
 #include "embedder/macos/mac_platform_views.h"
+#include "embedder/macos/mac_surface_metal.h"
 #include "embedder/macos/mac_window.h"
 #include "gtest/gtest.h"
 
@@ -139,6 +140,11 @@ class MacPointerSequenceTest : public ::testing::Test {
     [NSApplication sharedApplication];
     mouse_ = std::make_unique<MacMouseInput>();
   }
+  // 有 Metal 设备就用(同平台集成);没有则窗口用软件 surface。
+  static std::shared_ptr<const MacMetalDevice> MetalDevice() {
+    auto device = MacMetalDevice::Create();
+    return device.ok() ? *device : nullptr;
+  }
   static NSWindow* NSWindowOf(const MacWindow& window) {
     return ((__bridge NSView*)window.native_handle()).window;
   }
@@ -146,7 +152,7 @@ class MacPointerSequenceTest : public ::testing::Test {
   std::unique_ptr<MacWindow> Window(PointerRecordingDelegate* delegate) {
     momo::embedder::WindowOptions spec;
     spec.size = {200, 100};
-    auto window = std::make_unique<MacWindow>(spec, delegate, *mouse_);
+    auto window = std::make_unique<MacWindow>(spec, delegate, *mouse_, MetalDevice());
     static int count = 0;
     const NSRect screen = NSScreen.mainScreen.visibleFrame;
     [NSWindowOf(*window) setFrameTopLeftPoint:NSMakePoint(NSMinX(screen) + 250 * (count++ % 4), NSMaxY(screen))];
@@ -193,7 +199,7 @@ TEST_F(MacPointerSequenceTest, WindowStateChangesAreReported) {
   PointerRecordingDelegate delegate;
   momo::embedder::WindowOptions spec;
   spec.size = {200, 100};
-  MacWindow window(spec, &delegate, *mouse_);
+  MacWindow window(spec, &delegate, *mouse_, MetalDevice());
   EXPECT_FALSE(window.state().visible) << "not shown yet";
   window.Show();
   ASSERT_FALSE(delegate.states.empty());

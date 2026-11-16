@@ -20,32 +20,22 @@ class SoftwareBackend final : public RenderBackend {
  public:
   platform::SurfaceKind kind() const override { return platform::SurfaceKind::kSoftware; }
   Status Draw(graphics::LayerTree& layer_tree, const platform::SurfaceFrame& frame) override {
-    if (frame.kind != platform::SurfaceKind::kSoftware) {
-      return FailedPreconditionError("SoftwareBackend: frame is not a software frame");
-    }
-    const platform::SoftwarePixels& px = frame.software;
-    return graphics::RasterizeLayerTree(layer_tree, {px.pixels, px.row_bytes, px.width, px.height});
+    MOMO_ASSIGN_OR_RETURN(graphics::PixelBuffer pixels, Pixels(frame));
+    return graphics::RasterizeLayerTree(layer_tree, pixels);
   }
-  Status DrawComposition(const graphics::Composition& composition,
-                         const platform::CompositionFrame& frame) override {
-    MOMO_RETURN_IF_ERROR(DrawSlice(composition, 0, frame.base, {0, 0}));
-    for (size_t i = 0; i < frame.overlays.size(); ++i) {
-      const std::optional<Rect> bounds = composition.slice_bounds(i + 1);
-      if (frame.overlays[i] && bounds) {
-        MOMO_RETURN_IF_ERROR(DrawSlice(composition, i + 1, *frame.overlays[i], {bounds->x, bounds->y}));
-      }
-    }
-    return Status::Ok();
+  Status DrawSlice(const graphics::Composition& composition, size_t slice,
+                   const platform::SurfaceFrame& frame, Point origin) override {
+    MOMO_ASSIGN_OR_RETURN(graphics::PixelBuffer pixels, Pixels(frame));
+    return composition.RasterizeSlice(slice, pixels, origin);
   }
 
  private:
-  static Status DrawSlice(const graphics::Composition& composition, size_t slice,
-                          const platform::SurfaceFrame& frame, Point origin) {
+  static StatusOr<graphics::PixelBuffer> Pixels(const platform::SurfaceFrame& frame) {
     if (frame.kind != platform::SurfaceKind::kSoftware) {
       return FailedPreconditionError("SoftwareBackend: frame is not a software frame");
     }
     const platform::SoftwarePixels& px = frame.software;
-    return composition.RasterizeSlice(slice, {px.pixels, px.row_bytes, px.width, px.height}, origin);
+    return graphics::PixelBuffer{px.pixels, px.row_bytes, px.width, px.height};
   }
 };
 
@@ -54,10 +44,18 @@ class NullBackend final : public RenderBackend {
  public:
   platform::SurfaceKind kind() const override { return platform::SurfaceKind::kNone; }
   Status Draw(graphics::LayerTree&, const platform::SurfaceFrame&) override { return Status::Ok(); }
-  Status DrawComposition(const graphics::Composition&, const platform::CompositionFrame&) override {
+  Status DrawSlice(const graphics::Composition&, size_t, const platform::SurfaceFrame&, Point) override {
     return Status::Ok();
   }
 };
+
+// GPU 帧的绘制目标(Metal: id<CAMetalDrawable>;Direct3D: 后台缓冲 ID3D12Resource*)。
+[[maybe_unused]] StatusOr<void*> GpuTarget(const platform::SurfaceFrame& frame, platform::SurfaceKind kind) {
+  if (frame.kind != kind || frame.gpu_target == nullptr) {
+    return FailedPreconditionError("GPU backend: the frame has no render target of this backend's kind");
+  }
+  return frame.gpu_target;
+}
 
 #if defined(__APPLE__)
 // Ganesh Metal: 每帧把 CAMetalDrawable 包装为 render target(graphics::MetalRasterizer)。
@@ -68,29 +66,15 @@ class MetalBackend final : public RenderBackend {
 
   platform::SurfaceKind kind() const override { return platform::SurfaceKind::kMetal; }
   Status Draw(graphics::LayerTree& layer_tree, const platform::SurfaceFrame& frame) override {
-    if (frame.kind != platform::SurfaceKind::kMetal || frame.gpu_target == nullptr) {
-      return FailedPreconditionError("MetalBackend: frame has no Metal drawable");
-    }
-    return rasterizer_->Draw(layer_tree, frame.gpu_target, frame.size);
+    MOMO_ASSIGN_OR_RETURN(void* drawable, GpuTarget(frame, kind()));
+    return rasterizer_->Draw(layer_tree, drawable, frame.size);
   }
-  Status DrawComposition(const graphics::Composition& composition,
-                         const platform::CompositionFrame& frame) override {
-    if (frame.base.kind != platform::SurfaceKind::kMetal || frame.base.gpu_target == nullptr) {
-      return FailedPreconditionError("MetalBackend: composition frame has no Metal drawable");
-    }
-    MOMO_RETURN_IF_ERROR(rasterizer_->DrawSlice(composition, 0, frame.base.gpu_target, {0, 0}));
-    for (size_t i = 0; i < frame.overlays.size(); ++i) {
-      const std::optional<Rect> bounds = composition.slice_bounds(i + 1);
-      if (!frame.overlays[i] || !bounds || frame.overlays[i]->gpu_target == nullptr) {
-        continue;
-      }
-      MOMO_RETURN_IF_ERROR(rasterizer_->DrawSlice(composition, i + 1, frame.overlays[i]->gpu_target,
-                                                  {bounds->x, bounds->y}));
-    }
-    // 呈现在 platform 线程进行(presentsWithTransaction): 先确保命令已被调度。
-    rasterizer_->WaitUntilScheduled();
-    return Status::Ok();
+  Status DrawSlice(const graphics::Composition& composition, size_t slice,
+                   const platform::SurfaceFrame& frame, Point origin) override {
+    MOMO_ASSIGN_OR_RETURN(void* drawable, GpuTarget(frame, kind()));
+    return rasterizer_->DrawSlice(composition, slice, drawable, origin);
   }
+  // 呈现在 platform 线程进行(presentsWithTransaction): 先确保命令已被调度。
   void PrepareForExternalPresent() override { rasterizer_->WaitUntilScheduled(); }
 
  private:
@@ -108,26 +92,13 @@ class Direct3DBackend final : public RenderBackend {
 
   platform::SurfaceKind kind() const override { return platform::SurfaceKind::kDirect3D; }
   Status Draw(graphics::LayerTree& layer_tree, const platform::SurfaceFrame& frame) override {
-    if (frame.kind != platform::SurfaceKind::kDirect3D || frame.gpu_target == nullptr) {
-      return FailedPreconditionError("Direct3DBackend: frame has no back buffer");
-    }
-    return rasterizer_->Draw(layer_tree, frame.gpu_target, frame.size);
+    MOMO_ASSIGN_OR_RETURN(void* back_buffer, GpuTarget(frame, kind()));
+    return rasterizer_->Draw(layer_tree, back_buffer, frame.size);
   }
-  Status DrawComposition(const graphics::Composition& composition,
-                         const platform::CompositionFrame& frame) override {
-    if (frame.base.kind != platform::SurfaceKind::kDirect3D || frame.base.gpu_target == nullptr) {
-      return FailedPreconditionError("Direct3DBackend: composition frame has no back buffer");
-    }
-    MOMO_RETURN_IF_ERROR(rasterizer_->DrawSlice(composition, 0, frame.base.gpu_target, {0, 0}));
-    for (size_t i = 0; i < frame.overlays.size(); ++i) {
-      const std::optional<Rect> bounds = composition.slice_bounds(i + 1);
-      if (!frame.overlays[i] || !bounds || frame.overlays[i]->gpu_target == nullptr) {
-        continue;
-      }
-      MOMO_RETURN_IF_ERROR(rasterizer_->DrawSlice(composition, i + 1, frame.overlays[i]->gpu_target,
-                                                  {bounds->x, bounds->y}));
-    }
-    return Status::Ok();
+  Status DrawSlice(const graphics::Composition& composition, size_t slice,
+                   const platform::SurfaceFrame& frame, Point origin) override {
+    MOMO_ASSIGN_OR_RETURN(void* back_buffer, GpuTarget(frame, kind()));
+    return rasterizer_->DrawSlice(composition, slice, back_buffer, origin);
   }
 
  private:
@@ -136,6 +107,19 @@ class Direct3DBackend final : public RenderBackend {
 #endif
 
 }  // namespace
+
+Status RenderBackend::DrawComposition(const graphics::Composition& composition,
+                                      const platform::CompositionFrame& frame) {
+  MOMO_RETURN_IF_ERROR(DrawSlice(composition, 0, frame.base, {0, 0}));
+  for (size_t i = 0; i < frame.overlays.size(); ++i) {
+    const std::optional<Rect> bounds = composition.slice_bounds(i + 1);
+    if (frame.overlays[i] && bounds) {
+      MOMO_RETURN_IF_ERROR(DrawSlice(composition, i + 1, *frame.overlays[i], {bounds->x, bounds->y}));
+    }
+  }
+  PrepareForExternalPresent();
+  return Status::Ok();
+}
 
 StatusOr<std::unique_ptr<RenderBackend>> CreateRenderBackend(platform::RenderSurface& surface) {
   switch (surface.kind()) {

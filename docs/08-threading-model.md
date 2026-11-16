@@ -73,7 +73,7 @@ class TaskRunner {
 | DisplayList/LayerTree/SkImage(已解码) | 不可变,shared_ptr | ui 产生 → raster 消费;最后引用可能在任一线程,GPU-backed 资源析构内部转投 raster |
 | MessageChannelHub | 任意线程调用 | 内部加锁;JS handler 回调固定 ui 线程 |
 
-同步原语:框架内部避免锁共享状态,优先"消息传递 + 不可变数据";必要处使用 `std::mutex` + 小临界区。提供 `WaitableEvent` 仅用于关闭与拆除时的有限几次汇合(`Shell::Shutdown`、`DetachView`、hot restart 停止旧运行时;`Shell::Create` 与 `Shell::Run` 都不等待其他线程, platform 线程不会等 bundle 执行),帧路径上**零阻塞等待**(唯一例外:Windows resize 同步,docs/05 §5)。
+同步原语:框架内部避免锁共享状态,优先"消息传递 + 不可变数据";必要处使用 `std::mutex` + 小临界区。提供 `WaitableEvent` 仅用于关闭与拆除时的有限几次汇合(`Shell::Shutdown`、`DetachView`;`Shell::Create` 与 `Shell::Run` 都不等待其他线程, platform 线程不会等 bundle 执行),帧路径上**零阻塞等待**(唯一例外:拖拽缩放时 platform 线程有上限地等一帧新尺寸的帧, `PresentQueue::WaitForFrame`, docs/05 §5)。`Shutdown` 与 ui 线程的汇合没有超时、也不强行终止 JS: ui 线程卡在 JS 里(等待调试器连接、脚本死循环)时退出就等着它。
 
 ## 4. 帧管线背压
 

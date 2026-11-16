@@ -1,5 +1,6 @@
 #include "engine/shell/rasterizer.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "base/logging.h"
@@ -58,14 +59,9 @@ platform::RenderSurface* Rasterizer::surface(platform::ViewId view_id) const {
   return view != nullptr ? view->surface : nullptr;
 }
 
-bool Rasterizer::has_backend(platform::ViewId view_id) const {
+const RenderBackend* Rasterizer::backend(platform::ViewId view_id) const {
   const ViewState* view = Find(view_id);
-  return view != nullptr && view->backend != nullptr;
-}
-
-platform::SurfaceKind Rasterizer::backend_kind(platform::ViewId view_id) const {
-  const ViewState* view = Find(view_id);
-  return view != nullptr && view->backend ? view->backend->kind() : platform::SurfaceKind::kNone;
+  return view != nullptr ? view->backend.get() : nullptr;
 }
 
 const graphics::LayerTree* Rasterizer::last_layer_tree(platform::ViewId view_id) const {
@@ -85,22 +81,36 @@ void Rasterizer::Setup(platform::ViewId view_id, platform::RenderSurface* surfac
   view.logged_no_platform_views = false;
   view.composing = false;
   view.first_frame_reported = false;
-  CreateBackend(view);
+  SelectBackend(view);
   MOMO_LOG(VERBOSE) << "Rasterizer surface attached (view " << view_id << ").";
   // 绑定前已收到的最新一帧立即补画, 尽早替换闪屏。
   DrawLastLayerTree(view_id);
 }
 
-void Rasterizer::CreateBackend(ViewState& view) {
+StatusOr<std::shared_ptr<RenderBackend>> Rasterizer::AcquireBackend(platform::RenderSurface& surface) {
+  std::erase_if(backends_, [](const auto& entry) { return entry.second.expired(); });
+  const platform::GpuContextInfo gpu = surface.gpu_context();
+  const BackendKey key{surface.kind(), gpu.device, gpu.queue};
+  if (auto it = backends_.find(key); it != backends_.end()) {
+    return it->second.lock();
+  }
+  MOMO_ASSIGN_OR_RETURN(std::shared_ptr<RenderBackend> backend, CreateRenderBackend(surface));
+  backends_[key] = backend;
+  MOMO_LOG(INFO) << "Rasterizer: created the " << BackendName(backend->kind()) << " backend.";
+  return backend;
+}
+
+void Rasterizer::SelectBackend(ViewState& view) {
   platform::RenderSurface& surface = *view.surface;
-  StatusOr<std::unique_ptr<RenderBackend>> backend = CreateRenderBackend(surface);
+  view.backend.reset();  // 先放手: 若它是最后一个使用者, 旧后端的 GPU 资源在这里(raster 线程)释放
+  StatusOr<std::shared_ptr<RenderBackend>> backend = AcquireBackend(surface);
   if (!backend.ok() && surface.kind() != platform::SurfaceKind::kSoftware &&
       surface.kind() != platform::SurfaceKind::kNone) {
     // GPU 后端不可用(无设备、驱动/上下文创建失败): 逐级降回软件(docs/05 §4)。
     MOMO_LOG(WARNING) << "GPU render backend unavailable (" << backend.status()
                       << "); falling back to software rendering.";
     if (surface.FallBackToSoftware()) {
-      backend = CreateRenderBackend(surface);
+      backend = AcquireBackend(surface);
     } else {
       MOMO_LOG(ERROR) << "Rasterizer: surface does not support software fallback.";
     }
@@ -110,7 +120,6 @@ void Rasterizer::CreateBackend(ViewState& view) {
     return;
   }
   view.backend = std::move(backend).value();
-  MOMO_LOG(INFO) << "Rasterizer: using " << BackendName(view.backend->kind()) << " backend.";
 }
 
 void Rasterizer::Teardown(platform::ViewId view_id) {
@@ -119,7 +128,7 @@ void Rasterizer::Teardown(platform::ViewId view_id) {
   if (it == views_.end() || it->second.surface == nullptr) {
     return;
   }
-  it->second.backend.reset();  // 在 raster 线程释放 GPU 资源(GrDirectContext 等, docs/01 §4)
+  it->second.backend.reset();  // 最后一个使用者放手时, 在 raster 线程释放 GPU 资源(docs/01 §4)
   it->second.surface = nullptr;
   MOMO_LOG(VERBOSE) << "Rasterizer surface detached (view " << view_id << ").";
 }
@@ -187,11 +196,10 @@ void Rasterizer::DrawAndReport(platform::ViewId view_id, ViewState& view,
 
 void Rasterizer::DrawToSurface(ViewState& view, graphics::LayerTree& layer_tree) {
   if (view.backend != nullptr && view.backend->kind() != view.surface->kind()) {
-    // surface 自己改变了种类(GPU 设备丢失后回退软件等): 按新的种类重建后端(在 raster 线程释放旧的 GPU 资源)。
+    // surface 自己改变了种类(GPU 设备丢失后回退软件等): 按新的种类重新选取后端。
     MOMO_LOG(WARNING) << "Rasterizer: surface changed from " << BackendName(view.backend->kind()) << " to "
-                      << BackendName(view.surface->kind()) << "; recreating the render backend.";
-    view.backend.reset();
-    CreateBackend(view);
+                      << BackendName(view.surface->kind()) << "; switching the render backend.";
+    SelectBackend(view);
   }
   if (view.backend == nullptr) {
     stats_.frames_failed++;
@@ -251,7 +259,7 @@ void Rasterizer::DrawComposited(ViewState& view, graphics::LayerTree& layer_tree
     // 无平台视图: 整棵树按普通方式画进主帧(无需分片)。
     status = view.backend->Draw(layer_tree, frame->base);
     if (status.ok()) {
-      view.backend->PrepareForExternalPresent();
+      view.backend->PrepareForExternalPresent();  // 同样由合成帧的 present 在别处呈现
     }
   } else {
     status = view.backend->DrawComposition(*composition, *frame);

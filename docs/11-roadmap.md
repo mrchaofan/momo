@@ -53,7 +53,7 @@
 - [x] views(原 widgets):Element diff、Stateful/Inherited、基础组件、runApp/ViewsBinding
 - [x] gestures:arena、tap/drag/scroll;桌面 hover/光标/滚轮
 - [x] animation;焦点与快捷键
-- [x] headless 运行器(`momo_headless`, 框架测试在真实引擎 99 过/13 跳过)+ hot restart(--dev 监视 bundle)
+- [x] headless 运行器(`momo_headless`, 框架测试在真实引擎 99 过/13 跳过)(曾有实验性的 hot restart, 已删除: docs/04 §8)
 - [x] 验收:counter 与 todo 全 View 实现;框架单测进 CTest(Node mock + 引擎 headless;CI 未建)
 
 ## M5 · 扩展机制(约 4 周)
@@ -63,7 +63,7 @@
 - [x] extensions/sdk:momo_extension.h C ABI v1 定稿、momo_ext_sdk target
 - [x] engine/extension:ExtensionHost、HostApi 实现(模块注册/通道/post_task/窗口句柄/帧回调/资源)
 - [x] 纹理注入:TextureRegistry + TextureLayer + JS Texture widget(v1 CPU 像素帧)
-- [x] manifest 生成与打包链路(`tools/momo-cli`)
+- [x] manifest 生成与打包链路(`framework/packages/cli`(`@momo/cli`))
 - [x] 示例扩展:hello(纯 C)、texture;tray 示例已于精简时删除
 - [~] 验收:`examples/extensions-demo` ✅(示例已于精简时删除);ABI 校验(`momo ext verify` + 纯 C 扩展)✅, 多编译器矩阵需 CI
 

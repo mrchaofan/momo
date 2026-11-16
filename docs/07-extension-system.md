@@ -33,7 +33,7 @@ ext-sqlite/
 }
 ```
 
-构建工具(tools/momo-cli)收集依赖中的扩展声明,生成 `extensions.manifest`(打进应用资源),并把原生库拷入应用包。**加载是静态声明式的**——不支持运行期从任意路径 dlopen,降低被当作通用注入器的风险。
+构建工具(framework/packages/cli, `@momo/cli`)收集依赖中的扩展声明,生成 `extensions.manifest`(打进应用资源),并把原生库拷入应用包。**加载是静态声明式的**——不支持运行期从任意路径 dlopen,降低被当作通用注入器的风险。
 
 ## 2. C ABI(extensions/sdk/include/momo/momo_extension.h)
 
@@ -103,55 +103,26 @@ Shell 启动 → ExtensionHost 读 extensions.manifest
  → 逐个 dlopen/LoadLibrary(应用包内路径) → 解析 momo_ext_init → 版本握手
  → on_attach(host_api, engine)            [platform 线程]
  → 扩展注册模块/通道; ui 线程建 JS 绑定
- → 宿主 Shell::Run: 生命周期事件 RuntimeStarting(#1, Launch) → ui 线程创建 JS 运行时, 执行 bundle(异步)
+ → 宿主 Shell::Run: ui 线程创建 JS 运行时, 执行 bundle(异步)
  … 运行期 …
- → 热重启(实验性, --experimental-hot-restart;可多次): 旧运行时销毁(platform 等它完成) → 平台视图全部 dispose
-     → RuntimeStopped(#n, HotRestart) → RuntimeStarting(#n+1, HotRestart) → ui 线程创建新运行时, 执行 bundle
- → 引擎关闭: JS 运行时销毁 → 平台视图 dispose → RuntimeStopped(#n, Shutdown) → on_detach
+ → 引擎关闭: JS 运行时销毁 → 它创建的平台视图全部 dispose → on_detach
    → 排空并停止扩展 worker pool → 拒绝该扩展此后的一切 API 调用
    (动态库不卸载: 扩展线程上可能仍有在途回调, 与 Flutter 插件一致)
 ```
 
-**生命周期事件**(`lifecycle_add_listener`;C++ 封装里是 `Extension::OnLifecycle` 与 `Host::AddLifecycleListener`)。
-扩展只 attach 一次, 而 JS 运行时可以先后有多个: 凡是"属于某个 JS 运行时"的状态(JS 传来的句柄、按 id 登记的对象、
-等待 JS 应答的请求)都应在 `RuntimeStopped` 时清掉。设计要点:
+**扩展与 JS 运行时的关系**。一个进程里只有一个 JS 运行时(没有热重启, docs/04 §8), 它晚于 `on_attach` 创建、早于
+`on_detach` 销毁。所以扩展里"属于 JS"的状态(JS 传来的句柄、按 id 登记的对象、等待 JS 应答的请求)与扩展自身同寿,
+在 `on_detach` 清理即可, 不需要额外的生命周期事件:
 
-- **时机确定**。事件在 platform 线程同步送达;启动、热重启、关闭走同一条"停止/启动运行时"的链路, 送达期间旧运行时
-  已销毁、新运行时尚未创建、引擎不出帧——监听器不会与任何 JS 或帧回调并发, 新运行时的消息一定晚于 `RuntimeStarting`。
-- **对扩展无要求**。不注册就什么都不发生;监听器有 bug 只影响它自己的状态。宿主自己管的东西(平台视图、
-  通道应答、Promise)不依赖扩展配合, 照常由宿主回收。
-- **可扩展**。事件是一个带 `struct_size` 的结构加上只增不改的枚举: 新增事件(如应用挂起/恢复)或新字段不改函数表,
-  老扩展按约定忽略不认识的事件。一个扩展可以注册多个监听器(各子系统各管各的), 建立类事件按注册顺序送达,
-  拆除类事件逆序。`runtime_generation` 标识是第几个运行时, 可用来给状态打标记。
-- **消息不跨代**。通道消息带代际标识(`MessageChannelHub`): 旧运行时销毁前已发出、尚在途中的消息不再送达 handler,
-  发给旧运行时的消息也到不了新运行时。`RuntimeStopped` 之后收到的通道消息一定来自新运行时。
-- **限制**。ui 线程在此期间并不停住: 扩展自己投递到 ui 线程的任务可能与监听器并发, 需要时由扩展自行同步。
-  监听器在 platform 线程上执行, 不要做耗时的事。
+- `on_attach` 时还没有 JS 运行时: 运行时发来的消息一定晚于 `on_attach`。
+- `on_detach` 时 JS 运行时已销毁(不再有 JS 函数调用、帧回调), 它创建的平台视图已全部 dispose。
+- 宿主自己管的东西(平台视图、通道应答、Promise)不依赖扩展配合, 照常由宿主回收。
 
-失败隔离:单个扩展 init 失败只禁用该扩展并记录(应用可在 JS 里经 `momo/extensions` 通道的 `getErrors` 查询, 见 §8),不拖垮引擎。扩展内崩溃无法隔离(同进程),文档明确要求扩展自行保证健壮性;`--dev` 下加载时带符号名日志辅助定位。
-
-## 6. 能力与权限
-
-manifest 中 `capabilities` 字段声明扩展需要的敏感能力(filesystem/network/window/texture/platform-view…)。首期仅做**构建期可见性**(应用开发者在构建产物报告里看到每个扩展申请了什么)+ 运行期日志;真正的 OS 级沙箱不在首期范围。
-
-## 7. 开发者工作流
-
-`tools/momo-cli` 提供:`momo ext create`(脚手架:C ABI 模板 + TS 门面 + CMake 预设)、`momo ext build`(双平台交叉产出 prebuilt/)、`momo ext verify`(ABI 符号检查、manifest 校验)。SDK 头文件与 TS 类型随 `extensions/sdk/` 发布并带语义化版本。
-
-## 8. 实现状态(M5)
-
-- 宿主: `engine/extension/extension_host.{h,cc}`(manifest 解析、dlopen/LoadLibrary、版本与 id 握手、失败隔离、
-  MomoHostApi 的非 JS 部分);JS 胶水: `engine/ui/extension_bindings.cc`(`ext:*` synthetic module、MomoCallApi),
-  经 `ui::GetExtensionJsGlue` 在链接期交给 ExtensionHost——函数表在 `on_attach` 之前一次填好, 之后不再改动(扩展可以拷贝它)。
-- 线程: `on_attach`/`on_detach` 在 platform 线程;`register_module` 只在 `on_attach` 中有效(JS 运行时创建时安装);
-  `channel_set_handler` 可指定 handler 线程(platform/ui/io/worker pool);`promise_*`、`post_task`、`texture_*` 任意线程。
-- 纹理: v1 只支持 CPU 像素帧(`texture_update_pixels`, 或 acquire/release 在调用 `texture_mark_frame_available`
-  的线程上同步回调);宿主拷贝为不可变 Image, 合成时取最新帧(DisplayList 中含纹理的部分不进入 SkPicture 缓存)。
   GPU 共享句柄(IOSurface / D3D)为预留。
 - 引擎保留 `momo/*` 通道名;扩展加载错误是可查询的状态: JS 向 `momo/extensions` 发方法调用 `getErrors`(StandardMethodCodec),
-  得到 `string[]`(每项 `"<id>: <原因>"`, 全部成功为空数组)。任何时刻、热重启后的新运行时都能问到同样的结果。
+  得到 `string[]`(每项 `"<id>: <原因>"`, 全部成功为空数组)。任何时刻都能问到同样的结果。
   框架里的写法: `new MethodChannel("momo/extensions").invokeMethod("getErrors")`。
-- 工具链: `tools/momo-cli/momo.mjs` 的 `bundle` / `build`(manifest 生成 + 库拷贝 + 能力报告;声明校验与 `ext verify --package` 共用)、`ext create`、`ext verify`。
+- 工具链: `framework/packages/cli/momo.mjs` 的 `bundle` / `build`(manifest 生成 + 库拷贝 + 能力报告;声明校验与 `ext verify --package` 共用)、`ext create`、`ext verify`。
 - 平台视图(v1 追加, M6): `MomoHostApi` 末尾追加 `platform_view_register_factory` / `platform_view_get`(扩展以
   `struct_size` 判断宿主是否提供;C++ 封装 `Host::SupportsPlatformViews / RegisterPlatformViewFactory / PlatformView`)。
   create 返回的原生视图归扩展所有(macOS 惯用 `CFBridgingRetain`/`CFBridgingRelease`),每次成功 create 恰好对应一次

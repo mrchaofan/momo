@@ -1,34 +1,37 @@
 #!/usr/bin/env node
-// momo — Momo 应用/扩展开发者命令行(docs/07 §7、docs/09 §4-6)。
+// momo — Momo 应用/扩展开发者命令行(npm 包 @momo/cli;docs/07 §7、docs/09 §4-6)。
 //
 //   momo bundle <app-dir> [--out=<dir>] [--native-dir=<dir>] [--minify]
 //       只出应用 bundle, 不装配运行时(开发循环用: Momo --dev --bundle=<out>/bundle.js):
-//       1) esbuild 打应用 bundle → <out>/bundle.js(momo:* / ext:* 保持外部导入;@momo/framework 解析到
-//          框架源码;默认带内联 sourcemap, --minify 时压缩且不带)
+//       1) esbuild 打应用 bundle → <out>/bundle.js(momo:* / ext:* 保持外部导入;默认带内联 sourcemap,
+//          --minify 时压缩且不带)
 //       2) 扫描依赖中的 package.json "momo.extension" 声明 → <out>/extensions/{extensions.manifest,
 //          当前平台的原生库};打印每个扩展申请的 capabilities(构建期可见性, docs/07 §6)
 //       <out> 默认为 <app-dir>/dist。
-//   momo build <app-dir> [--out=<dir>] [--runtime=<Momo.app>] [--native-dir=<dir>] [--name=<App>]
+//       --native-dir: 扩展包里声明的原生库(prebuilt)还不存在时, 到这个目录里按文件名找(扩展的本地构建目录)。
+//   momo build <app-dir> [--out=<dir>] [--runtime=<Momo.app|dir>] [--native-dir=<dir>] [--name=<App>]
 //              [--minify] [--dmg]
 //       装配可分发的应用: 运行时 + `momo bundle` 的产物 + assets/。
-//       macOS: 复制预编译运行时 Momo.app → <out>/<Name>.app, 放入 Resources/{bundle.js, assets/,
-//       extensions/};Windows: 运行时目录(--runtime, 含 Momo.exe 与 libnode.dll)→ <out>/<Name>/
-//       {<Name>.exe, *.dll, bundle.js, assets/, extensions/}(exe 同级即资源目录, docs/09 §4);
-//       其他平台: 输出目录布局 <out>/<name>/{bundle.js, assets/, extensions/}
+//       运行时是发布产物 momo-v<version>-<platform>.zip 解压后的内容(或自己构建的), 由 --runtime 或环境变量
+//       MOMO_RUNTIME 给出: macOS 为 Momo.app, Windows 为含 Momo.exe 与 libnode.dll 的目录。
+//       macOS: 复制 Momo.app → <out>/<Name>.app, 放入 Resources/{bundle.js, assets/, extensions/};
+//       Windows: → <out>/<Name>/{<Name>.exe, *.dll, bundle.js, assets/, extensions/}(exe 同级即资源目录,
+//       docs/09 §4);其他平台: 输出目录布局 <out>/<name>/{bundle.js, assets/, extensions/}
 //       --dmg(macOS): 再用 hdiutil 产出 <Name>.dmg
 //   momo ext create <dir> --id=<acme.thing> [--name=<thing>]   扩展脚手架(C ABI 模板 + JS 门面)
 //   momo ext verify <library> [--package=<package.json>]        ABI 符号检查 + manifest 声明校验
 //   momo manifest <app-dir> [--native-dir=<dir>]                只打印将生成的 extensions.manifest
 //
-// 应用目录约定: package.json(main = 入口 .ts/.js;dependencies 可用 file: 引用本地扩展包;
+// 应用目录约定: package.json(main = 入口 .ts/.js;dependencies 里有 @momo/framework 与用到的扩展包;
 // momo.name 应用名, momo.icon 应用图标 .icns(macOS)), 可选 assets/ 目录。
+// 依赖怎么找: 装在 node_modules 里的包按 Node 的规则解析;以 file: 引用的本地包直接按它的 package.json 解析,
+// 不要求先 npm install(仓库内的示例与本地开发的扩展就是这样引用的)。
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const frameworkScripts = path.join(repoRoot, "framework/scripts/common.mjs");
+import { baseOptions, momoExternal } from "./bundle_options.mjs";
 
 function fail(message) {
   console.error(`momo: ${message}`);
@@ -58,29 +61,83 @@ function readJson(file) {
   }
 }
 
-export function platformKey() {
+function platformKey() {
   const p = process.platform === "darwin" ? "macos" : process.platform === "win32" ? "windows" : process.platform;
   const a = process.arch === "arm64" ? "arm64" : process.arch === "x64" ? "x64" : process.arch;
   return `${p}-${a}`;
 }
 
 // ---------------------------------------------------------------------------
-// 扩展发现
+// 依赖
 
-/** 解析依赖包目录: file: 引用 → 相对 app;否则 node_modules/<name>。 */
-function resolveDependency(appDir, name, spec) {
+/**
+ * 依赖包在哪: {dir, local}。指向目录的 file: 引用是本地包(local), 直接用那个目录;其余(版本号、指向 tarball 的
+ * file: …)是装好的包, 从声明它的包向上找 node_modules/<name>。找不到为 null。
+ */
+function resolveDependency(fromDir, name, spec) {
   if (typeof spec === "string" && spec.startsWith("file:")) {
-    return path.resolve(appDir, spec.slice(5));
+    const target = path.resolve(fromDir, spec.slice(5));
+    if (fs.statSync(target, { throwIfNoEntry: false })?.isDirectory()) return { dir: target, local: true };
   }
-  let dir = appDir;
+  let dir = fromDir;
   while (true) {
     const candidate = path.join(dir, "node_modules", name);
-    if (fs.existsSync(path.join(candidate, "package.json"))) return candidate;
+    if (fs.existsSync(path.join(candidate, "package.json"))) return { dir: candidate, local: false };
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
   }
 }
+
+/**
+ * 应用的全部依赖(含传递依赖): [{name, dir, pkg, local}]。打 bundle(本地包的解析)与扩展发现都从这一份结果出发。
+ */
+function collectDependencies(appDir) {
+  const seen = new Set();
+  const out = [];
+  const visit = (name, spec, fromDir) => {
+    const found = resolveDependency(fromDir, name, spec);
+    if (found === null || seen.has(found.dir)) return;
+    seen.add(found.dir);
+    const pkg = readJson(path.join(found.dir, "package.json"));
+    out.push({ name, pkg, ...found });
+    for (const [n, s] of Object.entries(pkg.dependencies || {})) visit(n, s, found.dir);
+  };
+  const app = readJson(path.join(appDir, "package.json"));
+  for (const [name, spec] of Object.entries(app.dependencies || {})) visit(name, spec, appDir);
+  return out;
+}
+
+/** 包 dep 的导入路径 subpath("." 或 "./views")对应的文件: 按它的 package.json(exports, 否则 main)。 */
+function packageEntry(dep, subpath) {
+  const exports = dep.pkg.exports;
+  if (typeof exports === "string") return subpath === "." ? path.resolve(dep.dir, exports) : null;
+  if (exports && typeof exports === "object") {
+    return typeof exports[subpath] === "string" ? path.resolve(dep.dir, exports[subpath]) : null;
+  }
+  return subpath === "." ? path.resolve(dep.dir, dep.pkg.main || "index.js") : path.resolve(dep.dir, subpath);
+}
+
+/** esbuild 插件: 本地(file:)包按包名解析到它的入口——等同于 npm install 之后的结果, 但不要求先安装。 */
+function localPackagesPlugin(dependencies) {
+  return {
+    name: "momo-local-packages",
+    setup(build) {
+      for (const dep of dependencies.filter((d) => d.local)) {
+        const escaped = dep.name.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+        build.onResolve({ filter: new RegExp(`^${escaped}(/.*)?$`) }, (args) => {
+          const subpath = `.${args.path.slice(dep.name.length)}`;
+          const file = packageEntry(dep, subpath);
+          return file !== null ? { path: file }
+            : { errors: [{ text: `package ${dep.name} (${dep.dir}) does not export '${subpath}'` }] };
+        });
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 扩展发现
 
 function findFile(root, basename) {
   if (!root || !fs.existsSync(root)) return null;
@@ -99,7 +156,7 @@ function findFile(root, basename) {
 const KNOWN_CAPABILITIES = new Set(["filesystem", "network", "window", "texture", "platform-view", "camera", "microphone", "clipboard"]);
 
 /** 校验 package.json 的 momo.extension 声明, 返回问题列表(空 = 合法)。bundle/build/manifest 与 ext verify 共用。 */
-export function extensionDeclarationProblems(ext) {
+function extensionDeclarationProblems(ext) {
   const problems = [];
   if (!/^[a-z0-9]+(\.[a-z0-9_-]+)+$/i.test(ext.id || "")) problems.push(`momo.extension.id must be reverse-DNS (got '${ext.id}')`);
   if (ext.specifier && !/^ext:[\w-]+$/.test(ext.specifier)) problems.push("momo.extension.specifier must be 'ext:<name>'");
@@ -107,46 +164,29 @@ export function extensionDeclarationProblems(ext) {
   return problems;
 }
 
-/** 返回 [{id, specifier, capabilities, packageDir, packageName, library(源路径), entry(JS 门面)}]。 */
-export function collectExtensions(appDir, nativeDir) {
-  const pkg = readJson(path.join(appDir, "package.json"));
-  const deps = { ...(pkg.dependencies || {}) };
-  const seen = new Set();
-  const out = [];
+/**
+ * 依赖里声明了 momo.extension 的包 → [{id, specifier, capabilities, declared, library(原生库源路径, 没有为 null)}]。
+ * nativeDir(可空): 声明的 prebuilt 还不存在时到这里按文件名找(扩展的本地构建目录)。
+ */
+function collectExtensions(dependencies, nativeDir) {
   const key = platformKey();
-  const visit = (name, spec, fromDir) => {
-    const dir = resolveDependency(fromDir, name, spec);
-    if (!dir || seen.has(dir)) return;
-    seen.add(dir);
-    const depPkg = readJson(path.join(dir, "package.json"));
-    const ext = depPkg.momo && depPkg.momo.extension;
-    if (ext) {
-      const problems = extensionDeclarationProblems(ext);
-      if (problems.length) fail(`${name}: ${problems.join("; ")}`);
-      const declared = ext.native && ext.native[key];
-      let library = declared ? path.resolve(dir, declared) : null;
-      if (library && !fs.existsSync(library)) {
-        // 仓库内开发: prebuilt 尚不存在时到构建目录中按文件名查找。
-        library = findFile(nativeDir, path.basename(declared));
-      }
-      out.push({
-        id: ext.id,
-        specifier: ext.specifier || null,
-        capabilities: ext.capabilities || [],
-        packageDir: dir,
-        packageName: depPkg.name,
-        declared: declared || null,
-        library,
-        entry: path.resolve(dir, depPkg.main || "index.js"),
-      });
+  const out = [];
+  for (const dep of dependencies) {
+    const ext = dep.pkg.momo && dep.pkg.momo.extension;
+    if (!ext) continue;
+    const problems = extensionDeclarationProblems(ext);
+    if (problems.length) fail(`${dep.name}: ${problems.join("; ")}`);
+    const declared = (ext.native && ext.native[key]) || null;
+    let library = declared ? path.resolve(dep.dir, declared) : null;
+    if (library && !fs.existsSync(library)) {
+      library = nativeDir ? findFile(nativeDir, path.basename(declared)) : null;
     }
-    for (const [n, s] of Object.entries(depPkg.dependencies || {})) visit(n, s, dir);
-  };
-  for (const [name, spec] of Object.entries(deps)) visit(name, spec, appDir);
+    out.push({ id: ext.id, specifier: ext.specifier || null, capabilities: ext.capabilities || [], declared, library });
+  }
   return out;
 }
 
-export function manifestFor(extensions) {
+function manifestFor(extensions) {
   return {
     extensions: extensions.filter((e) => e.library).map((e) => ({
       id: e.id,
@@ -160,8 +200,8 @@ export function manifestFor(extensions) {
 // ---------------------------------------------------------------------------
 // bundle
 
-function defaultNativeDir(flags) {
-  return flags["native-dir"] ? path.resolve(flags["native-dir"]) : path.join(repoRoot, "out/debug/extensions");
+function nativeDirOf(flags) {
+  return flags["native-dir"] ? path.resolve(flags["native-dir"]) : null;
 }
 
 /** 应用的 JS 部分 → <outDir>/bundle.js 与(有扩展时)<outDir>/extensions/{extensions.manifest, 原生库}。 */
@@ -169,21 +209,14 @@ async function writeBundle(appDir, outDir, { nativeDir, minify }) {
   const pkg = readJson(path.join(appDir, "package.json"));
   const entry = path.resolve(appDir, pkg.main || "src/main.ts");
   if (!fs.existsSync(entry)) fail(`entry not found: ${entry}`);
-  const extensions = collectExtensions(appDir, nativeDir);
-  const { baseOptions, momoExternal, momoFrameworkAlias } = await import(pathToFileURL(frameworkScripts).href);
-  const esbuildPath = path.join(repoRoot, "framework/node_modules/esbuild/lib/main.js");
-  if (!fs.existsSync(esbuildPath)) fail("esbuild not installed: run `npm install` in framework/");
-  const esbuild = await import(pathToFileURL(esbuildPath).href);
-  // 本地(file:)扩展包: 包名 → JS 门面入口。
-  const localPackages = {
-    name: "momo-local-packages",
-    setup(build) {
-      for (const ext of extensions) {
-        const escaped = ext.packageName.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-        build.onResolve({ filter: new RegExp(`^${escaped}$`) }, () => ({ path: ext.entry }));
-      }
-    },
-  };
+  const dependencies = collectDependencies(appDir);
+  const extensions = collectExtensions(dependencies, nativeDir);
+  let esbuild;
+  try {
+    esbuild = await import("esbuild");
+  } catch {
+    fail("esbuild is not installed (it is a dependency of @momo/cli: run `npm install`)");
+  }
   fs.mkdirSync(outDir, { recursive: true });
   await esbuild.build({
     ...baseOptions,
@@ -191,7 +224,7 @@ async function writeBundle(appDir, outDir, { nativeDir, minify }) {
     outfile: path.join(outDir, "bundle.js"),
     minify: !!minify,
     sourcemap: minify ? false : "inline",
-    plugins: [momoExternal, momoFrameworkAlias, localPackages],
+    plugins: [momoExternal, localPackagesPlugin(dependencies)],
   });
 
   const extDir = path.join(outDir, "extensions");
@@ -201,7 +234,8 @@ async function writeBundle(appDir, outDir, { nativeDir, minify }) {
     console.log("extensions:");
     for (const ext of extensions) {
       if (!ext.library) {
-        console.warn(`  ! ${ext.id}: no native library for ${platformKey()} (${ext.declared || "not declared"}) — JS only`);
+        console.warn(`  ! ${ext.id}: no native library for ${platformKey()} (${ext.declared || "not declared"}`
+                     + `${ext.declared && !nativeDir ? "; pass --native-dir=<build dir> to pick up a local build" : ""}) — JS only`);
         continue;
       }
       fs.copyFileSync(ext.library, path.join(extDir, path.basename(ext.library)));
@@ -215,7 +249,7 @@ async function writeBundle(appDir, outDir, { nativeDir, minify }) {
 async function bundle({ positional, flags }) {
   const appDir = path.resolve(positional[0] || ".");
   const outDir = path.resolve(flags.out || path.join(appDir, "dist"));
-  await writeBundle(appDir, outDir, { nativeDir: defaultNativeDir(flags), minify: flags.minify });
+  await writeBundle(appDir, outDir, { nativeDir: nativeDirOf(flags), minify: flags.minify });
   console.log(`built ${path.relative(process.cwd(), path.join(outDir, "bundle.js"))}`);
 }
 
@@ -236,9 +270,15 @@ async function build({ positional, flags }) {
   fs.mkdirSync(outDir, { recursive: true });
   let resources;
   let bundleRoot;
+  // 运行时不随 CLI 分发: 由调用方给出(发布产物 momo-v<version>-<platform>.zip 解压后的内容, 或自己的构建)。
+  const runtimeFlag = flags.runtime || process.env.MOMO_RUNTIME;
+  const runtimeOf = (what) => {
+    if (!runtimeFlag) fail(`no Momo runtime: pass --runtime=<${what}> or set MOMO_RUNTIME (the unpacked momo-v<version>-<platform>.zip release asset, or your own build)`);
+    return path.resolve(runtimeFlag);
+  };
   if (process.platform === "darwin") {
-    const runtime = path.resolve(flags.runtime || path.join(repoRoot, "out/debug/embedder/Momo.app"));
-    if (!fs.existsSync(runtime)) fail(`runtime not found: ${runtime} (build momo_app_mac first or pass --runtime=)`);
+    const runtime = runtimeOf("Momo.app");
+    if (!fs.existsSync(path.join(runtime, "Contents/MacOS"))) fail(`not a Momo.app runtime: ${runtime}`);
     bundleRoot = path.join(outDir, `${appName}.app`);
     fs.rmSync(bundleRoot, { recursive: true, force: true });
     fs.cpSync(runtime, bundleRoot, { recursive: true, verbatimSymlinks: true });
@@ -264,9 +304,9 @@ async function build({ positional, flags }) {
       fs.writeFileSync(plist, text);
     }
   } else if (process.platform === "win32") {
-    const runtime = path.resolve(flags.runtime || path.join(repoRoot, "out/debug/embedder"));
+    const runtime = runtimeOf("directory with Momo.exe");
     const exe = path.join(runtime, "Momo.exe");
-    if (!fs.existsSync(exe)) fail(`runtime not found: ${exe} (build momo_app_win first or pass --runtime=<dir>)`);
+    if (!fs.existsSync(exe)) fail(`not a Momo runtime directory (no Momo.exe): ${runtime}`);
     bundleRoot = path.join(outDir, appName);
     fs.rmSync(bundleRoot, { recursive: true, force: true });
     fs.mkdirSync(bundleRoot, { recursive: true });
@@ -282,7 +322,7 @@ async function build({ positional, flags }) {
     resources = bundleRoot;
   }
   fs.mkdirSync(resources, { recursive: true });
-  await writeBundle(appDir, resources, { nativeDir: defaultNativeDir(flags), minify: flags.minify });
+  await writeBundle(appDir, resources, { nativeDir: nativeDirOf(flags), minify: flags.minify });
   copyDir(path.join(appDir, "assets"), path.join(resources, "assets"));
   if (process.platform === "darwin") {
     // 修改了包内容: 重新 ad-hoc 签名(否则 Gatekeeper/代码签名校验失败)。
@@ -356,7 +396,7 @@ function create({ positional, flags }) {
         "windows-x64": `prebuilt/windows-x64/ext_${name}.dll` }, capabilities: [] } },
     }, null, 2) + "\n",
     "js/index.ts": `import { native } from "ext:${name}";\n\nconst fns = native as unknown as Record<string, (...a: unknown[]) => unknown>;\n\nexport function hello(who: string): string {\n  return fns.hello(who) as string;\n}\n`,
-    "native/CMakeLists.txt": `cmake_minimum_required(VERSION 3.24)\nproject(ext_${name} LANGUAGES C CXX)\n# SDK 位置: 源码树 extensions/sdk, 或 Momo 构建目录下的 sdk/(cmake --install 后为 <prefix>)。\nset(MomoExtSdk_DIR "${path.join(repoRoot, "extensions/sdk/lib/cmake/MomoExtSdk")}" CACHE PATH "Momo extension SDK")\nfind_package(MomoExtSdk 1 REQUIRED)\n# C++ 扩展可改用 .cc 源文件并 #include "momo/momo_extension.hpp"(见 extensions/examples/texture-extension)。\nmomo_add_extension(ext_${name} src/ext_${name}.c)\n`,
+    "native/CMakeLists.txt": `cmake_minimum_required(VERSION 3.24)\nproject(ext_${name} LANGUAGES C CXX)\n# 扩展 SDK(发布产物 momo-ext-sdk-v<version>.zip 解压后的目录, 或 Momo 源码树的 extensions/sdk):\n#   cmake -DMomoExtSdk_DIR=<sdk>/lib/cmake/MomoExtSdk ...\nfind_package(MomoExtSdk 1 REQUIRED)\n# C++ 扩展可改用 .cc 源文件并 #include "momo/momo_extension.hpp"(见 extensions/examples/texture-extension)。\nmomo_add_extension(ext_${name} src/ext_${name}.c)\n`,
     [`native/src/ext_${name}.c`]: `#include <stdio.h>\n#include <string.h>\n\n#include "momo/momo_extension.h"\n\nstatic const MomoHostApi* g_host;\n\nstatic void Hello(void* user_data, MomoCallInfoRef call) {\n  char who[256];\n  char out[300];\n  size_t len = 0;\n  (void)user_data;\n  if (g_host->call->arg_string_utf8(call, 0, who, sizeof(who), &len) != kMomoOk) {\n    g_host->call->throw_error(call, "hello(who) expects a short string");\n    return;\n  }\n  snprintf(out, sizeof(out), "hello, %s", who);\n  g_host->call->return_string_utf8(call, out, strlen(out));\n}\n\nstatic void Setup(void* user_data, MomoJsBuilderRef builder) {\n  (void)user_data;\n  g_host->builder_add_function(builder, "hello", Hello, NULL);\n}\n\nstatic void OnAttach(void* user_data, const MomoHostApi* host, MomoEngineRef engine) {\n  (void)user_data;\n  g_host = host;\n  host->register_module(engine, "ext:${name}", Setup, NULL);\n}\n\nstatic void OnDetach(void* user_data) { (void)user_data; }\n\nMOMO_EXT_EXPORT bool momo_ext_init(uint32_t host_api_version, MomoExtension* out) {\n  if (host_api_version < MOMO_EXT_API_VERSION) return false;\n  out->id = "${id}";\n  out->on_attach = OnAttach;\n  out->on_detach = OnDetach;\n  return true;\n}\n`,
   };
   for (const [rel, content] of Object.entries(files)) {
@@ -365,7 +405,7 @@ function create({ positional, flags }) {
     fs.writeFileSync(file, content);
   }
   console.log(`created extension ${id} in ${path.relative(process.cwd(), dir) || "."}`);
-  console.log(`  build: cmake -S ${path.join(dir, "native")} -B ${path.join(dir, "native/build")} && cmake --build ${path.join(dir, "native/build")}`);
+  console.log(`  build: cmake -S ${path.join(dir, "native")} -B ${path.join(dir, "native/build")} -DMomoExtSdk_DIR=<sdk>/lib/cmake/MomoExtSdk && cmake --build ${path.join(dir, "native/build")}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -378,7 +418,7 @@ if (command === "bundle") {
 } else if (command === "manifest") {
   const { positional, flags } = parseArgs(rest);
   const appDir = path.resolve(positional[0] || ".");
-  console.log(JSON.stringify(manifestFor(collectExtensions(appDir, defaultNativeDir(flags))), null, 2));
+  console.log(JSON.stringify(manifestFor(collectExtensions(collectDependencies(appDir), nativeDirOf(flags))), null, 2));
 } else if (command === "ext" && rest[0] === "verify") {
   verify(parseArgs(rest.slice(1)));
 } else if (command === "ext" && rest[0] === "create") {

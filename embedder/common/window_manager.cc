@@ -166,13 +166,18 @@ void WindowManager::RequestCloseWindow(ViewId view_id) {
   });
 }
 
+void WindowManager::CloseAll() {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  for (ViewId id : view_ids()) {
+    Close(id, /*report_all_closed=*/false);
+  }
+}
+
 void WindowManager::RequestCloseAll(MoveOnlyFunction<void(bool all_closed)> done) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   const std::vector<ViewId> ids = view_ids();
   if (ids.empty() || window_channel_ == nullptr) {
-    for (ViewId id : ids) {
-      Close(id, /*report_all_closed=*/false);
-    }
+    CloseAll();
     task_runner()->PostTask([done = std::move(done)]() mutable { done(true); });
     return;
   }
@@ -199,19 +204,6 @@ void WindowManager::RequestCloseAll(MoveOnlyFunction<void(bool all_closed)> done
   }
 }
 
-void WindowManager::ResetForHotRestart(bool keep_startup_window) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  if (keep_startup_window && windows_.count(kImplicitViewId) == 0) {
-    if (Status status = OpenStartupWindow(); !status.ok()) {
-      MOMO_LOG(ERROR) << "Hot restart: cannot reopen the startup window: " << status;
-    }
-  }
-  for (ViewId id : view_ids()) {
-    if (!keep_startup_window || id != kImplicitViewId) {
-      Close(id, /*report_all_closed=*/false);
-    }
-  }
-}
 
 // ---------------------------------------------------------------------------
 // 查询

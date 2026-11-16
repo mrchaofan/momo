@@ -2,6 +2,7 @@ import {
   app, Center, SchedulerBinding, SizedBox, StandardMethodCodec, MethodCall, Text, defaultBinaryMessenger,
   Size, MediaQuery, Builder, type View,
 } from "../packages/momo/src/index";
+import { fakeClock, hostTimerHost } from "./fake_clock";
 import { expect, group } from "./harness";
 import { testViews } from "./util";
 
@@ -42,6 +43,35 @@ group("binding", () => {
     expect.deepEqual(log, ["30", "60", "100"]);
     expect.isFalse(first.isActive);
     expect.isFalse(scheduler.hasScheduledFrame);
+  });
+
+  // 生产路径: 延迟任务由宿主定时器(mock 宿主下是 Node 的、真实引擎下是 libnode 的 setTimeout)驱动——没有帧
+  // 也会到期。上面的用例用假时钟验证语义, 这里换回真实定时器验证它确实触发、取消确实生效。
+  testViews("delayed tasks fire on the real host timer without any frame", async (t) => {
+    await t.pumpView(new SizedBox());
+    await t.pump();
+    const scheduler = SchedulerBinding.instance;
+    scheduler.timerHost = hostTimerHost;
+    try {
+      const log: string[] = [];
+      const fired = new Promise<void>((resolve) => {
+        scheduler.scheduleDelayed(20, () => {
+          log.push("fired");
+          resolve();
+        });
+      });
+      const cancelled = scheduler.scheduleDelayed(5, () => log.push("cancelled"));
+      cancelled.cancel();
+      const frames = scheduler.frameCount;
+      expect.isFalse(scheduler.hasScheduledFrame, "waiting does not request frames");
+      // 不出帧、不推进假时钟: 只有真实的定时器能让它到期(到不了的话整个测试超时)。
+      await fired;
+      expect.deepEqual(log, ["fired"], "the cancelled task never runs");
+      expect.equal(scheduler.frameCount, frames, "no frame was needed");
+      expect.equal(fakeClock.pendingTimers, 0, "the fake clock was not involved");
+    } finally {
+      scheduler.timerHost = fakeClock;
+    }
   });
 
   testViews("app state: suspended (app hidden) disables frames, running re-enables", async (t) => {

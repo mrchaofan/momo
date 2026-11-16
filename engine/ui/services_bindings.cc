@@ -8,7 +8,7 @@
 
 #include "base/logging.h"
 #include "engine/runtime/js_args.h"
-#include "engine/runtime/js_runtime_impl.h"
+#include "engine/runtime/js_runtime.h"
 #include "engine/ui/ui_classes.h"
 #include "engine/ui/ui_impl.h"
 

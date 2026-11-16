@@ -2,7 +2,7 @@
 
 // UiBindings::Impl: 一个 JS 运行时上 momo:ui / momo:services 绑定的共享状态。只被 engine/ui 实现文件包含。
 // 线程约定: momo::Object, 归属 ui 线程。异步操作(图片解码、资源读取、消息通道)的结果经
-// WeakPtr<Impl> 投递回 ui 线程: 运行时已销毁(hot restart/关闭)时回调作废。
+// WeakPtr<Impl> 投递回 ui 线程: 运行时已销毁(引擎关闭)时回调作废。
 
 #include <cstdint>
 #include <functional>
@@ -13,7 +13,7 @@
 #include "base/object.h"
 #include "engine/assets/asset_manager.h"
 #include "engine/extension/extension_host.h"
-#include "engine/runtime/js_runtime_impl.h"
+#include "engine/runtime/js_runtime.h"
 #include "engine/text/font_collection.h"
 #include "engine/ui/app_driver.h"
 #include "engine/ui/ui_bindings.h"
@@ -40,11 +40,11 @@ struct ViewBinding {
 };
 
 struct UiBindings::Impl final : public Object {
-  Impl(runtime::JsRuntimeImpl* runtime, WindowClient* client, const AppHost& host,
-       const Settings& settings, uint64_t runtime_generation);
+  Impl(runtime::JsRuntime* runtime, WindowClient* client, const AppHost& host,
+       const Settings& settings);
   ~Impl() override;
 
-  runtime::JsRuntimeImpl* const runtime;
+  runtime::JsRuntime* const runtime;
   WindowClient* const client;
   const AppHost host;
   const Settings settings;
@@ -102,9 +102,8 @@ struct UiBindings::Impl final : public Object {
 
  private:
   std::unique_ptr<text::FontCollection> fonts;
-  // Promise id 也是扩展 promise token(跨线程往返)。高 16 位是运行时代数, 低 48 位是本运行时内的
-  // 序号(从 1 起, 0 不是合法 token): 先后两个运行时的 id 不重叠, 旧运行时的迟到结算不会命中新运行时的 promise。
-  uint64_t next_request_;
+  // Promise id 也是扩展 promise token(跨线程往返)。从 1 起, 0 不是合法 token。
+  uint64_t next_request_ = 1;
   std::map<uint64_t, v8::Global<v8::Promise::Resolver>> pending_;
   const WeakPtr<Impl> weak_this_;
 };

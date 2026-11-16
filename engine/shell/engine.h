@@ -3,8 +3,8 @@
 // Engine(内部类): ui 线程侧的根(docs/02 §2)。持有各视图的 ViewportMetrics/焦点、帧调度器 Animator
 // 与应用驱动 AppDriver。多视图: 一个 Animator(帧时钟)驱动全部视图;视图全部来自宿主的绑定(AddView),
 // 可以先于 JS 运行时存在。窗口的外观与行为不经过引擎(宿主的 momo/window 通道)。
-// JS 运行时的生命周期与 Engine 分开: 构造出来的 Engine 没有运行时(不出帧), StartRuntime 创建驱动并执行
-// bundle, StopRuntime 销毁它;首次启动与 hot restart 走的是同一对入口。
+// JS 运行时在 Engine 的一生里只有一个: 构造出来的 Engine 没有运行时(不出帧), StartRuntime 创建驱动并执行
+// bundle(只能调用一次), 运行时随 Engine 析构而销毁。
 // 帧路径全在 ui 线程内闭合: driver 请求帧 → Animator 等 vsync → driver.BeginFrame 提交 LayerTree
 // → Animator 入队 Pipeline → 构造时传入的 on_draw(由 Shell 投递 raster)。
 // 线程约定: momo::Object, 归属 ui 线程, 仅在 ui 线程创建、调用与析构。
@@ -40,12 +40,9 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   ~Engine() override;
 
   // ---- JS 运行时 ----
-  // 创建第 generation 代运行时并执行 bundle(同步;调用前不得有运行时), 然后把已有视图的状态(尺寸、焦点、
-  // 可见性)交给它并请求一帧。bundle 加载/执行失败时退回占位驱动(引擎保持可用, 修复后可再次启动)并返回
-  // 错误(消息含 JS 栈)。
-  Status StartRuntime(uint64_t generation);
-  // 销毁运行时(幂等)。之后不出帧、不执行扩展帧回调, 直到下一次 StartRuntime;视图状态保留。
-  void StopRuntime();
+  // 创建运行时并执行 bundle(同步;只能调用一次), 然后把已有视图的状态(尺寸、焦点、可见性)交给它并请求
+  // 一帧。bundle 加载/执行失败返回错误(消息含 JS 栈): 引擎没有运行时, 不出帧, 是否退出由宿主决定。
+  Status StartRuntime();
 
   // 替换 vsync 来源(视图绑定/解绑时)。
   void SetVsyncWaiter(std::unique_ptr<VsyncWaiter> waiter) {
@@ -94,7 +91,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   std::map<platform::ViewId, ViewState> views_;
   // 先于 driver_ 构造(执行 bundle 时即可能 scheduleFrame), 后于 driver_ 析构。
   Animator animator_;
-  // 运行时(JS 驱动或占位驱动);StartRuntime 之前与 StopRuntime 之后为空。
+  // 运行时(JS 驱动;没有 bundle 时为占位驱动)。StartRuntime 之前、以及它失败之后为空。
   std::unique_ptr<ui::AppDriver> driver_;
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(Engine);

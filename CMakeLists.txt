@@ -47,4 +47,4 @@ add_subdirectory(extensions)
 add_subdirectory(third_party)
 
 # examples/ 与 framework/ 是 JS/TS 工程,不经 CMake 构建: 应用的 bundle 与打包都由
-# tools/momo-cli 完成(momo bundle / momo build, 见 docs/09-build-and-deps.md)。
+# framework/packages/cli 完成(momo bundle / momo build, 见 docs/09-build-and-deps.md)。

@@ -9,7 +9,6 @@
 #include "engine/graphics/testing/golden.h"
 #include "engine/graphics/texture.h"
 #include "engine/runtime/js_runtime.h"
-#include "engine/runtime/js_runtime_impl.h"
 #include "engine/ui/ui_bindings.h"
 #include "gtest/gtest.h"
 
@@ -256,7 +255,7 @@ TEST_F(UiBindingsTest, MetricsReachTheView) {
 
 TEST_F(UiBindingsTest, HostObjectsAreCollected) {
   ASSERT_TRUE(Run("import * as ui from 'momo:ui'; globalThis.ui = ui;").ok());
-  runtime::JsRuntimeImpl& impl = runtime_->impl();
+  runtime::JsRuntime& impl = *runtime_;
   Eval("for (let i = 0; i < 2000; i++) { new ui.Paint(); new ui.Path().addRect(0, 0, 1, 1); }");
   const size_t before = impl.live_wrappables();
   EXPECT_GE(before, 1u);
@@ -557,7 +556,7 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
     import { viewports } from 'momo:ui';
     globalThis.viewports = viewports;
   )JS").ok());
-  v8::Isolate* isolate = runtime_->impl().isolate();
+  v8::Isolate* isolate = runtime_->isolate();
   std::vector<ViewId> ids;
   for (ViewId id = 10; id < 15; ++id) {
     client_.view_ids.push_back(id);

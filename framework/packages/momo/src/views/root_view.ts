@@ -24,7 +24,7 @@ import { ViewsBinding, kImplicitViewId, type ViewRenderHost } from "./binding";
 import { FocusManager, FocusScopeNode } from "./focus_manager";
 import { FocusScope } from "./focus_scope";
 import {
-  Element, RenderObjectElement, RenderObjectView, State, StatefulView, View, type BuildContext,
+  Element, RenderObjectElement, RenderObjectView, State, StatefulView, TickerMode, View, type BuildContext,
 } from "./framework";
 import { MediaQuery, MediaQueryData } from "./media_query";
 import { Overlay, OverlayEntry } from "./overlay";
@@ -157,7 +157,7 @@ function toRect(b: WidgetBounds | null): Rect | null {
 /**
  * 把 child 渲染进窗口 widget。放在 {@link ViewAnchor} 的 views 中, 或直接作为 runView 的根。
  * RootView 不打开也不关闭窗口: 窗口关闭('closed')后应用把它从树里移除;留在树里的 RootView 照常构建
- * (子树的状态保留), 只是不再布局、绘制与提交。
+ * (子树的状态保留), 只是不再布局、绘制与提交, 子树里的动画也停下({@link TickerMode} 禁用)。
  */
 export class RootView extends StatefulView {
   /** 渲染到的窗口。null: 没有窗口——与窗口已关闭的 RootView 一样只构建(runApp 在启动窗口已关闭时这样挂载)。 */
@@ -187,8 +187,13 @@ class RootViewState extends State<RootView> {
   readonly #shortcuts = defaultShortcuts();
   readonly #actions = defaultActions();
   #focused = false;
+  /** 窗口是否还开着(有窗口且未关闭): 否则画面没有人看, 子树里的 Ticker 静音。 */
+  #open = false;
   readonly #onWidgetChanged = (): void => {
     if (this.mounted) this.setState();
+  };
+  readonly #onWidgetClosed = (): void => {
+    if (this.mounted) this.setState(() => (this.#open = false));
   };
 
   override initState(): void {
@@ -208,6 +213,8 @@ class RootViewState extends State<RootView> {
     this.#host = { viewport, renderView: this.#renderView, pipelineOwner: this.#pipelineOwner };
     binding.registerView(this.#host);
     this.#focused = viewport.focused;
+    this.#open = true;
+    widget.on("closed", this.#onWidgetClosed);
     widget.on("controls-changed", this.#onWidgetChanged);
     widget.on("state-changed", this.#onWidgetChanged);
     this.#bind(viewport, this.#host);
@@ -228,6 +235,7 @@ class RootViewState extends State<RootView> {
       for (const k of kViewportHandlers) {
         if (viewport[k] === this.#handlers![k]) viewport[k] = null;
       }
+      this.view.widget?.off("closed", this.#onWidgetClosed);
       this.view.widget?.off("controls-changed", this.#onWidgetChanged);
       this.view.widget?.off("state-changed", this.#onWidgetChanged);
       ViewsBinding.instance.unregisterView(host);
@@ -299,7 +307,10 @@ class RootViewState extends State<RootView> {
         }),
       }),
     });
-    return new RawView(this.#renderView, widget !== null ? new WidgetScope({ widget, child: content }) : content);
+    return new RawView(this.#renderView, new TickerMode({
+      enabled: this.#open,
+      child: widget !== null ? new WidgetScope({ widget, child: content }) : content,
+    }));
   }
 }
 

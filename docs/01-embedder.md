@@ -69,13 +69,13 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 
 **应用生命周期与窗口无关**:Suspended 只表示应用被隐藏(Mac `applicationDidHide`,经 `OnAppVisibilityChanged`);窗口的最小化/隐藏只影响该窗口的视图是否出帧(`WindowDelegate::OnWindowStateChanged` → `Shell::OnViewVisibilityChanged`)。没有窗口也是合法状态。状态变化经 `Shell::SetAppSuspended` 告诉引擎是否出帧, 经 `momo/app stateChanged` 告诉 JS。前台状态(`OnAppActiveChanged`)与 Dock 重新激活(`OnReopen`)经 `momo/app activeChanged` / `activate`。
 
-退出应用有两个入口(同 Electron):`Quit()`(Cmd+Q、菜单退出、JS `app.quit()`)依次询问 `beforeQuit` → 每个窗口的 `closeRequested` → `willQuit`, 任一步被 JS 取消即中止, 全部允许后 `Terminate()`;`Exit(code)`(JS `app.exit(code)`、`process.exit(code)`)不询问, 在安全点 `Terminate(code)`。每次询问都有看门狗:JS 长时间不回复(ui 线程卡死)时强制退出。重复请求合并。`Terminate()` 幂等,直接执行 §4。可选 `Application::Observer` 观察状态变化与关闭步骤(日志/测试)。
+退出应用有两个入口(同 Electron), 没有"直接终止":`Quit()`(Cmd+Q、菜单退出、JS `app.quit()`)依次询问 `beforeQuit` → 每个窗口的 `closeRequested`(允许的关闭)→ `willQuit`, 任一步被 JS 取消即中止, 全部允许后 `Shutdown`;启动期间(bundle 还在执行)请求退出走同一条流程。`Exit(code)`(JS `app.exit(code)`、`process.exit(code)`、启动失败)不询问, 关闭全部窗口后 `Shutdown`。`Shutdown` 只做两件事: 进入 Terminating(JS 收到这个状态)、请求消息循环结束——不销毁任何东西。销毁(`TearDown`, §4)在消息循环结束之后、`Run()` 返回之前进行。重复请求合并。不强行终止 JS, 也没有超时强杀: JS 不返回时退出就等着它。可选 `Application::Observer` 观察状态变化与关闭步骤(日志/测试)。
 
 窗口(docs/02 §2 多视图):**所有窗口对等**, 注册表归 `WindowManager`(`window_manager.h`), 它是 `WindowChannel::Host`:按 JS 的 `momo/window create` 分配视图 id、建窗口并绑定到同一个 Shell;`close` 时先解绑再在安全点销毁窗口。任一窗口的关闭按钮都先经 `momo/window closeRequested` 询问 JS, 允许后只关闭该窗口;**最后一个窗口关闭后应用不退出**, `Application` 只发 `momo/app windowAllClosed`(同 Electron 的 window-all-closed 事件, 但没有"无监听器即退出"的隐式默认)。启动窗口(视图 0)只是 bundle 执行前就存在的那个窗口, 同样可以被关闭;`--no-startup-window` 时不创建。
 
 ### 引擎装配(Application::LaunchEngine)
 
-Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果(bundle、资源、扩展目录, 以及入口给出的缓存目录下的 V8 code cache 目录) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。关闭时先 `WindowManager::DetachEngine`(raster 停用 surface), 再移除宿主通道, 再 `Shell::Shutdown`。
+Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果(bundle、资源、扩展目录, 以及入口给出的缓存目录下的 V8 code cache 目录) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。销毁时先 `Shell::Shutdown`(JS 运行时最先), 再 `WindowManager::DetachEngine`、移除宿主通道。
 
 ### WindowController(common)
 
@@ -83,21 +83,25 @@ Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时�
 
 ## 4. 生命周期与关闭顺序
 
-关闭必须严格有序,否则会在线程销毁上踩崩溃:
+退出与销毁分两步(同 Electron), 销毁必须严格有序, 否则会在线程销毁上踩崩溃:
 
 ```
-Quit(JS 可取消) / Exit(code) → Application::Terminate
- → 0) WindowController 解绑: raster 线程同步停止使用 surface
- → 1) ui 线程: 停止帧调度,通知扩展 unload,销毁 JsRuntime(Isolate Dispose)
- → 2) raster 线程: 释放 LayerTree 与 GPU 资源,销毁 GrDirectContext
- → 3) 销毁 RenderSurface 与 PlatformWindow(platform 线程)
+Quit(JS 可取消) / Exit(code): 窗口在流程里关闭(JS 还在, 收到各自的 closed)
+ → Application::Shutdown: 进入 Terminating(通知 JS)
+ → 0) platform EventLoop::Terminate: 当前任务返回后排空、析构 DeleteLater 对象, 再退出原生循环
+ —— 消息循环结束, Run() 返回之前: Application::TearDown, JS 环境最先, 逐级销毁 ——
+ → 1) ui 线程: 销毁 JsRuntime(Isolate Dispose), 再停止帧调度;平台视图交给扩展释放, 扩展 on_detach
+ → 2) raster 线程: 释放 LayerTree 与 GPU 资源,销毁 GrDirectContext(同步停用各窗口的 surface)
+ → 3) 销毁还开着的 RenderSurface 与 PlatformWindow(platform 线程;正常退出时窗口已在流程里关闭)
  → 4) ThreadHost::Join(): ui → raster → io(各自排空已到期任务、清理 DeleteLater 对象)
- → 5) platform EventLoop::Terminate: 当前任务返回后排空、析构 DeleteLater 对象(如 VsyncSource),再退出原生循环
 ```
+
+第 1 步要与 ui 线程汇合: 此前投递给 JS 的事件都先执行完;JS 不返回(`--inspect-brk` 等待调试器连接、脚本死循环)时
+退出停在这里等它。不强行终止 JS 的执行, 也不强杀进程。
 
 ## 5. 平台入口差异
 
-- **Windows**:`wWinMain`;`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 必须在任何窗口创建前调用;消息循环即 platform runner,利用 `PostMessage` 到隐藏消息窗口实现跨线程投递任务。`WinAppDelegate`(对应 `MacAppDelegate`)经 `CreateWinPlatformIntegration(&delegate)` 接收 `WM_ACTIVATEAPP`(→ `OnAppActiveChanged`);单实例(按 exe 名)的后续启动转发给首个实例 = 重新激活(激活最前的可见窗口 + `OnReopen`, 同点击 Dock 图标);`WM_ENDSESSION` 时 `Terminate`(结束会话不等待应用, 无法询问 JS)。所有窗口关闭后不退出, 由 JS 决定。
+- **Windows**:`wWinMain`;`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 必须在任何窗口创建前调用;消息循环即 platform runner,利用 `PostMessage` 到隐藏消息窗口实现跨线程投递任务。`WinAppDelegate`(对应 `MacAppDelegate`)经 `CreateWinPlatformIntegration(&delegate)` 接收 `WM_ACTIVATEAPP`(→ `OnAppActiveChanged`);单实例(按 exe 名)的后续启动转发给首个实例 = 重新激活(激活最前的可见窗口 + `OnReopen`, 同点击 Dock 图标);`WM_ENDSESSION` 时 `Exit(0)`(结束会话不等待应用, 无法询问 JS;销毁在消息循环结束后进行, 系统可能在那之前就结束进程)。所有窗口关闭后不退出, 由 JS 决定。
 - **macOS**:`main_mac.mm` 创建平台集成(内部 `[NSApplication sharedApplication]`)并设置 `MacAppDelegate`(含最小主菜单:隐藏/退出);platform runner 基于 GCD 主队列(由主 CFRunLoop 在 common modes 下服务,resize 拖拽期间同样执行),退出循环用 `[NSApp stop:]` + 唤醒事件;`applicationShouldTerminate` 返回 `NSTerminateCancel` 并转 `Quit`(JS 可取消), `applicationShouldTerminateAfterLastWindowClosed` 返回 NO,由我们自己有序关闭后让 `main` 正常返回。
 
 ### 命令行(`AppConfig::Parse`)

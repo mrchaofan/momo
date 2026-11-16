@@ -12,11 +12,13 @@
 
 #include "base/logging.h"
 #include "embedder/common/engine_platform.h"
+#include "embedder/common/fallback_surface.h"
 #include "embedder/windows/win_app.h"
 #include "embedder/windows/win_displays.h"
 #include "embedder/windows/win_mouse_events.h"
 #include "embedder/windows/win_native_loop.h"
 #include "embedder/windows/win_services.h"
+#include "embedder/windows/win_surface_d3d.h"
 #include "embedder/windows/win_vsync_dwm.h"
 #include "embedder/windows/win_window.h"
 
@@ -34,6 +36,14 @@ class WinPlatformIntegration final : public PlatformIntegration {
     if (FAILED(hr)) {
       MOMO_LOG(WARNING) << "CoInitializeEx failed: 0x" << std::hex << static_cast<uint32_t>(hr);
     }
+    if (SoftwareRenderingForced()) {
+      MOMO_LOG(INFO) << "MOMO_SOFTWARE_RENDERING set: windows use the software surface.";
+    } else if (auto device = WinD3DDevice::Create(); device.ok()) {
+      d3d_device_ = std::move(device).value();
+    } else {
+      MOMO_LOG(WARNING) << "Direct3D 12 unavailable (" << device.status()
+                        << "); windows use the software surface.";
+    }
   }
 
   ~WinPlatformIntegration() override {
@@ -48,7 +58,7 @@ class WinPlatformIntegration final : public PlatformIntegration {
       return InvalidArgumentError("CreateWindow requires a delegate");
     }
     StatusOr<std::unique_ptr<WinWindow>> window =
-        WinWindow::Create(options, delegate, WinWindow::Context{mouse_input_, displays_, app_});
+        WinWindow::Create(options, delegate, WinWindow::Context{mouse_input_, displays_, app_, d3d_device_});
     if (!window.ok()) {
       return window.status();
     }
@@ -75,6 +85,8 @@ class WinPlatformIntegration final : public PlatformIntegration {
   mutable WinDisplays displays_;
   // 进程内唯一的指针输入(PointerDispatcher), 注入每个窗口;窗口先于本对象销毁。
   WinMouseInput mouse_input_;
+  // 应用级的 Direct3D 设备与命令队列: 全部窗口共用(引擎因此只建一个 GPU 后端)。为空 = 软件呈现。
+  std::shared_ptr<const WinD3DDevice> d3d_device_;
   bool com_initialized_ = false;
 };
 

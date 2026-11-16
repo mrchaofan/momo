@@ -34,7 +34,7 @@ MomoStatus AddFunction(MomoJsBuilderRef, const char*, MomoNativeFn, void*) { ret
 }  // namespace
 
 StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings, WindowClient& client,
-                                                     const AppHost&, uint64_t) {
+                                                     const AppHost&) {
   MOMO_LOG(INFO) << "Built without a JS runtime (bundle "
                  << (settings.bundle_path.empty() ? "<none>" : settings.bundle_path.string())
                  << " not executed; placeholder frames).";

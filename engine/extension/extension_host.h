@@ -90,12 +90,6 @@ class ExtensionHost final : public Object {
   // 关闭: on_detach 全部扩展, 停止 worker pool。幂等。
   void DetachAll();
 
-  // 向扩展的生命周期监听器同步派发一个事件(platform 线程;语义见 momo_extension.h"生命周期事件")。
-  // 调用方(Shell)保证时机: RuntimeStarting 在创建 JS 运行时之前, RuntimeStopped 在它销毁之后, 两者派发
-  // 期间没有 JS 运行时。runtime_generation: 事件所指运行时的代数(由 Shell 维护)。
-  void NotifyLifecycle(MomoLifecycleEvent event, MomoLifecycleReason reason,
-                       uint64_t runtime_generation);
-
   std::vector<std::string> attached_ids() const;
   std::vector<std::string> errors() const;
   std::vector<ModuleRegistration> modules() const;
