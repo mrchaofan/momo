@@ -73,8 +73,9 @@ export class ViewTester {
     this.binding.debugOverrideView(size, dpr);
   }
 
-  /** 清空微任务队列(若干轮)。 */
+  /** 清空微任务队列(若干轮);mock 宿主下先等宿主已发出的回复与通知全部到达。 */
   async flushMicrotasks(): Promise<void> {
+    await currentHost?.mock?.hostIdle();
     for (let i = 0; i < 10; i++) await Promise.resolve();
   }
 

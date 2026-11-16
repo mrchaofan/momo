@@ -40,6 +40,9 @@ const control: MockControl = {
   },
   sceneOpsByView: new Map<number, RecordedOp[]>(),
   titles: new Map<number, string>(),
+  hostIdle(): Promise<void> {
+    return __mockServices.idle();
+  },
   openViews(): number[] {
     return [...viewMap.keys()].filter((id) => id !== 0);
   },
@@ -59,10 +62,9 @@ const control: MockControl = {
   },
   windowStates: new Map(),
   setWindowFocus(id, focused): void {
-    const v = viewMap.get(id);
-    if (v === undefined) return;
-    v.focused = focused;
-    v.onFocusChanged?.(focused);
+    if (!viewMap.has(id) || focusedViews.has(id) === focused) return;
+    if (focused) focusedViews.add(id);
+    else focusedViews.delete(id);
     notify("focusChanged", { view: id, focused });
   },
   reopen(hasVisibleWindows: boolean): void {
@@ -90,6 +92,8 @@ const control: MockControl = {
     control.exitCode = null;
     control.appCalls = [];
     quitting = false;
+    focusedViews.clear();
+    focusedViews.add(0);
     // 测试之间不留窗口: 静默移除其他视图(框架侧的 Widget 对象由 Widget.debugReset 作废)。
     for (const id of [...viewMap.keys()]) {
       if (id === 0) continue;
@@ -548,12 +552,10 @@ interface MockView {
   readonly id: number;
   devicePixelRatio: number;
   physicalSize: { width: number; height: number };
-  focused: boolean;
   visible: boolean;
   onMetricsChanged: (() => void) | null;
   onPointerPacket: ((data: Float64Array, count: number) => void) | null;
   onKeyData: ((data: KeyData) => boolean | void) | null;
-  onFocusChanged: ((focused: boolean) => void) | null;
   onVisibilityChanged: ((visible: boolean) => void) | null;
   render(scene: Scene): void;
 }
@@ -566,6 +568,8 @@ interface MockWindow {
 }
 
 const viewMap = new Map<number, MockView>();
+/** 持有系统焦点的窗口(宿主状态;启动窗口一开始就有焦点)。 */
+const focusedViews = new Set<number>([0]);
 let nextViewId = 1;
 
 function makeView(id: number, width: number, height: number, dpr: number): MockView {
@@ -573,12 +577,10 @@ function makeView(id: number, width: number, height: number, dpr: number): MockV
     id,
     devicePixelRatio: dpr,
     physicalSize: { width, height },
-    focused: id === 0,
     visible: true,
     onMetricsChanged: null,
     onPointerPacket: null,
     onKeyData: null,
-    onFocusChanged: null,
     onVisibilityChanged: null,
     render(scene: Scene): void {
       if (!viewMap.has(id)) return;
@@ -612,6 +614,7 @@ function removeView(id: number): void {
   control.moveLoops.delete(id);
   control.windowStates.delete(id);
   firstFrame.delete(id);
+  focusedViews.delete(id);
   const last = viewMap.size === 0;
   // 宿主异步通知(真实引擎经 ui 线程任务): 用 microtask 模拟。视图先移除, 再发 closed;最后一个窗口关闭时
   // (不在退出流程中)发 windowAllClosed, 应用继续运行。
@@ -715,6 +718,17 @@ function setFrame(view: number, frame: { x: number; y: number; width: number; he
   notify("frameChanged", { view, frame: [frame.x, frame.y, frame.width, frame.height] });
 }
 
+/** 窗口快照(create / getState 的回复)。 */
+function snapshotOf(view: number): Record<string, unknown> {
+  const f = control.frames.get(view)!;
+  return {
+    frame: [f.x, f.y, f.width, f.height], controls: controlsOf(view), focused: focusedViews.has(view),
+    state: control.windowStates.get(view),
+    capabilities: ["alwaysOnTop", "position", "resizeOptions", "hiddenTitleBar", "windowDrag", "moveLoop", "pointerCapture",
+                   "platformViews", "nonActivating", "visibility", "minMax"],
+  };
+}
+
 function controlsOf(view: number): number[] | null {
   const bar = control.titleBars.get(view);
   return bar?.hidden ? [0, 0, 78, bar.height > 0 ? bar.height : 28] : null;
@@ -789,7 +803,7 @@ function handleWindowCall(call: MethodCall): unknown {
     if (a["resizable"] === false) control.resizable.set(id, false);
     control.windowStates.set(id, { ...kShown, visible: a["show"] !== false });
     win.onViewportsChanged?.();  // 视图先加入(真实宿主: AddView 先于回复到达 ui 线程)
-    return id;
+    return { ...snapshotOf(id), view: id };
   }
   const view = Number(a["view"]);
   if (call.method === "close") {
@@ -802,14 +816,8 @@ function handleWindowCall(call: MethodCall): unknown {
   }
   if (!viewMap.has(view)) throw new PlatformException("notFound", `no window for view ${view}`);
   switch (call.method) {
-    case "getState": {
-      const f = control.frames.get(view)!;
-      return {
-        frame: [f.x, f.y, f.width, f.height], controls: controlsOf(view), state: control.windowStates.get(view),
-        capabilities: ["alwaysOnTop", "position", "resizeOptions", "hiddenTitleBar", "windowDrag", "moveLoop", "pointerCapture",
-                       "platformViews", "nonActivating", "visibility", "minMax"],
-      };
-    }
+    case "getState":
+      return snapshotOf(view);
     case "show":
       setState(view, { visible: true, minimized: false });
       return null;

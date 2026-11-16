@@ -173,8 +173,8 @@ export class RootView extends StatefulView {
   }
 }
 
-type ViewportHandlers = Pick<Viewport, "onMetricsChanged" | "onPointerPacket" | "onKeyData" | "onFocusChanged" | "onVisibilityChanged">;
-const kViewportHandlers = ["onMetricsChanged", "onPointerPacket", "onKeyData", "onFocusChanged", "onVisibilityChanged"] as const;
+type ViewportHandlers = Pick<Viewport, "onMetricsChanged" | "onPointerPacket" | "onKeyData" | "onVisibilityChanged">;
+const kViewportHandlers = ["onMetricsChanged", "onPointerPacket", "onKeyData", "onVisibilityChanged"] as const;
 
 class RootViewState extends State<RootView> {
   /** 窗口在 ViewsBinding 里的登记;没有窗口时为 null。 */
@@ -186,10 +186,16 @@ class RootViewState extends State<RootView> {
   #scope = new FocusScopeNode({ debugLabel: "RootView Scope" });
   readonly #shortcuts = defaultShortcuts();
   readonly #actions = defaultActions();
-  #focused = false;
   /** 窗口是否还开着(有窗口且未关闭): 否则画面没有人看, 子树里的 Ticker 静音。 */
   #open = false;
   readonly #onWidgetChanged = (): void => {
+    if (this.mounted) this.setState();
+  };
+  readonly #onWidgetFocusChanged = (): void => {
+    const focused = this.view.widget?.isFocused ?? false;
+    if (!focused) HardwareKeyboard.instance.clearState();
+    // 窗口获得系统焦点: 把 momo 焦点移到本窗口(恢复其上次的焦点)。
+    if (focused && !this.#scope.hasFocus) this.#scope.requestFocus();
     if (this.mounted) this.setState();
   };
   readonly #onWidgetClosed = (): void => {
@@ -212,11 +218,12 @@ class RootViewState extends State<RootView> {
     if (widget === null || viewport === null) return;
     this.#host = { viewport, renderView: this.#renderView, pipelineOwner: this.#pipelineOwner };
     binding.registerView(this.#host);
-    this.#focused = viewport.focused;
     this.#open = true;
     widget.on("closed", this.#onWidgetClosed);
     widget.on("controls-changed", this.#onWidgetChanged);
     widget.on("state-changed", this.#onWidgetChanged);
+    widget.on("focus", this.#onWidgetFocusChanged);
+    widget.on("blur", this.#onWidgetFocusChanged);
     this.#bind(viewport, this.#host);
   }
 
@@ -238,6 +245,8 @@ class RootViewState extends State<RootView> {
       this.view.widget?.off("closed", this.#onWidgetClosed);
       this.view.widget?.off("controls-changed", this.#onWidgetChanged);
       this.view.widget?.off("state-changed", this.#onWidgetChanged);
+      this.view.widget?.off("focus", this.#onWidgetFocusChanged);
+      this.view.widget?.off("blur", this.#onWidgetFocusChanged);
       ViewsBinding.instance.unregisterView(host);
     }
     this.#pipelineOwner.rootNode = null;
@@ -268,12 +277,6 @@ class RootViewState extends State<RootView> {
           return false;
         }
       },
-      onFocusChanged: (focused: boolean) => {
-        if (!focused) HardwareKeyboard.instance.clearState();
-        // 窗口获得系统焦点: 把 momo 焦点移到本窗口(恢复其上次的焦点)。
-        if (focused && !this.#scope.hasFocus) this.#scope.requestFocus();
-        if (this.mounted) this.setState(() => (this.#focused = focused));
-      },
       // 不可见期间不提交画面: 重新可见时补一帧。
       onVisibilityChanged: (visible: boolean) => {
         if (visible) binding.markNeedsCommit(host);
@@ -288,7 +291,7 @@ class RootViewState extends State<RootView> {
     const widget = this.view.widget;
     const content = new MediaQuery({
       data: new MediaQueryData({
-        size: cfg.size, devicePixelRatio: cfg.devicePixelRatio, windowFocused: this.#focused,
+        size: cfg.size, devicePixelRatio: cfg.devicePixelRatio, windowFocused: widget?.isFocused ?? false,
         windowControls: toRect(widget?.controls ?? null),
       }),
       // 各窗口的焦点子树在焦点树根下并列(不是 view 树里外层窗口的后代): 默认快捷键的节点挂在根下, 窗口的

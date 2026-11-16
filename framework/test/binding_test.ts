@@ -92,9 +92,11 @@ group("binding", () => {
       return new SizedBox();
     } });
     await t.pumpView(w);
+    expect.equal(sizes.at(-1), new Size(800, 600).toString());
+    sizes.length = 0;  // 启动时的构建次数不是这里要验证的(窗口状态到达时 MediaQuery 会再构建一次)
     t.setViewSize(new Size(400, 300), 2);
     await t.pump();
-    expect.deepEqual(sizes, [new Size(800, 600).toString(), new Size(400, 300).toString()]);
+    expect.deepEqual(sizes, [new Size(400, 300).toString()]);
     expect.equal(t.renderView.configuration.devicePixelRatio, 2);
   });
 });

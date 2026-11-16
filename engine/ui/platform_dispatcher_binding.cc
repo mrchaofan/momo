@@ -1,10 +1,9 @@
 // momo:ui 的视图(窗口)对象、事件分发与 momo:ui 共享状态(docs/04 §6)。
 //
 // JS 可见(完整声明见 framework/packages/momo/src/ui/momo-ui.d.ts):
-//   Viewport(每个视图一个): id / devicePixelRatio / physicalSize / focused / visible(只读快照, 变化时刷新)
+//   Viewport(每个视图一个): id / devicePixelRatio / physicalSize / visible(只读快照, 变化时刷新)
 //     render(scene)
-//     onMetricsChanged / onPointerPacket(data, count) / onKeyData(data) / onFocusChanged(focused)
-//     onVisibilityChanged(visible)
+//     onMetricsChanged / onPointerPacket(data, count) / onKeyData(data) / onVisibilityChanged(visible)
 //   platformDispatcher: 全局的 scheduleFrame() / onBeginFrame / onDrawFrame / onViewportsChanged
 //   viewports: Map<id, Viewport>(隐式视图 0 存在时含它)
 //   POINTER_DATA_STRIDE
@@ -51,7 +50,7 @@ ViewBinding* ViewOf(const Args& a) {
 }
 
 constexpr const char* kViewHandlers[] = {"onMetricsChanged", "onPointerPacket", "onKeyData",
-                                         "onFocusChanged", "onVisibilityChanged"};
+                                         "onVisibilityChanged"};
 
 void OnDetachedViewWeak(const v8::WeakCallbackInfo<ViewBinding>& info) {
   // 第一遍回调: 只 Reset 句柄并释放 C++ 对象。
@@ -202,7 +201,6 @@ v8::Local<v8::Object> UiBindings::Impl::AddViewObject(v8::Isolate* isolate,
         .ToLocalChecked();
   }
   SyncMetrics(isolate, context, id);
-  SyncFocus(isolate, context, id);
   SyncVisible(isolate, context, id);
   return v;
 }
@@ -267,16 +265,6 @@ void UiBindings::Impl::SyncMetrics(v8::Isolate* isolate, v8::Local<v8::Context> 
   w->Set(context, V8String(isolate, "devicePixelRatio"),
          v8::Number::New(isolate, m.device_pixel_ratio))
       .Check();
-}
-
-void UiBindings::Impl::SyncFocus(v8::Isolate* isolate, v8::Local<v8::Context> context,
-                                 ViewId id) {
-  ViewBinding* view = FindView(id);
-  if (view != nullptr && !view->object.IsEmpty()) {
-    view->object.Get(isolate)
-        ->Set(context, V8String(isolate, "focused"), v8::Boolean::New(isolate, client->focused(id)))
-        .Check();
-  }
 }
 
 void UiBindings::Impl::SyncVisible(v8::Isolate* isolate, v8::Local<v8::Context> context,
@@ -455,20 +443,6 @@ bool UiBindings::KeyData(ViewId view, const platform::KeyData& data) {
       impl_->CallViewHandler(view, "onKeyData", 1, argv).ToLocal(&result) && result->IsTrue();
   impl_->runtime->DrainMicrotasks();
   return handled;
-}
-
-void UiBindings::FocusChanged(ViewId view, bool focused) {
-  if (!is_imported()) {
-    return;
-  }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
-  impl_->SyncFocus(isolate, context, view);
-  v8::Local<v8::Value> argv[] = {v8::Boolean::New(isolate, focused)};
-  impl_->CallViewHandler(view, "onFocusChanged", 1, argv);
-  impl_->runtime->DrainMicrotasks();
 }
 
 void UiBindings::VisibilityChanged(ViewId view, bool visible) {

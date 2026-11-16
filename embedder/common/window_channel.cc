@@ -109,6 +109,18 @@ EncodableValue WindowChannel::StateValue(const WindowStateFlags& s) {
                                      {"fullscreen", s.fullscreen}});
 }
 
+EncodableMap WindowChannel::Snapshot(platform::ViewId view, PlatformWindow& w) {
+  const uint32_t caps = w.capabilities();
+  EncodableMap snapshot;
+  snapshot.emplace_back("frame", (caps & kCapabilityPosition) != 0 ? RectValue(w.screen_frame())
+                                                                   : EncodableValue());
+  snapshot.emplace_back("controls", OptRectValue(w.window_controls_rect()));
+  snapshot.emplace_back("focused", host_->IsWindowFocused(view));
+  snapshot.emplace_back("capabilities", CapabilityNames(caps));
+  snapshot.emplace_back("state", StateValue(w.state()));
+  return snapshot;
+}
+
 void WindowChannel::RegisterWindowMethod(std::string method, WindowHandler handler) {
   channel_.Register(method, [this, method, handler = std::move(handler)](const EncodableValue& a)
                                 -> StatusOr<EncodableValue> {
@@ -133,7 +145,11 @@ void WindowChannel::RegisterMethods() {
       return InvalidArgumentError("momo/window create: width and height must be positive");
     }
     MOMO_ASSIGN_OR_RETURN(platform::ViewId id, host_->CreateWindow(options));
-    return EncodableValue(static_cast<int64_t>(id));
+    PlatformWindow* window = host_->FindWindow(id);
+    if (window == nullptr) return NotFoundError("momo/window create: the window closed while opening");
+    EncodableMap snapshot = Snapshot(id, *window);
+    snapshot.emplace_back("view", static_cast<int64_t>(id));
+    return EncodableValue(std::move(snapshot));
   });
   channel_.Register("close", [this](const EncodableValue& a) -> StatusOr<EncodableValue> {
     const std::optional<int64_t> view = Int(a, "view");
@@ -149,15 +165,8 @@ void WindowChannel::RegisterMethods() {
   });
 
   // ---- 状态 ----
-  RegisterWindowMethod("getState", [](PlatformWindow& w, const EncodableValue&) -> StatusOr<EncodableValue> {
-    const uint32_t caps = w.capabilities();
-    EncodableMap state;
-    state.emplace_back("frame", (caps & kCapabilityPosition) != 0 ? RectValue(w.screen_frame())
-                                                                  : EncodableValue());
-    state.emplace_back("controls", OptRectValue(w.window_controls_rect()));
-    state.emplace_back("capabilities", CapabilityNames(caps));
-    state.emplace_back("state", StateValue(w.state()));
-    return EncodableValue(std::move(state));
+  RegisterWindowMethod("getState", [this](PlatformWindow& w, const EncodableValue& a) -> StatusOr<EncodableValue> {
+    return EncodableValue(Snapshot(Int(a, "view").value_or(-1), w));
   });
 
   // ---- 显示与状态切换 ----

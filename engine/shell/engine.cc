@@ -42,9 +42,6 @@ Status Engine::StartRuntime() {
   // 运行时创建前就已绑定的视图: 驱动创建时已读到它们, 这里补发各自的状态。
   for (const auto& [view, state] : views_) {
     driver_->OnMetricsChanged(view);
-    if (state.focused) {
-      driver_->OnFocusChanged(view, true);
-    }
     if (!state.visible) {
       driver_->OnVisibilityChanged(view, false);
     }
@@ -94,11 +91,6 @@ platform::ViewportMetrics Engine::metrics(platform::ViewId view) const {
   return it != views_.end() ? it->second.metrics : platform::ViewportMetrics{};
 }
 
-bool Engine::focused(platform::ViewId view) const {
-  auto it = views_.find(view);
-  return it != views_.end() && it->second.focused;
-}
-
 bool Engine::visible(platform::ViewId view) const {
   auto it = views_.find(view);
   return it != views_.end() && it->second.visible;
@@ -136,15 +128,6 @@ void Engine::OnKeyData(platform::ViewId view, const platform::KeyData& data) {
   if (driver_ != nullptr && views_.count(view) != 0) {
     driver_->OnKeyData(view, data);
   }
-}
-
-void Engine::OnFocusChanged(platform::ViewId view, bool focused) {
-  auto it = views_.find(view);
-  if (it == views_.end() || it->second.focused == focused) {
-    return;
-  }
-  it->second.focused = focused;
-  if (driver_) driver_->OnFocusChanged(view, focused);
 }
 
 void Engine::OnVisibilityChanged(platform::ViewId view, bool visible) {

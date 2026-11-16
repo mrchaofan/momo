@@ -114,7 +114,6 @@ class Shell final : public Object {
   void OnMetricsChanged(platform::ViewId view, const platform::ViewportMetrics& metrics);
   void OnPointerPacket(platform::ViewId view, platform::PointerDataPacket packet);
   void OnKeyData(platform::ViewId view, const platform::KeyData& data);
-  void OnFocusChanged(platform::ViewId view, bool focused);
   // 视图可见性(窗口显示/隐藏/最小化)。不可见的视图不出帧;全部不可见时停帧。
   void OnViewVisibilityChanged(platform::ViewId view, bool visible);
   // 平台视图获得了键盘焦点(用户点击等)→ momo/platform_views 通道 "focused"(native→JS)。

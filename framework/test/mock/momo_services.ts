@@ -6,11 +6,25 @@ const jsHandlers = new Map<string, MessageHandler>();
 const nativeHandlers = new Map<string, (data: ArrayBuffer | null) => ArrayBuffer | null | Promise<ArrayBuffer | null>>();
 const sent: { channel: string; data: ArrayBuffer | null }[] = [];
 
+// 到达 JS 的顺序与真实引擎一致: 宿主的回复与通知是 ui 线程上同一个队列里的任务, 一个处理完(连同它引出的
+// microtask)才轮到下一个。原生 handler 在调用时同步执行(宿主状态立即更新), 只有它的回复排队。
+let arrivals: Promise<unknown> = Promise.resolve();
+
+async function settle(): Promise<void> {
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+}
+
+function arrive<T>(run: () => T | Promise<T>): Promise<T> {
+  const result = arrivals.then(run);
+  arrivals = result.then(settle, settle);
+  return result;
+}
+
 export function send(channel: string, data: ArrayBuffer | null): Promise<ArrayBuffer | null> {
   sent.push({ channel, data });
   const h = nativeHandlers.get(channel);
-  if (!h) return Promise.resolve(null);
-  return Promise.resolve(h(data));
+  const reply = h ? h(data) : null;
+  return arrive(() => reply);
 }
 
 export function setHandler(channel: string, handler: MessageHandler | null): void {
@@ -30,11 +44,21 @@ export const __mockServices = {
     else nativeHandlers.set(channel, h);
   },
   /** 模拟原生 → JS 消息。 */
-  async deliver(channel: string, data: ArrayBuffer | null): Promise<ArrayBuffer | null> {
-    const h = jsHandlers.get(channel);
-    if (!h) return null;
-    const r = await h(data);
-    return r ?? null;
+  deliver(channel: string, data: ArrayBuffer | null): Promise<ArrayBuffer | null> {
+    return arrive(async () => {
+      const h = jsHandlers.get(channel);
+      if (!h) return null;
+      const r = await h(data);
+      return r ?? null;
+    });
+  },
+  /** 已排队的回复与通知全部到达并处理完。 */
+  async idle(): Promise<void> {
+    let seen: Promise<unknown> | null = null;
+    while (seen !== arrivals) {
+      seen = arrivals;
+      await seen;
+    }
   },
   hasJsHandler(channel: string): boolean {
     return jsHandlers.has(channel);

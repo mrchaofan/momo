@@ -74,6 +74,7 @@ class FakeHost final : public WindowChannel::Host {
     auto it = windows.find(view);
     return it != windows.end() ? it->second.get() : nullptr;
   }
+  bool IsWindowFocused(platform::ViewId view) override { return view == focused; }
   MockWindow* mock(platform::ViewId view) { return windows.at(view).get(); }
 
   static constexpr platform::ViewId kBareView = 99;
@@ -84,6 +85,7 @@ class FakeHost final : public WindowChannel::Host {
   std::vector<platform::ViewId> closed;
   std::vector<platform::ViewId> close_requests;
   platform::ViewId next_id = 1;
+  platform::ViewId focused = -1;
 };
 
 EncodableValue Args(EncodableMap map) { return EncodableValue(std::move(map)); }
@@ -97,10 +99,15 @@ class WindowChannelTest : public ::testing::Test {
   StatusOr<EncodableValue> Call(std::string method, EncodableMap args = {}) {
     return channel_.HandleCall(MethodCall{std::move(method), Args(std::move(args))});
   }
+  // create 的回复是窗口快照, 其中的 view 是新视图的 id。
+  static platform::ViewId ViewOf(const EncodableValue& window) {
+    const EncodableValue* view = window.Find("view");
+    return view != nullptr ? view->AsInt().value_or(-1) : -1;
+  }
   platform::ViewId Create() {
-    StatusOr<EncodableValue> id = Call("create", {{"width", 300.0}, {"height", 200.0}});
-    EXPECT_TRUE(id.ok()) << id.status();
-    return id.ok() ? *id->AsInt() : -1;
+    StatusOr<EncodableValue> window = Call("create", {{"width", 300.0}, {"height", 200.0}});
+    EXPECT_TRUE(window.ok()) << window.status();
+    return window.ok() ? ViewOf(*window) : -1;
   }
 
   momo::testing::ScopedTestEventLoop loop_;
@@ -119,7 +126,11 @@ TEST_F(WindowChannelTest, CreateParsesOptions) {
                                                 {"nonActivating", true},
                                                 {"resizable", false}});
   ASSERT_TRUE(id.ok()) << id.status();
-  EXPECT_EQ(id->AsInt(), 1);
+  EXPECT_EQ(ViewOf(*id), 1);
+  // 回复带窗口的完整状态: JS 不必再查一次。
+  ASSERT_NE(id->Find("state"), nullptr);
+  ASSERT_NE(id->Find("focused"), nullptr);
+  EXPECT_FALSE(*id->Find("focused")->GetIf<bool>());
   ASSERT_EQ(host_.created.size(), 1u);
   const WindowOptions& o = host_.created[0];
   EXPECT_EQ(o.title, "doc");
@@ -198,6 +209,8 @@ TEST_F(WindowChannelTest, TitleBarReportsWindowControls) {
   const auto* frame = state->Find("frame")->GetIf<std::vector<double>>();
   ASSERT_NE(frame, nullptr);
   EXPECT_EQ((*frame)[2], 300);
+  host_.focused = view;
+  EXPECT_TRUE(*Call("getState", {{"view", view}})->Find("focused")->GetIf<bool>());
   const auto* caps = state->Find("capabilities")->GetIf<EncodableList>();
   ASSERT_NE(caps, nullptr);
   EXPECT_NE(std::find(caps->begin(), caps->end(), EncodableValue("hiddenTitleBar")), caps->end());
@@ -236,7 +249,8 @@ TEST_F(WindowChannelTest, VisibilityAndStateMethods) {
   StatusOr<EncodableValue> id = Call("create", {{"width", 300.0}, {"height", 200.0}, {"show", false}});
   ASSERT_TRUE(id.ok()) << id.status();
   EXPECT_FALSE(host_.created.back().show);
-  const platform::ViewId view = *id->AsInt();
+  const platform::ViewId view = ViewOf(*id);
+  EXPECT_FALSE(*id->Find("state")->Find("visible")->GetIf<bool>()) << "created hidden";
   MockWindow* w = host_.mock(view);
   ASSERT_TRUE(Call("show", {{"view", view}}).ok());
   EXPECT_TRUE(w->state().visible);

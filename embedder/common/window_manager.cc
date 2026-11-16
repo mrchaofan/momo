@@ -82,7 +82,6 @@ void WindowManager::DestroyAll() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   MOMO_DCHECK(shell_ == nullptr) << "DetachEngine must precede DestroyAll";
   windows_.clear();
-  focused_window_.reset();
 }
 
 StatusOr<ViewId> WindowManager::CreateWindow(const WindowOptions& options) {
@@ -121,9 +120,6 @@ void WindowManager::Close(ViewId view_id, bool report_all_closed) {
   controller->DetachEngine();
   if (window_channel_ != nullptr) {
     window_channel_->NotifyClosed(view_id);
-  }
-  if (focused_window_ == view_id) {
-    focused_window_.reset();
   }
   if (shell_ != nullptr) {
     UpdateVsyncWindow();  // 帧时钟改为跟随剩下的窗口(这个窗口稍后才销毁)
@@ -238,8 +234,16 @@ PlatformWindow* WindowManager::FindWindow(ViewId view_id) {
   return controller != nullptr ? &controller->window() : nullptr;
 }
 
+bool WindowManager::IsWindowFocused(ViewId view_id) {
+  WindowController* controller = window(view_id);
+  return controller != nullptr && controller->focused();
+}
+
 WindowController* WindowManager::focused_window() const {
-  return focused_window_.has_value() ? window(*focused_window_) : nullptr;
+  for (const auto& [view_id, controller] : windows_) {
+    if (controller->focused()) return controller.get();
+  }
+  return nullptr;
 }
 
 TextInputConnection* WindowManager::FocusedTextInput() {
@@ -254,14 +258,6 @@ TextInputConnection* WindowManager::FocusedTextInput() {
 // WindowController::Client
 
 void WindowManager::OnWindowCloseRequested(ViewId view) { RequestCloseWindow(view); }
-
-void WindowManager::OnWindowFocusChanged(ViewId view, bool focused) {
-  if (focused) {
-    focused_window_ = view;
-  } else if (focused_window_ == view) {
-    focused_window_.reset();
-  }
-}
 
 void WindowManager::OnWindowTextInput(ViewId, const TextInputEvent& event) {
   if (platform_channels_ != nullptr) platform_channels_->SendTextInput(event);

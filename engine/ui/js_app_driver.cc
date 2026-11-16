@@ -43,9 +43,6 @@ class JsAppDriver final : public AppDriver {
   void OnVisibilityChanged(ViewId view, bool visible) override {
     bindings_->VisibilityChanged(view, visible);
   }
-  void OnFocusChanged(ViewId view, bool focused) override {
-    bindings_->FocusChanged(view, focused);
-  }
   void OnViewAdded(ViewId view) override { bindings_->ViewAdded(view); }
   void OnViewRemoved(ViewId view) override { bindings_->ViewRemoved(view); }
 

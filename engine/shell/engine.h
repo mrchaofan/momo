@@ -40,7 +40,7 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   ~Engine() override;
 
   // ---- JS 运行时 ----
-  // 创建运行时并执行 bundle(同步;只能调用一次), 然后把已有视图的状态(尺寸、焦点、可见性)交给它并请求
+  // 创建运行时并执行 bundle(同步;只能调用一次), 然后把已有视图的状态(尺寸、可见性)交给它并请求
   // 一帧。bundle 加载/执行失败返回错误(消息含 JS 栈): 引擎没有运行时, 不出帧, 是否退出由宿主决定。
   Status StartRuntime();
 
@@ -55,7 +55,6 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   void OnMetricsChanged(platform::ViewId view, const platform::ViewportMetrics& metrics);
   void OnPointerPacket(platform::ViewId view, const platform::PointerDataPacket& packet);
   void OnKeyData(platform::ViewId view, const platform::KeyData& data);
-  void OnFocusChanged(platform::ViewId view, bool focused);
   // 视图可见性(窗口隐藏/最小化): 不可见的视图不出帧;全部不可见时停帧。
   void OnVisibilityChanged(platform::ViewId view, bool visible);
 
@@ -67,7 +66,6 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   void ScheduleFrame() override { animator_.RequestFrame(); }
   void Render(std::unique_ptr<graphics::LayerTree> layer_tree) override;
   platform::ViewportMetrics metrics(platform::ViewId view) const override;
-  bool focused(platform::ViewId view) const override;
   bool visible(platform::ViewId view) const override;
   std::vector<platform::ViewId> views() const override;
 
@@ -82,7 +80,6 @@ class Engine final : public Object, private ui::WindowClient, private Animator::
   ui::AppHost host_;
   struct ViewState {
     platform::ViewportMetrics metrics;
-    bool focused = false;
     bool visible = true;
   };
   // 帧时钟: 应用未挂起且至少有一个可见视图时运行(零视图不出帧, JS 照常运行)。

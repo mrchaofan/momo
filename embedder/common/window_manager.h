@@ -79,6 +79,7 @@ class WindowManager final : public Object,
   void CloseWindow(engine::platform::ViewId view_id) override;
   void RequestCloseWindow(engine::platform::ViewId view_id) override;
   PlatformWindow* FindWindow(engine::platform::ViewId view_id) override;
+  bool IsWindowFocused(engine::platform::ViewId view_id) override;
 
  private:
   // 创建窗口并登记;options.show 时显示;引擎已就绪则绑定。
@@ -90,7 +91,6 @@ class WindowManager final : public Object,
 
   // WindowController::Client
   void OnWindowCloseRequested(engine::platform::ViewId view) override;
-  void OnWindowFocusChanged(engine::platform::ViewId view, bool focused) override;
   void OnWindowTextInput(engine::platform::ViewId view, const TextInputEvent& event) override;
 
   PlatformIntegration& platform_;
@@ -103,7 +103,6 @@ class WindowManager final : public Object,
 
   std::map<engine::platform::ViewId, std::unique_ptr<WindowController>> windows_;
   engine::platform::ViewId next_view_id_ = engine::platform::kImplicitViewId + 1;
-  std::optional<engine::platform::ViewId> focused_window_;
 
   MOMO_DISALLOW_COPY_AND_ASSIGN(WindowManager);
 };
