@@ -119,6 +119,7 @@ StatusOr<std::unique_ptr<JsRuntime>> JsRuntime::Create(const Options& options) {
 
   JsRuntime* raw = runtime.get();
   const std::string cache_dir = options.code_cache_dir.string();
+  const std::string builtin_dir = options.builtin_dir.string();
   v8::TryCatch try_catch(isolate);
   if (node::LoadEnvironment(
           runtime->env_,
@@ -126,9 +127,9 @@ StatusOr<std::unique_ptr<JsRuntime>> JsRuntime::Create(const Options& options) {
           [isolate](const node::StartExecutionCallbackInfo&) -> v8::MaybeLocal<v8::Value> {
             return v8::Undefined(isolate);
           },
-          [raw, cache_dir](node::Environment*, v8::Local<v8::Value> process,
-                           v8::Local<v8::Value> require) {
-            raw->RunBootstrap(process, require, cache_dir);
+          [raw, cache_dir, builtin_dir](node::Environment*, v8::Local<v8::Value> process,
+                                        v8::Local<v8::Value> require) {
+            raw->RunBootstrap(process, require, cache_dir, builtin_dir);
           })
           .IsEmpty() ||
       runtime->host_.IsEmpty()) {
@@ -140,22 +141,25 @@ StatusOr<std::unique_ptr<JsRuntime>> JsRuntime::Create(const Options& options) {
 }
 
 void JsRuntime::RunBootstrap(v8::Local<v8::Value> process, v8::Local<v8::Value> require,
-                                 const std::string& code_cache_dir) {
+                                 const std::string& code_cache_dir, const std::string& builtin_dir) {
   v8::Isolate* isolate = isolate_;
   v8::Local<v8::Context> context = this->context();
   v8::Local<v8::String> params[] = {V8String(isolate, "process"), V8String(isolate, "require"),
-                                    V8String(isolate, "codeCacheDir")};
+                                    V8String(isolate, "codeCacheDir"),
+                                    V8String(isolate, "builtinDir")};
   v8::ScriptOrigin origin(V8String(isolate, "momo:bootstrap"));
   v8::ScriptCompiler::Source source(V8String(isolate, kNodeBootstrapSource), origin);
   v8::Local<v8::Function> fn;
-  if (!v8::ScriptCompiler::CompileFunction(context, &source, 3, params).ToLocal(&fn)) {
+  if (!v8::ScriptCompiler::CompileFunction(context, &source, 4, params).ToLocal(&fn)) {
     return;  // 异常留给 LoadEnvironment 的调用方
   }
-  v8::Local<v8::Value> args[] = {process, require,
-                                 code_cache_dir.empty() ? v8::Local<v8::Value>(v8::Null(isolate))
-                                                        : V8String(isolate, code_cache_dir)};
+  const auto path_or_null = [isolate](const std::string& dir) -> v8::Local<v8::Value> {
+    return dir.empty() ? v8::Local<v8::Value>(v8::Null(isolate)) : V8String(isolate, dir);
+  };
+  v8::Local<v8::Value> args[] = {process, require, path_or_null(code_cache_dir),
+                                 path_or_null(builtin_dir)};
   v8::Local<v8::Value> host;
-  if (fn->Call(context, v8::Null(isolate), 3, args).ToLocal(&host) && host->IsObject()) {
+  if (fn->Call(context, v8::Null(isolate), 4, args).ToLocal(&host) && host->IsObject()) {
     host_.Reset(isolate, host.As<v8::Object>());
   }
 }

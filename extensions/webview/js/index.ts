@@ -1,17 +1,18 @@
-// @momo-examples/ext-webview 的 JS 门面。
+// momo:webview —— 内置扩展: 系统 WebView 作为平台视图(docs/07 §1)。运行时自带, 应用 `import … from "momo:webview"`。
 //   WebView / WebViewController   网页视图与对它的操作
 //   registerProtocol              自定义资源协议(app://… 之类), 用它加载应用自己的网页
 //   WebSession / CookieStore      会话(数据分区)与 cookie
 // 原生侧(native/src/ext_webview.mm, 一个 Node 插件)注册平台视图类型 "momo.webview";本文件是它唯一的调用方。
+// 构建产物是 <resources>/builtin/webview/{package.json, index.js, ext_webview.node}: 本文件编译成 index.js,
+// 插件就在它旁边——下面的相对导入按这个布局写。框架(momo:framework)同样由运行时提供, 两者是同一份。
 // 与原生侧之间的命令、事件、协议帧的格式见 ext_webview.mm 文件头;接口设计与平台映射见 README。
 import {
   PlatformView, State, StatefulView, utf8Decode, utf8Encode,
   type BuildContext, type FocusNode, type Key, type PlatformViewController, type View,
-} from "@momo/framework";
+} from "momo:framework";
 import { assetsDir, nativeHost } from "momo:services";
-import addon from "../build/ext_webview.node";
-
-export const kWebViewType = "momo.webview";
+// @ts-ignore 编译产物旁边的原生插件: 源码树里没有这个文件, 也没有类型(形状见下)。
+import addon from "./ext_webview.node";
 
 const native = addon as {
   attach(host: bigint, options: {
@@ -22,6 +23,8 @@ const native = addon as {
   command(json: string): Promise<string>;
   respondToProtocolRequest(frame: ArrayBuffer): void;
 };
+
+export const kWebViewType = "momo.webview";
 
 async function call(target: { id: number } | { session: string }, method: string, args: Record<string, unknown> = {}): Promise<unknown> {
   const reply = JSON.parse(await native.command(JSON.stringify({ ...target, method, ...args }))) as Record<string, unknown>;

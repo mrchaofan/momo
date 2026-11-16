@@ -8,7 +8,7 @@
 
 - 开发者用 JS/TS 编写 Windows / macOS 桌面应用,UI 完全自绘,双端像素一致。
 - 产物为原生可执行程序:原生入口启动 → 创建窗口与渲染表面 → 在合适时机创建 V8 执行环境 → 加载 JS bundle → 运行应用。
-- 向 JS 暴露一组稳定的底层 API(命名空间 `momo:ui`、`momo:services` 等,对标 `dart:ui` + Services),View 体系(组件)、app 与 Widget(应用与窗口对象)在 JS 侧实现。
+- 向 JS 暴露一组底层 API(命名空间 `momo:ui`、`momo:services` 等,对标 `dart:ui` + Services),View 体系(组件)、app 与 Widget(应用与窗口对象)在 JS 侧实现。框架由运行时自带, 应用以 `import "momo:framework"` 使用(框架版本 = 运行时版本, `momo:ui` 是框架与引擎之间的内部接口);应用的文件里只有业务自己的代码。
 - 提供三方扩展机制:原生扩展就是 Node.js 原生插件(`.node`, Node-API), 以 JS 包的形式提供给应用开发者;引擎自己的能力(平台线程、外部纹理、平台视图)经一张很小的宿主能力表(稳定 C ABI)提供。
 
 **非目标(首期)**
@@ -21,7 +21,7 @@
 
 | 层 | 语言 | 目录 | 职责 | 对标 Flutter |
 |---|---|---|---|---|
-| Framework | TS | `framework/` | View/Element/RenderObject 三树、布局、绘制组织、手势、动画、调度 | Framework (Dart) |
+| Framework | TS | `framework/` | View/Element/RenderObject 三树、布局、绘制组织、手势、动画、调度。随运行时发布(`<resources>/builtin/framework/`), 不进应用的代码 | Framework (Dart) |
 | Engine | C++ | `engine/` | V8 运行时、`momo:ui` 原生绑定、DisplayList、LayerTree 合成、Skia 光栅化、文本排版、图片解码、原生扩展的宿主能力表、Shell 协调 | Engine (C++) |
 | Embedder | C++ | `embedder/` | 可执行程序入口、消息循环、生命周期、Engine 装配与驱动;平台抽象(`common/`)与 Win/Mac/headless 平台实现(窗口、Surface、输入、IME、剪贴板、VSync) | shell/platform/{darwin,windows} + runner |
 | Base | C++ | `base/` | 全项目基础库:对象模型(Object/DeleteLater/WeakPtr)、EventLoop/TaskRunner/线程、Status/logging(docs/12) | fml / Chromium base |
@@ -29,7 +29,8 @@
 依赖规则(编译期强制,CMake 不提供反向链接):
 
 ```
-framework(JS)  ⇅ 仅通过 momo:* 绑定与消息通道
+应用(JS)       → momo:framework、内置扩展(momo:webview);都是运行时自带的 JS 模块(docs/04 §4)
+framework(JS)  ⇅ 仅通过 momo:ui / momo:services 绑定与消息通道
 engine         → base(+ Skia/V8);自己声明平台契约 engine/platform/(纯接口),不依赖 embedder
 embedder       → engine(含 engine/platform 契约)+ 操作系统 SDK;实现契约并注入
 base           → 仅标准库(所有 C++ 层的最底层)
@@ -47,7 +48,7 @@ embedder::Application (每进程一个)
                                     │    └─ ui::UiBindings (momo:ui 等绑定)
                                     ├─ Animator (帧调度, 连接 VsyncSource)
                                     ├─ Rasterizer (raster 线程, 持有 GPU Context)
-                                    └─ extension::ExtensionHost (原生扩展的宿主能力表)
+                                    └─ native_host::NativeHost (原生扩展的宿主能力表)
  └─ embedder::PlatformWindow (由 embedder 创建; 其 RenderSurface 经 AttachView 交给 Shell; 应用唯一的 VsyncSource 经 SetVsyncSource)
 ```
 
@@ -74,7 +75,7 @@ VSync(platform) ─► Animator.beginFrame(ui 线程)
 
 1. **momo:ui 同步绑定**(高频、低延迟):Canvas/DisplayList 记录、SceneBuilder、窗口事件、输入事件。V8 FunctionTemplate 直接绑定,见 docs/04。
 2. **消息通道 MessageChannel**(低频、异步):平台服务(剪贴板、对话框、菜单…),二进制编码,对标 Flutter 的 Platform Channel,见 docs/04 与 docs/03。
-3. **原生扩展**(三方):Node.js 原生插件(`.node`), JS 与原生之间用 Node-API;引擎能力(平台线程、外部纹理、平台视图)经宿主能力表(稳定 C ABI)提供,见 docs/07。
+3. **原生扩展**:Node.js 原生插件(`.node`), JS 与原生之间用 Node-API;引擎能力(平台线程、外部纹理、平台视图)经宿主能力表(稳定 C ABI)提供,见 docs/07。内置扩展随运行时提供(`momo:webview`), 三方扩展是应用自己 `node_modules` 里的包。
 
 ## 7. 文档目录
 
@@ -86,9 +87,9 @@ VSync(platform) ─► Animator.beginFrame(ui 线程)
 | `04-js-runtime.md` | V8 集成、绑定机制、模块系统、Inspector 调试 |
 | `05-rendering-pipeline.md` | DisplayList、LayerTree、Rasterizer、GPU 后端选择 |
 | `06-framework-js.md` | TS 框架层:三树模型、布局协议、手势、动画、包结构 |
-| `07-extension-system.md` | 原生扩展:Node 原生插件、加载与打包、宿主能力表、关闭顺序、SDK |
+| `07-extension-system.md` | 原生扩展:Node 原生插件、内置扩展与三方扩展、宿主能力表、关闭顺序、SDK |
 | `08-threading-model.md` | Task Runner、线程间通信、对象生命周期与线程归属 |
-| `09-build-and-deps.md` | CMake 组织、第三方依赖(Skia/V8)管理、JS 构建、打包 |
+| `09-build-and-deps.md` | CMake 组织、第三方依赖(Skia/V8)管理、运行时自带模块的构建、应用打包 |
 | `10-coding-standards.md` | C++ 规范(无异常/RTTI、错误处理、所有权)、TS 规范 |
 | `11-roadmap.md` | 里程碑分治与验收标准 |
 | `12-base.md` | base 基础库:对象模型(Object/DeleteLater/WeakPtr)、EventLoop 与线程、任务组合 |

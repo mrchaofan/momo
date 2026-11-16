@@ -8,28 +8,28 @@ Engine 是框架的核心 C++ 层:向上为 JS 提供 `momo:*` 原生 API,向下
 engine/
 ├── CMakeLists.txt
 ├── platform/        # 平台契约(纯接口 + POD): RenderSurface、VsyncSource、输入、IME、PlatformServices、ViewportMetrics
-├── common/          # 无 V8/Skia 的公共设施: Settings、TaskRunners、MessageChannelHub、StandardCodec、JSON
+├── common/          # 无 V8/Skia 的公共设施: Settings、TaskRunners、MessageChannelHub、StandardCodec、JSON、AppLayout(应用在磁盘上的样子)
 ├── shell/           # 协调中枢: Shell、Engine、Animator、Rasterizer、ThreadHost
 ├── runtime/         # V8 集成: isolate/context 管理、绑定基建、模块加载、inspector
 ├── ui/              # momo:ui 原生实现: window(全局帧回调)、views(视图)、Canvas、SceneBuilder、事件入口
 ├── graphics/        # DisplayList、LayerTree、Skia 封装、GPU 后端(compositor)
 ├── text/            # SkParagraph 封装: 字体管理、段落排版
 ├── assets/          # 资源与图片: AssetManager、图片解码(codec)、缓存
-└── extension/       # 原生扩展的宿主能力表(MomoHost)的实现
+└── native_host/     # 原生扩展的宿主能力表(MomoHost)的实现
 ```
 
 每个模块一个静态库 `momo_engine_<module>`;线程/任务/对象/Status 等基础设施来自顶层 `base/`(docs/12)。模块间依赖:
 
 ```
-shell → ui, extension, graphics, common, platform, base
+shell → ui, native_host, graphics, common, platform, base
 ui    → runtime(绑定基建), graphics, text, assets, common, platform, base
         (无 V8 构建: ui 只含占位驱动, 不依赖 runtime)
 runtime → base, (v8)
-extension → graphics, common, base, (momo_ext_sdk)
+native_host → graphics, common, base, (momo_ext_sdk)
 text, assets → graphics, base, (skia)
 graphics → base, (skia)
 common, platform → base
-(单向无环:Settings/TaskRunners 在 common, 供 ui/extension/shell 共用;AppDriver 接口与其两种实现都在 ui)
+(单向无环:Settings/TaskRunners 在 common, 供 ui/native_host/shell 共用;AppDriver 接口与其两种实现都在 ui)
 ```
 
 ## 2. shell/ — 协调中枢
@@ -59,7 +59,7 @@ common, platform → base
 
 | 组件 | 职责 |
 |---|---|
-| `JsRuntime`(`js_runtime.h`) | 一个 Node 环境(v8::Isolate + 主 Context + uv 循环):创建/销毁、执行主模块、排空 microtask;`RegisterNativeModule(specifier, factory)` 注册 `momo:*` 原生模块;`.node`(原生扩展)的 import 由模块钩子支持(docs/04 §4);JS 异常转 `Status`;编译缓存;等待调试器。头文件含 V8 类型, 只被 runtime 与 ui 的实现文件包含 |
+| `JsRuntime`(`js_runtime.h`) | 一个 Node 环境(v8::Isolate + 主 Context + uv 循环):创建/销毁、执行主模块、排空 microtask;`RegisterNativeModule(specifier, factory)` 注册引擎的原生模块(`momo:ui`、`momo:services`);运行时自带的 JS 模块(`momo:framework`、内置扩展, 在 `Settings::builtin_dir`)与 `.node`(原生扩展)的 import 由模块钩子支持(docs/04 §4);JS 异常转 `Status`;编译缓存;等待调试器。头文件含 V8 类型, 只被 runtime 与 ui 的实现文件包含 |
 | `Wrappable` + `ClassBuilder<T>` | 把 C++ 对象暴露为 JS 类(类型校验不依赖 RTTI,GC 弱回调释放) |
 | `js_args.h` | 绑定函数的参数解码(`ArgNumber`、`ArgWrapped<T>`…) |
 | `NodeBindings` | libuv 循环接到 ui 线程(poll 线程 + `uv_sem`,对照 Electron);`--dev` 时 Node 的 inspector 供 Chrome DevTools 连接 |
@@ -93,11 +93,11 @@ common, platform → base
 
 - `FontCollection`:系统字体枚举(经 platform 接口拿平台字体管理器)+ 应用内嵌字体;回退链。
 - `ParagraphBuilder/Paragraph`:薄封装 SkParagraph。
-- `AssetManager`:统一资源定位(来自 embedder 的 AssetResolver);`image_decoder.h`(`MultiFrameCodec` 等):io 线程解码,raster 线程首次使用时惰性上传。图片缓存(LRU)在框架层 `painting/image_provider.ts` 的 `ImageCache`,引擎不做缓存。
+- `AssetManager`:统一资源定位(资源目录是应用的 `assets/`, 由 `common/app_layout.h` 的 `LocateApp` 给出);`image_decoder.h`(`MultiFrameCodec` 等):io 线程解码,raster 线程首次使用时惰性上传。图片缓存(LRU)在框架层 `painting/image_provider.ts` 的 `ImageCache`,引擎不做缓存。
 
-## 7. extension/ — 原生扩展的宿主能力表(详见 docs/07)
+## 7. native_host/ — 原生扩展的宿主能力表(详见 docs/07)
 
-原生扩展是 Node.js 原生插件(`.node`), 由 JS `import` 加载;引擎不知道有哪些扩展, 也不加载任何东西。`ExtensionHost`(`extension_host.cc`)只实现宿主能力表 `MomoHost`(`extensions/sdk/include/momo/momo_host.h`):把任务投到 platform 线程、外部纹理(`TextureRegistry`)、平台视图工厂(`PlatformViewRegistry`)。本模块不含 V8;表的地址经 `momo:services` 的 `nativeHost` 交给 JS, 再由 JS 传给插件。`Close()`(`Shell::Shutdown` 的第一步)之后表里每个函数返回 `kMomoErrClosed`, 已投递而未执行的平台任务被丢弃。扩展推送纹理新帧时, 帧请求经 `TextureRegistry` 的监听者交给 Engine。
+原生扩展是 Node.js 原生插件(`.node`), 由 JS `import` 加载;引擎不知道有哪些扩展, 也不加载任何东西。`NativeHost`(`native_host.cc`)只实现宿主能力表 `MomoHost`(`extensions/sdk/include/momo/momo_host.h`):把任务投到 platform 线程、外部纹理(`TextureRegistry`)、平台视图工厂(`PlatformViewRegistry`)。本模块不含 V8;表的地址经 `momo:services` 的 `nativeHost` 交给 JS, 再由 JS 传给插件。`Close()`(`Shell::Shutdown` 的第一步)之后表里每个函数返回 `kMomoErrClosed`, 已投递而未执行的平台任务被丢弃。扩展推送纹理新帧时, 帧请求经 `TextureRegistry` 的监听者交给 Engine。
 
 ## 8. 错误处理与所有权
 

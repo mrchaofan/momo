@@ -6,7 +6,7 @@ Momo 是一个面向 macOS 与 Windows 的**自绘**（self-rendered）桌面应
 
 ```
 应用代码（TS）  ──  runApp(new MaterialApp({ home: ... }))
-Framework（TS） ──  View / Element / RenderObject、布局、手势、动画、Material 控件；app / Widget（应用与窗口）
+Framework（TS） ──  View / Element / RenderObject、布局、手势、动画、Material 控件；app / Widget（应用与窗口）；由运行时自带（momo:framework）
 Engine（C++）   ──  V8 · momo:ui 绑定 · DisplayList / LayerTree · Skia（Metal / 软件）· 文本 · 扩展宿主能力表
 Embedder（C++） ──  进程入口 · 消息循环 · 窗口 · 渲染表面 · VSync · 输入 / IME
 ```
@@ -39,7 +39,7 @@ Embedder（C++） ──  进程入口 · 消息循环 · 窗口 · 渲染表面
 | Xcode Command Line Tools | 提供 clang（C++20）与 Metal / AppKit SDK |
 | CMake + Ninja | CMake ≥ 3.24 |
 | Python 3 | 运行依赖下载脚本 |
-| Node.js + npm | 构建框架与应用 bundle（esbuild、TypeScript） |
+| Node.js + npm | 构建运行时自带的框架与内置扩展（esbuild）、编译示例应用、运行框架测试 |
 
 ### 1. 拉取预编译依赖
 
@@ -49,7 +49,15 @@ Skia 与 V8 使用预编译包（版本与 SHA256 锁定在 `cmake/deps.lock.jso
 python3 tools/fetch_deps.py
 ```
 
-### 2. 构建运行时 Momo.app
+### 2. 安装框架的构建依赖
+
+框架（`momo:framework`）与内置扩展是运行时的一部分，构建运行时的时候用 esbuild 编译，所以要先装好它（没装时 CMake 只给出警告，构建出的运行时不带 `momo:framework`）：
+
+```bash
+(cd framework && npm install)
+```
+
+### 3. 构建运行时 Momo.app
 
 ```bash
 cmake -S . -B out/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -59,33 +67,29 @@ cmake -S . -B out/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build out/debug
 ```
 
-产物 `out/debug/embedder/Momo.app` 是**通用运行时**：它只负责创建窗口、启动引擎并执行一个 JS bundle。默认打包进去的 bundle 是 `examples/hello_frame/main.js`，直接打开就能看到一个动画画面：
+产物 `out/debug/embedder/Momo.app` 是**通用运行时**：它负责创建窗口、启动引擎并执行一个应用，自带框架与内置扩展（`Contents/Resources/builtin/`）。默认打包进去的应用是 `examples/hello_frame`，直接打开就能看到一个动画画面：
 
 ```bash
 out/debug/embedder/Momo.app/Contents/MacOS/Momo
 ```
 
-### 3. 安装框架依赖
-
-```bash
-cd framework && npm install
-```
-
 ### 4. 运行一个 View 示例
 
+示例应用不依赖任何 npm 包，不需要 `npm install`；`npm run build` 把 `src/main.ts` 编译成 `dist/main.js`（借用上面装在 `framework/` 下的 esbuild）：
+
 ```bash
-node framework/packages/cli/momo.mjs bundle examples/counter
+(cd examples/counter && npm run build)
 ```
 
 ```bash
-out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=examples/counter/dist/bundle.js
+out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev examples/counter
 ```
 
 ---
 
 ## 编写第一个应用
 
-一个 Momo 应用就是一个普通的 npm 工程，入口默认是 `src/main.ts`：
+一个 Momo 应用就是一个目录：`package.json` 的 `main` 是运行时加载的入口（JS，ESM），资源放在 `assets/`：
 
 ```
 my-app/
@@ -95,20 +99,24 @@ my-app/
 └── assets/            # 可选：图片等资源，运行时通过 AssetImage("logo.png") 等访问
 ```
 
-`package.json`（`@momo/framework` 目前通过本地路径引用；`momo.name` 是打包后的 `.app` 名称）：
+框架不在应用里：它由运行时提供，应用写 `import … from "momo:framework"` 就能用，框架的版本就是运行时的版本。内置扩展也一样（目前只有 macOS 上的 `momo:webview`）。所以应用的文件里只有你自己的代码，不需要为了框架安装任何 npm 包。
+
+`package.json`（`momo.name` 是打包后的 `.app` 名称）：
 
 ```json
 {
   "name": "my-app",
   "private": true,
   "type": "module",
-  "main": "src/main.ts",
+  "main": "dist/main.js",
   "momo": { "name": "MyApp" },
-  "dependencies": {
-    "@momo/framework": "file:../momo-djs/framework/packages/momo"
+  "scripts": {
+    "build": "esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --sourcemap=inline --outfile=dist/main.js"
   }
 }
 ```
+
+源码怎么变成 `main` 是应用自己的事，Momo 不参与，用什么工具都可以（纯 JS 应用不需要编译，`main` 直接指向源码）。要求只有两条：产物是 ESM；`momo:*` 的导入原样保留（esbuild 是 `--external:momo:*`）。上面用的是 esbuild，在 `my-app` 里装一次：`npm install --save-dev esbuild`。
 
 `src/main.ts`：
 
@@ -116,7 +124,7 @@ my-app/
 import {
   Center, Column, ElevatedButton, MaterialApp, Scaffold, AppBar, SizedBox,
   State, StatefulView, Text, runApp, type BuildContext, type View,
-} from "@momo/framework";
+} from "momo:framework";
 
 class CounterPage extends StatefulView {
   createState(): State {
@@ -150,19 +158,36 @@ class CounterPageState extends State<CounterPage> {
 runApp(new MaterialApp({ title: "MyApp", home: new CounterPage() }));
 ```
 
-### 开发循环：构建 bundle + 运行
+### 开发循环：编译 + 运行
 
-把 TS 打成单文件 ESM bundle（只保留 `momo:*` 外部导入，引擎会以内置模块提供；代码里 import 的原生扩展 `.node` 拷到 bundle 旁的 `native/`），再用 `--dev` 启动运行时：
+用应用自己的构建脚本把源码编译到 `main`，再用 `--dev` 启动运行时，参数是应用目录：
 
 ```bash
-node framework/packages/cli/momo.mjs bundle my-app
+(cd my-app && npm run build)
 ```
 
 ```bash
-out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev --bundle=my-app/dist/bundle.js
+out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev my-app
 ```
 
-重新构建后重启运行时即可看到改动。Momo 不支持热重启：一个进程里只有一个 JS 运行时，换 bundle 就是换进程。
+重新编译后重启运行时即可看到改动。Momo 不支持热重启：一个进程里只有一个 JS 运行时，换应用就是换进程。
+
+### 类型检查与编辑器提示
+
+`momo:framework` 的实现在运行时里，类型来自 npm 包 `@momo/framework`（以 TS 源码发布，目前通过本地路径引用：`npm install --save-dev ../momo-djs/framework/packages/momo`）。应用只用它做类型检查，在 `tsconfig.json` 里把 `momo:framework` 指过去：
+
+```json
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "paths": { "momo:framework": ["./node_modules/@momo/framework/src/index.ts"] }
+  }
+}
+```
+
+`momo:webview` 目前没有单独发布的类型包（仓库内的示例靠 `framework/tsconfig.json` 的 `paths` 指到 `extensions/webview/js/index.ts`）。
 
 ### 写给 Flutter 开发者
 
@@ -178,7 +203,7 @@ API 形状与 Flutter 基本一致，主要差异：
 
 ## 两种写法：View 框架与 momo:ui 底层 API
 
-绝大多数应用用 View 框架（上一节）。如果你要写游戏、可视化，或者想了解引擎边界，也可以绕开框架、直接用引擎提供的 `momo:ui` 模块画帧。它对标 Flutter 的 `dart:ui`，完整类型声明见 [framework/packages/momo/src/ui/momo-ui.d.ts](framework/packages/momo/src/ui/momo-ui.d.ts)。
+绝大多数应用用 View 框架（上一节）。如果你要写游戏、可视化，或者想了解引擎边界，也可以绕开框架、直接用引擎提供的 `momo:ui` 模块画帧。它对标 Flutter 的 `dart:ui`，是框架与引擎之间的内部接口（框架随运行时一起发布，这个接口跟着运行时的版本变），完整类型声明见 [framework/packages/momo/src/ui/momo-ui.d.ts](framework/packages/momo/src/ui/momo-ui.d.ts)。
 
 `momo:ui` 只有引擎职责：`platformDispatcher` 是全局的帧调度与帧回调，`viewports` 是视图（窗口）的画面、尺寸与输入。应用生命周期与窗口的标题、位置、标题栏等属于宿主，经宿主注册的 `momo/app`、`momo/window` 通道操作（框架里是 `app` 与 `Widget` 对象，以及 `WindowChrome` / `Title`）。
 
@@ -212,13 +237,13 @@ view.onMetricsChanged = () => window.scheduleFrame();
 window.scheduleFrame();
 ```
 
-这类脚本不需要构建，直接运行：`Momo --dev --bundle=path/to/main.js`。更完整的例子（含经 `momo/window` 通道设置窗口标题）见 `examples/hello_frame`。
+这类脚本不需要构建，直接运行：`Momo --dev path/to/main.js`（应用也可以是单个 JS 文件）。更完整的例子（含经 `momo/window` 通道设置窗口标题）见 `examples/hello_frame`。
 
 ---
 
 ## 常用能力速查
 
-以下 API 都从 `@momo/framework` 导入。
+以下 API 都从 `momo:framework` 导入。
 
 | 需求 | 用法 |
 |---|---|
@@ -239,6 +264,7 @@ window.scheduleFrame();
 | 窗口 | `await Widget.create({ title, width, height, show, ... })` 打开窗口（`Widget.fromId(0)` 是启动窗口），内容用 `ViewAnchor({ views: [new RootView({ widget, child })] })` 渲染；`Title` / `MaterialApp({ title })` 设置所在窗口的标题；窗口方法 `close` / `destroy` / `show` / `hide` / `minimize` / `maximize` / `restore` / `focus` / `setPosition`，事件 `closed` / `focus` / `minimize` / `move` / `resize` / `ready-to-show`… |
 | 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`，两侧留白用 `windowControlsPadding`（macOS 在左、Windows 在右，一份代码适配）；`WindowDragArea` 声明可拖动窗口的区域 |
 | 窗口能力 | `widget.capabilities`、`widget.bounds`、`widget.state`（平台不支持的能力是空操作，可先查询） |
+| 网页 | 内置扩展 `momo:webview`（macOS）：`import { WebView } from "momo:webview"`（见 [extensions/webview/README.md](extensions/webview/README.md)） |
 | 调用原生代码 | 原生扩展是 Node.js 原生插件，以普通 npm 包的形式使用：`import { add } from "@acme/ext-foo"`（见下文） |
 
 完整用法可参考 `examples/counter`（按钮、主题、快捷键）、`examples/todo`（输入框、列表、勾选、删除、滚动），以及 `framework/test/` 下的测试用例。
@@ -259,7 +285,9 @@ window.scheduleFrame();
 
 命令行工具是 npm 包 `@momo/cli`（源码在 `framework/packages/cli`，命令名 `momo`），随每个版本发布（`momo-cli-v<version>.tgz`）。它不依赖源码树：装进自己的工程后即可使用，仓库内则直接用 `node framework/packages/cli/momo.mjs` 运行。
 
-`momo build` 把应用打包成可分发的 `.app`（可选 DMG）。它会：用 esbuild 打 bundle → 把代码里按路径 import 的原生扩展（`.node`）拷到 `native/` → 复制运行时 `Momo.app` 为 `<Name>.app`，并把 bundle、`native/`、`assets/` 放进 `Contents/Resources/`。
+CLI 只有一个命令。`momo build` 把应用打包成可分发的 `.app`（可选 DMG）：复制运行时 `Momo.app` 为 `<Name>.app` → 把应用目录里选中的文件原样、保持相对位置放进 `Contents/Resources/app/`。它不编译（打包前先用应用自己的构建脚本产出 `main`），不分析文件内容，也不知道依赖。
+
+带哪些文件只按文件名决定：`package.json`、`main`、`assets/**` 总是带上，`momo.include` 追加任意其他文件，`momo.ignore` 从全部结果里去掉（通配：`*`、`**`、`?`，以 `/` 结尾表示整个目录）。应用运行时要从 `node_modules` 加载的包（没有编译进 `main` 的，例如带原生插件的包，见下文“使用三方扩展”）用 `momo.include` 带上，如 `"include": ["node_modules/better-sqlite3/"]`；它自己还依赖别的包时，把那些包也写上。没匹配到任何文件的 include（写错了或依赖没安装）会报错，`main` 不在结果里（还没编译，或被 ignore 去掉）也会报错。
 
 运行时不随 CLI 分发，用 `--runtime=` 或环境变量 `MOMO_RUNTIME` 指定：可以是发布产物 `momo-v<version>-<platform>.zip` 解压出的 `Momo.app`，也可以是自己构建的。
 
@@ -268,15 +296,14 @@ node framework/packages/cli/momo.mjs build my-app --out=out/apps --runtime=out/d
 ```
 
 ```bash
-node framework/packages/cli/momo.mjs build my-app --out=out/apps --runtime=out/debug/embedder/Momo.app --minify --dmg
+node framework/packages/cli/momo.mjs build my-app --out=out/apps --runtime=out/debug/embedder/Momo.app --dmg
 ```
 
 | 选项 | 说明 |
 |---|---|
-| `--out=<dir>` | 输出目录 |
+| `--out=<dir>` | 输出目录（默认 `<app-dir>/dist`） |
 | `--name=<App>` | 应用名（默认取 `package.json` 的 `momo.name`，其次是 `name`） |
 | `--runtime=<Momo.app>` | 使用的运行时（必填，或设环境变量 `MOMO_RUNTIME`；发布时请用 Release 构建的运行时） |
-| `--minify` | 压缩 bundle |
 | `--dmg` | 额外用 `hdiutil` 产出 `<Name>.dmg` |
 
 打包后的应用资源布局：
@@ -286,9 +313,14 @@ MyApp.app/Contents/
 ├── MacOS/Momo                   # 运行时可执行文件
 ├── Frameworks/libnode.*.dylib     # Node.js(含 V8)
 └── Resources/
-    ├── bundle.js                # 你的应用
-    ├── assets/                  # 来自 my-app/assets
-    └── native/                  # 原生扩展（*.node）；没有用到扩展时不存在
+    ├── builtin/                 # 运行时自带的模块（随运行时复制过来）
+    │   ├── framework/           # momo:framework：package.json、index.js
+    │   └── webview/             # momo:webview：package.json、index.js、ext_webview.node
+    └── app/                     # 你的应用，与 my-app 里的相对位置一致
+        ├── package.json
+        ├── dist/main.js         # package.json 的 main：只有你自己的代码
+        ├── assets/              # 来自 my-app/assets
+        └── node_modules/…       # momo.include 带上的包（如带原生插件的三方包）
 ```
 
 非 `--dev` 模式下，引擎会把 JS 编译结果缓存在 `~/Library/Caches/<bundle identifier>/v8`（每个应用一个目录；默认的 Momo.app 是 `dev.momo.app`），加快之后的启动。
@@ -297,7 +329,12 @@ MyApp.app/Contents/
 
 ## 原生扩展
 
-框架内置的 API 不够用时（数据库、托盘、音视频、硬件、现有 C/C++ SDK……），可以写**原生扩展**。Momo 的 JS 运行在 Node.js 环境里，所以原生扩展就是 **Node.js 原生插件**（`.node`，Node-API）：一个普通的 npm 包 = JS 门面 + 一个 `.node` 文件，npm 上现成的原生包也用同一条路加载。JS 与原生之间只用 Node-API；需要引擎能力（平台线程、外部纹理、平台视图）的扩展另外使用一张很小的宿主能力表 [momo_host.h](extensions/sdk/include/momo/momo_host.h)（稳定的纯 C ABI，只在末尾追加）。
+框架内置的 API 不够用时（数据库、托盘、音视频、硬件、现有 C/C++ SDK……），可以写**原生扩展**。Momo 的 JS 运行在 Node.js 环境里，所以原生扩展就是 **Node.js 原生插件**（`.node`，Node-API）：一个普通的 npm 包 = JS 门面 + 一个 `.node` 文件，npm 上现成的原生包按设计也用同一条路加载（没有拿真实的 npm 原生包测过）。JS 与原生之间只用 Node-API；需要引擎能力（平台线程、外部纹理、平台视图）的扩展另外使用一张很小的宿主能力表 [momo_host.h](extensions/sdk/include/momo/momo_host.h)（稳定的纯 C ABI，只在末尾追加）。
+
+扩展有两种来源：
+
+- **内置扩展**随运行时发布，和框架一样以 `momo:<name>` 导入，应用什么都不用装。目前只有 `momo:webview`（macOS，源码在 `extensions/webview/`）。
+- **三方扩展**是应用自己的依赖，属于业务代码：Momo 没有为它准备任何配置项，下面两小节讲的就是它。
 
 ### 扩展 SDK（构建产物）
 
@@ -322,30 +359,47 @@ find_package(MomoExtSdk 1 REQUIRED)        # -DMomoExtSdk_DIR=<sdk>/lib/cmake/Mo
 momo_add_extension(ext_acme src/ext_acme.cc)   # → <包>/build/ext_acme.node
 ```
 
-### 使用扩展
+### 使用三方扩展
 
-扩展对应用来说就是一个普通 npm 依赖：
+三方扩展对应用来说就是一个普通 npm 依赖，由 Node 按自己的规则从应用的 `node_modules` 加载，开发时和打包后都一样。没有 manifest，也没有宿主侧的扩展列表。
+
+带原生插件的包必须**保持原样留在 `node_modules` 里**：包内的 JS 按相对路径找自己的 `.node` 与动态库，编译进 `main` 就找不到了。所以应用要做两件事，都在自己的 `package.json` 里（以 `extensions/examples/hello-extension` 为例，先 `npm install ../momo-djs/extensions/examples/hello-extension`）：
 
 ```json
-"dependencies": {
-  "@momo-examples/ext-hello": "file:../momo-djs/extensions/examples/hello-extension"
+"scripts": {
+  "build": "esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --external:@momo-examples/ext-hello --sourcemap=inline --outfile=dist/main.js"
+},
+"momo": {
+  "include": ["node_modules/@momo-examples/ext-hello/"]
 }
 ```
+
+- 构建配置里把这个包排除（esbuild 是 `--external:<包名>`），导入在 `main` 里原样保留；
+- 用 `momo.include` 把 `node_modules/<包>/` 带进应用包（只有打包时需要；`Momo --dev my-app` 直接用应用目录里的 `node_modules`）。
 
 ```ts
 import { add, greet, hash } from "@momo-examples/ext-hello";
 console.log(add(1, 2), greet("Momo"), await hash(new Uint8Array([1, 2, 3])));
 ```
 
-没有 manifest，也没有 `package.json` 里的专有声明：`momo bundle` / `momo build` 把代码里按路径 import 的 `.node` 拷到产物的 `native/` 并改写导入；`.node` 不存在（扩展还没编译）时打包报错。扩展本身的示例见 `extensions/examples/`。
+不带原生插件的纯 JS 包两种方式都可以：编译进 `main`，或者同样留在 `node_modules` 里。扩展需要框架时（带视图的扩展）直接 `import "momo:framework"`：它由运行时提供，与应用拿到的是同一份，所以这样的扩展也是一个保持原样的整包。
 
-### 编写扩展
+### 编写三方扩展
 
-```bash
-node framework/packages/cli/momo.mjs ext create my-ext --name=myext
+扩展是一个普通的 npm 包，结构参照 `extensions/examples/hello-extension`：
+
+```
+ext-myext/
+├── package.json          # type: module，main: js/index.js，types: js/index.d.ts
+├── js/index.js           # JS 门面：按相对路径 import 插件
+├── js/index.d.ts         # 门面的类型
+├── native/
+│   ├── CMakeLists.txt    # 上面那两行
+│   └── src/myext.c       # Node-API 模块
+└── build/myext.node      # 编译产物
 ```
 
-生成的骨架是一个 Node 插件（C）、TS 门面和 CMake 文件。原生侧是标准的 Node-API 模块：
+原生侧是标准的 Node-API 模块：
 
 ```c
 #include <node_api.h>
@@ -372,12 +426,17 @@ NAPI_MODULE_INIT() {
 }
 ```
 
-JS 门面 import 这个 `.node`（默认导出是插件的 exports），给它的函数加上类型：
+JS 门面按相对路径 import 这个 `.node`（默认导出是插件的 exports）。它是 JS 而不是 TS：这个包保持原样由 Node 加载，运行时不执行 TS；类型写在旁边的 `.d.ts` 里：
+
+```js
+// js/index.js
+import addon from "../build/myext.node";
+export const { add } = addon;
+```
 
 ```ts
-import addon from "../build/myext.node";
-const native = addon as { add(a: number, b: number): number };
-export const add = (a: number, b: number): number => native.add(a, b);
+// js/index.d.ts
+export function add(a: number, b: number): number;
 ```
 
 Promise、后台线程（`napi_async_work`）、从别的线程回到 JS（`napi_threadsafe_function`）都用 Node-API。插件内部可以使用异常，但异常不得穿过 Node-API 与宿主表的回调边界。
@@ -392,7 +451,7 @@ Promise、后台线程（`napi_async_work`）、从别的线程回到 JS（`napi
 |---|---|
 | `extensions/examples/hello-extension` | 纯 C，只用 Node-API：同步函数、字符串/字节、线程池上的 Promise |
 | `extensions/examples/texture-extension` | C++：外部纹理，自己的线程按约 60 fps 推帧 |
-| `extensions/examples/webview-extension` | ObjC++（macOS）：WKWebView 平台视图；示例应用 `examples/webview` |
+| `extensions/webview` | 内置扩展 `momo:webview`，ObjC++（macOS）：WKWebView 平台视图；带视图的扩展，JS（`js/index.ts`）与原生插件在运行时的同一个目录里；示例应用 `examples/webview` |
 
 设计细节见 [docs/07-extension-system.md](docs/07-extension-system.md)。
 
@@ -400,12 +459,11 @@ Promise、后台线程（`napi_async_work`）、从别的线程回到 JS（`napi
 
 ## 命令行参数与环境变量
 
-运行时 `Momo` 的参数（未知参数与 `-psn_*`、`-NS*` 等系统参数会被忽略）：
+运行时 `Momo [<app>] [--key=value ...]` 的参数（未知参数与 `-psn_*`、`-NS*` 等系统参数会被忽略）：
 
 | 参数 | 说明 |
 |---|---|
-| `--bundle=<path>` | 要执行的 JS bundle，默认 `<Resources>/bundle.js` |
-| `--assets=<dir>` | 资源目录，默认 `<Resources>/assets` |
+| `<app>` | 应用路径（第一个位置参数）：目录（入口是其 `package.json` 的 `main`，缺省 `index.js`）或一个 JS 文件；资源在它的 `assets/`。默认是应用包内的 `<Resources>/app` |
 | `--title=<text>` | 初始窗口标题 |
 | `--width=<px>` / `--height=<px>` | 初始窗口尺寸（逻辑像素） |
 | `--dev` | 开发模式：启用 Inspector |
@@ -426,8 +484,9 @@ Promise、后台线程（`napi_async_work`）、从别的线程回到 JS（`napi
 | `examples/hello_frame` | momo:ui | 渐变卡片、旋转星形、描边；默认打包进 Momo.app |
 | `examples/counter` | View | Material 计数器：按钮、主题、键盘快捷键 |
 | `examples/todo` | View | 输入框、添加/勾选/删除、列表滚动 |
+| `examples/webview` | View + `momo:webview` | 多标签浏览器（macOS）：内置扩展 webview、无边框窗口、标签拖拽 |
 
-View 示例都是独立 npm 工程，可以用 `momo bundle` 构建后以 `--bundle` 运行，也可以用 `momo build` 打包成 `.app`。
+View 示例不依赖任何 npm 包，不需要 `npm install`：在示例目录里 `npm run build`（借用 `framework/node_modules` 里的 esbuild）编译后以 `Momo --dev <示例目录>` 运行，也可以再用 `momo build`（示例里是 `npm run package`，需设 `MOMO_RUNTIME`）打包成 `.app`。
 
 ---
 
@@ -435,11 +494,11 @@ View 示例都是独立 npm 工程，可以用 `momo bundle` 构建后以 `--bun
 
 | 目录 | 内容 |
 |---|---|
-| `framework/` | TypeScript UI 框架（`@momo/framework`）及其测试 |
+| `framework/` | TypeScript UI 框架（运行时以 `momo:framework` 提供；npm 包 `@momo/framework` 供类型检查）及其测试、命令行工具 `@momo/cli` |
 | `engine/` | 核心引擎（C++）：V8 运行时、`momo:*` 绑定、渲染管线、文本、资源、扩展宿主能力表；`engine/platform/` 是宿主需要实现的平台契约 |
 | `embedder/` | 宿主层：进程入口、生命周期、Engine 装配；`common/` 平台无关，`macos/` / `windows/` / `headless/` 为各平台实现 |
 | `base/` | C++ 基础库：Object 模型、EventLoop、TaskRunner、Status |
-| `extensions/` | 扩展 SDK（宿主能力表头文件 + CMake 包配置）与示例扩展 |
+| `extensions/` | 扩展 SDK（宿主能力表头文件 + CMake 包配置）、内置扩展（`webview/`）与三方扩展的示例（`examples/`） |
 | `examples/` | 示例应用 |
 | `tools/` | `fetch_deps.py`（依赖下载）、`package_release.py`（发布产物） |
 | `cmake/`、`third_party/` | CMake 模块与第三方依赖 |

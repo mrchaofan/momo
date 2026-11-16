@@ -1,10 +1,10 @@
 // examples/counter — View 版计数器(docs/11 M4 验收):文字 + 按钮 + 点击计数。
-// 构建: node framework/packages/cli/momo.mjs bundle examples/counter  (→ examples/counter/dist/bundle.js)
+// 运行: (cd examples/counter && npm run build) 把本文件编译成 dist/main.js, 然后 Momo --dev examples/counter
 import {
   AppBar, Center, Column, EdgeInsets, ElevatedButton, FloatingActionButton, Intent, CallbackAction, LogicalKeyboardKey,
   MaterialApp, Padding, Row, Scaffold, SingleActivator, SizedBox, State, StatefulView, Shortcuts, Actions, Text, TextButton,
   Theme, ThemeData, Color, Focus, app, runApp, type BuildContext, type View,
-} from "@momo/framework";
+} from "momo:framework";
 
 class IncrementIntent extends Intent {}
 class DecrementIntent extends Intent {}

@@ -5,8 +5,9 @@
 
 ```
 hello-extension/
-├── package.json         # 普通的 package.json, 没有 Momo 专有的声明
-├── js/index.ts          # JS 门面: import 插件, 给它的函数加上类型
+├── package.json         # 普通的 package.json(type: module, main: js/index.js, types: js/index.d.ts)
+├── js/index.js          # JS 门面: 按相对路径 import 插件, 导出它的函数
+├── js/index.d.ts        # 这些函数的类型
 ├── native/
 │   ├── CMakeLists.txt   # momo_add_extension(ext_hello src/ext_hello.c)
 │   └── src/ext_hello.c  # Node-API 模块(NAPI_MODULE_INIT)
@@ -45,15 +46,29 @@ NAPI_MODULE_INIT() {
 }
 ```
 
-JS 门面:
+JS 门面(JS + 类型声明:这个包保持原样由 Node 加载, 运行时不执行 TS):
+
+```js
+// js/index.js
+import addon from "../build/ext_hello.node";   // 相对路径;默认导出 = 插件的 exports
+export const { add, greet, reverseBytes, hash } = addon;
+```
 
 ```ts
-// js/index.ts
-import addon from "../build/ext_hello.node";   // 默认导出 = 插件的 exports
-const native = addon as { add(a: number, b: number): number /* … */ };
-export function add(a: number, b: number): number {
-  return native.add(a, b);
-}
+// js/index.d.ts
+export function add(a: number, b: number): number;
+/* … */
+```
+
+用它的应用要让这个包保持原样留在 `node_modules` 里(docs/07 §2.2), `js/index.js` 才能按相对路径找到 `.node`。这是
+应用自己的事, Momo 没有专门的配置项:在应用自己的构建配置里把它排除(不编译进 `main`), 打包时用 `momo.include`
+把它带进应用包。
+
+```json
+"scripts": {
+  "build": "esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --external:@momo-examples/ext-hello --outfile=dist/main.js"
+},
+"momo": { "include": ["node_modules/@momo-examples/ext-hello/"] }
 ```
 
 独立构建(仓库内随 Momo 一起构建, target `ext_hello`):

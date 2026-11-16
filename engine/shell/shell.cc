@@ -39,7 +39,7 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(const TaskRunners& task_runners,
   ui::AppHost host;
   host.io_runner = task_runners.io;
   host.hub = raw->hub_;
-  host.native_host = raw->extension_host_.host();
+  host.native_host = raw->native_host_.table();
   host.textures = raw->textures_;
   if (on_exit_requested) {
     // ui 线程(JS 调用栈内)调用: 投递到 platform, 由宿主做有序关闭(它会与 ui 线程同步汇合, 不能在这里等)。
@@ -64,7 +64,7 @@ Shell::Shell(const TaskRunners& task_runners, const Settings& settings)
       hub_(std::make_shared<MessageChannelHub>()),
       textures_(std::make_shared<graphics::TextureRegistry>()),
       platform_views_(std::make_shared<PlatformViewRegistry>()),
-      extension_host_(task_runners.platform, textures_, platform_views_),
+      native_host_(task_runners.platform, textures_, platform_views_),
       weak_this_(this) {}
 
 Shell::~Shell() { Shutdown(); }
@@ -79,7 +79,7 @@ void Shell::Shutdown() {
   hub_->SetNativeHandler("momo/platform_views", nullptr, nullptr);
   // 原生扩展(Node 插件)的代码随 JS 运行时一起结束, 所以引擎对它们的调用要先结束(docs/07 §4):
   // 1) 关闭宿主能力表: 扩展此后的调用都被拒绝, 已投递而未执行的平台任务不再执行。
-  extension_host_.Close();
+  native_host_.Close();
   // 2) 销毁全部平台视图(先移出窗口, 再交给扩展的工厂释放)并清空工厂。此后引擎不再调用任何扩展代码。
   platform_views_->Clear([this](int64_t view_id) {
     for (const auto& [view, delegate] : delegates_) {

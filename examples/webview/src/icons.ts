@@ -3,7 +3,7 @@ import { Paint, Path, type Canvas } from "momo:ui";
 import {
   AnimationController, BorderRadius, BoxDecoration, Center, Container, CustomPaint, CustomPainter, GestureDetector, MouseRegion, Size,
   State, StatefulView, type Animation, type BuildContext, type View,
-} from "@momo/framework";
+} from "momo:framework";
 import { Palette } from "./style";
 
 export type IconKind = "pin" | "restore";

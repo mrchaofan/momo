@@ -10,8 +10,7 @@ embedder/
 ├── common/                     # 平台无关的装配与生命周期逻辑
 │   ├── application.h/.cc       # Application: 进程级单例,生命周期状态机
 │   ├── window_controller.h/.cc # 窗口 ↔ 引擎视图的粘合(事件转发、尺寸同步)
-│   ├── app_config.h/.cc        # 启动配置(bundle 路径、窗口参数、命令行解析)
-│   ├── asset_resolver.h/.cc    # 定位 JS bundle 与资源(app 包内 / 开发模式本地目录)
+│   ├── app_config.h/.cc        # 启动配置(应用路径、窗口参数、命令行解析)
 │   ├── platform_integration.h  # embedder 的平台抽象: 工厂 + 原生循环(docs/03)
 │   ├── platform_window.h       # PlatformWindow / WindowDelegate
 │   ├── display.h               # DisplayInfo
@@ -33,12 +32,12 @@ embedder/
 
 ```
 1. 进程入口(wWinMain / main)
-2. 解析 AppConfig(bundle 路径、窗口初始参数、--dev 调试开关)
+2. 解析 AppConfig(应用路径、窗口初始参数、--dev 调试开关)
 3. Application::Create(options, platform)
    a. 平台集成由入口创建并注入(mac: CreateMacPlatformIntegration();win: CreateWinPlatformIntegration())
    b. 创建 OS 主线程的 `EventLoop`(`base::NativeMessagePump` 包装 `platform.native_loop()`)并绑定当前线程(Application 自身是归属它的 `momo::Object`);ui/raster/io 由 Application 持有的 `engine::ThreadHost` 创建;四者组成 TaskRunners
 4. Application::Launch(): 创建启动窗口(隐式视图 0)的 PlatformWindow + RenderSurface 并 Show(此时只有原生空窗口,显示闪屏底色)
-5. AssetResolver 解析 bundle → Shell::Create() → 注册通道、绑定窗口 → Shell::Run()(Application::LaunchEngine;Launch 到此返回,
+5. `engine::LocateApp` 定位应用(入口与资源目录)→ Shell::Create() → 注册通道、绑定窗口 → Shell::Run()(Application::LaunchEngine;Launch 到此返回,
    状态仍是 Launching, 主线程进入事件循环)
    a. engine::Shell::Create(TaskRunners, Settings, on_exit_requested): 只组装引擎(不创建 JS 运行时、不等待其他线程;
       原生扩展由 JS 加载, 这里不加载任何东西, 见 docs/07);主显示器刷新率作为 vsync 回退定时器频率
@@ -51,7 +50,7 @@ embedder/
 7. Application::Run(): 运行 platform EventLoop(其 pump 即原生消息循环:Win32 GetMessage 泵 / NSApplication run),Terminate 后在安全点清理 DeleteLater 对象再返回
 ```
 
-步骤 4–5 任一失败:`Launch()` 返回错误前已按 §4 完成有序清理(状态 Terminating,退出码 1)。bundle 缺失在 `--dev` 下降级为警告,以空引擎启动。
+步骤 4–5 任一失败:`Launch()` 返回错误前已按 §4 完成有序清理(状态 Terminating,退出码 1)。入口文件不存在不在这一步检查:它是加载时的失败, 由 JS 运行时报告, 启动随之失败(退出码非零)。
 
 "合适时机创建 JS 环境"的含义:窗口与 GPU 表面的创建(步骤 4)和 V8 初始化(5.b)并行化——V8 snapshot 反序列化与 bundle 读取在 ui/io 线程进行,不阻塞首个原生窗口出现。
 
@@ -75,7 +74,7 @@ NotRunning → Launching → Running ⇄ Suspended → Terminating
 
 ### 引擎装配(Application::LaunchEngine)
 
-Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:AssetResolver 结果(bundle、资源目录, 以及入口给出的缓存目录下的 V8 code cache 目录) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。销毁时先 `Shell::Shutdown`(顺序见 §4), 再 `WindowManager::DetachEngine`、移除宿主通道。
+Application 直接持有一个 `engine::Shell`(所有窗口共用)。启动时把 embedder 侧对象翻译成引擎依赖:`engine::LocateApp(命令行的应用路径 或 <resources>/app)` 的结果(入口、资源目录)、运行时自带的 JS 模块目录 `<resources>/builtin`(框架与内置扩展, docs/04 §4)、入口给出的缓存目录下的 V8 code cache 目录(`<cache>/v8`) + `--dev` + 主显示器刷新率 → `engine::Settings`;`Shell::Create(task_runners, settings, on_exit_requested)`(只组装引擎;on_exit_requested 接 `process.exit`)→ 在 `shell.hub()` 上注册宿主通道 → `WindowManager::AttachEngine` 创建应用唯一的 VsyncSource(`CreateVsyncSource`;不支持则为空, Shell 回退定时器)交给 `Shell::SetVsyncSource`, 再为每个窗口 `WindowController::AttachEngine` → `Shell::Run(done)` 异步启动 JS 运行时, 结果回来后才进入 Running。销毁时先 `Shell::Shutdown`(顺序见 §4), 再 `WindowManager::DetachEngine`、移除宿主通道。
 
 ### WindowController(common)
 
@@ -107,7 +106,7 @@ Quit(JS 可取消) / Exit(code): 窗口在流程里关闭(JS 还在, 收到各�
 
 ### 命令行(`AppConfig::Parse`)
 
-`--bundle=<path>`、`--assets=<dir>`、`--title=<text>`、`--width=<px>`、`--height=<px>`、`--dev`。未知参数与系统参数(`-psn_*`、`-NS*`)忽略。资源根目录由入口提供:Mac `NSBundle.mainBundle.resourcePath`,Win exe 所在目录;默认布局 `<resources>/{bundle.js, native/, assets/}`(docs/09 §4)。应用的缓存目录(V8 code cache 在其 `v8/` 下)同样由入口提供, 每个应用一个:Mac `~/Library/Caches/<bundle identifier>`,Win `%LOCALAPPDATA%\<exe 名>`(与单实例的 app id 相同)。
+`Momo [<app>] [--key=value ...]`。`<app>` 是第一个位置参数: 应用路径, 目录(含 `package.json`)或一个 JS 文件(`engine/common/app_layout.h`), 缺省是应用包内的 `<resources>/app`(docs/09 §4)。选项:`--title=<text>`、`--width=<px>`、`--height=<px>`、`--dev`、`--inspect-port=<n>`、`--inspect-brk`、`--no-startup-window`。未知选项忽略;单横线开头的系统参数(`-psn_*`、`-NSxxx YES`)连同其后的值一起忽略。资源根目录 `<resources>` 由入口提供:Mac `NSBundle.mainBundle.resourcePath`,Win exe 所在目录。应用的缓存目录(V8 code cache 在其 `v8/` 下)同样由入口提供, 每个应用一个:Mac `~/Library/Caches/<bundle identifier>`,Win `%LOCALAPPDATA%\<exe 名>`(与单实例的 app id 相同)。
 
 ## 6. 测试策略
 

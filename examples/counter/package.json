@@ -2,12 +2,9 @@
   "name": "momo-example-counter",
   "private": true,
   "type": "module",
-  "main": "src/main.ts",
-  "dependencies": {
-    "@momo/framework": "file:../../framework/packages/momo"
-  },
+  "main": "dist/main.js",
   "scripts": {
-    "bundle": "node ../../framework/packages/cli/momo.mjs bundle .",
-    "build": "node ../../framework/packages/cli/momo.mjs build ."
+    "build": "../../framework/node_modules/.bin/esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --sourcemap=inline --outfile=dist/main.js",
+    "package": "node ../../framework/packages/cli/momo.mjs build ."
   }
 }

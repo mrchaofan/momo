@@ -45,14 +45,22 @@ add_custom_command(
   VERBATIM)
 add_custom_target(momo_ext_sdk_package ALL DEPENDS ${MOMO_EXT_SDK_BUILD_DIR}/.stamp)
 
-# 示例扩展: 各自是独立的 Node 插件, 不链接引擎的任何符号。产物在各自包的 build/ 下(JS 门面从那里 import)。
+# 内置扩展 webview(macOS;ObjC++, 系统 WebView 作为平台视图嵌入, docs/05 §9): 运行时的一部分。插件直接输出到
+# 运行时自带模块的目录, 与它的 JS(framework/scripts/build_builtin.mjs 编译)放在一起: <builtin>/webview/。
+if(APPLE)
+  set(MOMO_EXTENSION_OUTPUT_DIR "${MOMO_BUILTIN_DIR}/webview")
+  add_subdirectory(webview/native)
+  unset(MOMO_EXTENSION_OUTPUT_DIR)
+  add_dependencies(momo_builtin ext_webview)
+endif()
+
+# 示例扩展(三方扩展的样子): 各自是一个带原生插件的普通 Node 包, 不链接引擎的任何符号。产物在各自包的 build/ 下
+# (包里的 JS 按相对路径 import)。
 #   hello   纯 C, 只用 Node-API: 同步函数、字符串/字节、后台线程上的 Promise
 #   texture C++: 外部纹理(宿主表), 自己的线程出帧
-#   webview ObjC++(macOS): 系统 WebView 作为平台视图嵌入(docs/05 §9)
 if(MOMO_BUILD_EXAMPLES OR MOMO_BUILD_TESTS)
   add_subdirectory(examples/hello-extension/native)
   add_subdirectory(examples/texture-extension/native)
-  add_subdirectory(examples/webview-extension/native)
 endif()
 
 # 端到端测试: 真实引擎(Shell + JS 运行时)加载真实的插件。依赖方向 examples → engine, 引擎自己的测试不依赖示例。

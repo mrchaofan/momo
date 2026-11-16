@@ -112,6 +112,11 @@ jobs:
           path: third_party/prebuilt/node
           key: ${{ steps.libnode.outputs.key }}
 
+      - name: Install the framework's build tools (esbuild)
+        # 运行时自带框架与内置扩展(builtin/): CMake 用 framework/ 下装好的 esbuild 编译它们, 没有就不带。
+        run: npm ci --no-audit --no-fund
+        working-directory: framework
+
       - name: Configure
         # 发布构建不带测试与示例扩展;警告不作为错误(runner 的编译器版本会变, 不应因此挡住发布)。
         run: >
@@ -131,30 +136,34 @@ jobs:
           mkdir -p "$RUNNER_TEMP/headless"
           unzip -q "out/dist/momo-headless-v$MOMO_VERSION-${{ matrix.target }}.zip" -d "$RUNNER_TEMP/headless"
           cd "$RUNNER_TEMP/headless"
-          ${{ matrix.headless }} --bundle="$GITHUB_WORKSPACE/embedder/headless/testdata/smoke.js" \
+          ${{ matrix.headless }} "$GITHUB_WORKSPACE/embedder/headless/testdata/smoke.js" \
             --width=320 --height=200 --timeout=60 --screenshot=smoke.png
 
-      - name: Smoke-test the npm packages
+      - name: Smoke-test the CLI package
         if: matrix.package_args != ''
-        # 在仓库之外, 只凭打出的两个 npm 包安装并打一个应用 bundle: 验证 @momo/cli 不依赖源码树。
+        # 在仓库之外, 只凭打出的 CLI 包与运行时产物把一个应用目录打包: 验证 @momo/cli 不依赖源码树。
         run: |
+          runtime="$RUNNER_TEMP/runtime"
+          mkdir -p "$runtime"
+          unzip -q "out/dist/momo-v$MOMO_VERSION-${{ matrix.target }}.zip" -d "$runtime"
+          if [ -d "$runtime/Momo.app" ]; then runtime="$runtime/Momo.app"; fi
           app="$RUNNER_TEMP/cli-smoke"
-          mkdir -p "$app/src"
+          mkdir -p "$app"
           cd "$app"
           cat > package.json <<EOF
           {
-            "name": "cli-smoke", "private": true, "type": "module", "main": "src/main.ts",
-            "dependencies": { "@momo/framework": "file:$GITHUB_WORKSPACE/out/dist/momo-framework-v$MOMO_VERSION.tgz" },
+            "name": "cli-smoke", "private": true, "type": "module", "main": "main.js",
             "devDependencies": { "@momo/cli": "file:$GITHUB_WORKSPACE/out/dist/momo-cli-v$MOMO_VERSION.tgz" }
           }
           EOF
-          cat > src/main.ts <<EOF
-          import { Center, Text, runApp } from "@momo/framework";
+          cat > main.js <<EOF
+          import { Center, Text, runApp } from "momo:framework";
           runApp(new Center({ child: new Text("smoke") }));
           EOF
           npm install --no-audit --no-fund
-          npx momo bundle .
-          test -s dist/bundle.js
+          npx momo build . --runtime="$runtime" --out=out
+          test -n "$(find out -path '*/app/main.js')"
+          test -n "$(find out -path '*/builtin/framework/index.js')"
 
       - uses: actions/upload-artifact@v7
         with:

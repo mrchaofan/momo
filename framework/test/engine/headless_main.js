@@ -1,5 +1,5 @@
 // 在真实引擎里运行框架测试(momo_headless --manual-frames)。
-// 由 tools/momo-cli 或 CTest 调用: momo_headless --manual-frames --bundle=framework/test/engine/headless_main.js
+// 由 tools/momo-cli 或 CTest 调用: momo_headless framework/test/engine/headless_main.js --manual-frames
 // 结果经 momo/test 通道(StandardMethodCodec, Flutter 格式)报告给运行器。
 import { runTests } from "../../out/test/momo_tests.js";
 import { send } from "momo:services";

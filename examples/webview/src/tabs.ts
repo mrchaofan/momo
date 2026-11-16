@@ -9,9 +9,9 @@ import {
   EdgeInsets, Expanded, GestureDetector, IgnorePointer, ImplicitlyAnimatedView, ImplicitlyAnimatedViewState, MouseRegion,
   Offset, Opacity, Padding, Positioned, Row, SizedBox, Stack, State, StatefulView, Text, Transform, Tween, Container, Center, ValueKey,
   type BuildContext, type DragDownDetails, type DragStartDetails, type Key, type TickerProvider, type View,
-} from "@momo/framework";
+} from "momo:framework";
 import { WindowDragArea } from "./window_drag_area";
-import type { WebViewController, WebViewState } from "@momo-examples/ext-webview";
+import type { WebViewController, WebViewState } from "momo:webview";
 import type { BrowserWindow, DetachedWindow } from "./main";
 import { Spinner } from "./icons";
 import { Palette, TextStyles, kTabAnimationMs, kTabHeight, kTabStripHeight, kTabStripTopInset } from "./style";

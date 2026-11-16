@@ -73,15 +73,23 @@ ClassBuilder<JsPaint>(isolate, "Paint", &JsPaint::Construct)   // ctor 传空 = 
 
 - 应用代码与框架层均为 **ESM**,由 Node 的 ESM 加载器执行:相对/绝对路径、`node:*`、npm 包(按 Node 规则从 node_modules
   解析)。momo 应用自己的 `.js` 文件一律按 ESM 处理(不依赖 package.json 的 `type`);node_modules 中的包保持 Node 的格式判定。
-- `momo:*`:`RegisterNativeModule(specifier, factory)` 以 `node::AddLinkedBinding` 注册原生绑定(import 时才调用 factory
-  填充导出);bootstrap 的 `module.registerHooks` 把这类 specifier 解析为 ESM 模块,内容从 `process._linkedBinding(specifier)` 读出导出。
-- 内置原生模块:`momo:ui`、`momo:services`。
-- 原生扩展是 Node 原生插件(docs/07):Node 自己只在 `require` 里认 `.node`, 同一个模块钩子(`runtime/node_bootstrap.cc`)让
-  `import addon from "./x.node"` 也能用(默认导出是插件的 exports)。扩展的 JS 门面打进应用 bundle, `.node` 由
-  `momo bundle` 拷到 bundle 旁的 `native/`(docs/09 §4)。
+- `momo:*` 一律是**运行时提供的模块**, 由 bootstrap(`runtime/node_bootstrap.cc`)的 `module.registerHooks` 解析, 有两种来源:
+  - **运行时自带的 JS 模块**(框架 `momo:framework`、内置扩展 `momo:webview`):`<builtin_dir>/<name>/package.json` 存在, 就解析到
+    它的 `main`;之后它是一个普通的文件模块, 相对导入与旁边的 `.node` 照常解析。`builtin_dir` 是 `Settings` 的一项
+    (`engine/common/settings.h`):embedder 设为 `<resources>/builtin`, `momo_headless` 用可执行文件同目录的 `builtin/`;空 = 没有。
+  - **引擎的原生模块**(`momo:ui`、`momo:services`):不是上面那种就走这里。`RegisterNativeModule(specifier, factory)` 以
+    `node::AddLinkedBinding` 注册原生绑定(import 时才调用 factory 填充导出), 钩子把它解析为 ESM 模块, 内容从
+    `process._linkedBinding(specifier)` 读出导出。
+
+  谁 import 都是同一份:内置扩展里的 `import "momo:framework"` 与应用拿到的是同一个模块实例。应用的产物里 `momo:*` 的导入
+  原样保留(框架不进应用的代码), 所以框架版本 = 运行时版本, `momo:ui` 是框架与引擎之间的内部接口。
+- 原生扩展是 Node 原生插件(docs/07):Node 自己只在 `require` 里认 `.node`, 同一个模块钩子让
+  `import addon from "./x.node"` 也能用(默认导出是插件的 exports)。内置扩展的插件在 `<builtin_dir>/<name>/` 里, 与它的 JS
+  同目录;三方的带原生插件的包保持原样, 按 Node 的规则从应用的 `node_modules` 加载, 包内的 JS 按相对路径找到自己的
+  `.node`(docs/07 §2)。
 - `RunModuleSource(source, name, base_dir)`(测试与 `--dev` 片段):源码由加载钩子提供,url 带递增查询串(每次都是新模块),
   相对导入基于 `base_dir`。
-- 生产模式:单 bundle(esbuild 产物)+ Node 编译缓存;startup snapshot 尚未实现(docs/11 M6)。
+- 生产模式:Node 编译缓存(应用的入口是否打成单文件由应用自己决定, docs/09 §4);startup snapshot 尚未实现(docs/11 M6)。
 
 ## 5. 消息通道(MessageChannelHub)
 

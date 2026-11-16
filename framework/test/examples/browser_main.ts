@@ -3,7 +3,7 @@ import { openedUrls, protocolResponses, viewCalls, webCommands } from "./browser
 import { webviewNative } from "../mock/ext_webview";
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/webview/src/main";
-import { WebSession, WebViewController } from "../../../extensions/examples/webview-extension/js/index";
+import { WebSession, WebViewController } from "../../../extensions/webview/js/index";
 import { IconButton, Spinner } from "../../../examples/webview/src/icons";
 import { runRegisteredTests, test, expect } from "../harness";
 import { Phase, ViewTester, type PointerOptions } from "../tester";
@@ -55,7 +55,7 @@ async function protocolRequest(t: ViewTester, requestId: number, url: string): P
   return protocolResponses.find((r) => r.header.requestId === requestId)!;
 }
 
-test("ext-webview: custom protocol serves the start page; sessions and cookies address their store", async () => {
+test("momo:webview: custom protocol serves the start page; sessions and cookies address their store", async () => {
   const t = new ViewTester(new Size(1000, 700));
   await settle(t);
   // 创建参数带上已声明的协议与会话: 起始页经 momo:// 协议加载。

@@ -1,12 +1,12 @@
-// momo_headless: 无窗口地运行 JS bundle(docs/09 §5 的 headless 测试运行器 / tools/momo-test 的引擎侧)。
+// momo_headless: 无窗口地运行一个应用(docs/09 §5 的 headless 测试运行器 / tools/momo-test 的引擎侧)。
 //
-//   momo_headless --bundle=<file.js> [--assets=<dir>]
-//                 [--width=800 --height=600 --dpr=1] [--timeout=30] [--screenshot=<out.png>]
+//   momo_headless <app> [--width=800 --height=600 --dpr=1] [--timeout=30] [--screenshot=<out.png>]
 //                 [--manual-frames]
+// <app>: 应用路径, 目录(含 package.json)或一个 JS 文件(engine/common/app_layout.h)。
 // --manual-frames: window.scheduleFrame() 不触发 vsync(框架测试自行调用 onBeginFrame/onDrawFrame
 // 并用假时钟驱动, 引擎再自行出帧会让时间倒退)。
 //
-// 引擎照常运行(四线程、定时器 vsync、软件光栅进离屏缓冲), 只是没有平台窗口。bundle 通过
+// 引擎照常运行(四线程、定时器 vsync、软件光栅进离屏缓冲), 只是没有平台窗口。应用通过
 // momo:services 的 momo/test 通道与运行器交互(StandardMethodCodec):
 //   log(text)                         打印一行到 stdout
 //   done({passed, failed})            结束;failed > 0 时进程退出码为 1
@@ -24,6 +24,7 @@
 #include "base/lock.h"
 #include "base/logging.h"
 #include "embedder/common/engine_platform.h"
+#include "engine/common/app_layout.h"
 #include "engine/common/standard_codec.h"
 #include "engine/graphics/software_rasterizer.h"
 #include "engine/shell/shell.h"
@@ -83,8 +84,9 @@ class ManualVsyncSource final : public platform::VsyncSource {
 class HeadlessDelegate final : public engine::Shell::Delegate {};
 
 struct Options {
-  std::filesystem::path bundle;
-  std::filesystem::path assets;
+  std::filesystem::path app;
+  // 运行时自带的 JS 模块: 与可执行文件同目录的 builtin/(发布产物与构建目录都是这个布局)。
+  std::filesystem::path builtin;
   std::filesystem::path screenshot;
   double width = 800, height = 600, dpr = 1;
   double timeout_s = 30;
@@ -99,15 +101,17 @@ bool ParseArgs(int argc, char** argv, Options* o) {
       o->manual_frames = true;
       continue;
     }
+    if (arg.rfind("--", 0) != 0 && o->app.empty()) {
+      o->app = std::string(arg);
+      continue;
+    }
     if (arg.rfind("--", 0) != 0 || eq == std::string_view::npos) {
       std::fprintf(stderr, "unknown argument: %s\n", argv[i]);
       return false;
     }
     const std::string key(arg.substr(2, eq - 2));
     const std::string value(arg.substr(eq + 1));
-    if (key == "bundle") o->bundle = value;
-    else if (key == "assets") o->assets = value;
-    else if (key == "screenshot") o->screenshot = value;
+    if (key == "screenshot") o->screenshot = value;
     else if (key == "width") o->width = std::atof(value.c_str());
     else if (key == "height") o->height = std::atof(value.c_str());
     else if (key == "dpr") o->dpr = std::atof(value.c_str());
@@ -117,8 +121,8 @@ bool ParseArgs(int argc, char** argv, Options* o) {
       return false;
     }
   }
-  if (o->bundle.empty()) {
-    std::fprintf(stderr, "usage: momo_headless --bundle=<file.js> [--assets=dir]"
+  if (o->app.empty()) {
+    std::fprintf(stderr, "usage: momo_headless <app dir | file.js>"
                          " [--width=800 --height=600 --dpr=1] [--timeout=30] [--screenshot=out.png]\n");
     return false;
   }
@@ -126,6 +130,11 @@ bool ParseArgs(int argc, char** argv, Options* o) {
 }
 
 int Run(const Options& options) {
+  const auto app = engine::LocateApp(options.app);
+  if (!app.ok()) {
+    std::fprintf(stderr, "momo_headless: %s\n", std::string(app.status().message()).c_str());
+    return 2;
+  }
   auto loop = EventLoop::Create();
   loop->BindToCurrentThread();
   int exit_code = 2;
@@ -133,9 +142,9 @@ int Run(const Options& options) {
     engine::ThreadHost threads("momo.headless");
     engine::TaskRunners runners = threads.MakeTaskRunners(loop->GetTaskRunner());
     engine::Settings settings;
-    settings.bundle_path = std::filesystem::absolute(options.bundle);
-    settings.assets_dir = options.assets.empty() ? settings.bundle_path.parent_path()
-                                                 : std::filesystem::absolute(options.assets);
+    settings.bundle_path = app->entry;
+    settings.assets_dir = app->assets_dir;
+    settings.builtin_dir = options.builtin;
     settings.dev_mode = true;
     // process.exit(code): 退出码交给本进程, 结束消息循环后有序关闭。
     auto on_exit = [&exit_code, loop](int code) {
@@ -245,5 +254,7 @@ int main(int argc, char** argv) {
   if (!momo::embedder::ParseArgs(argc, argv, &options)) {
     return 64;
   }
+  std::error_code ec;
+  options.builtin = std::filesystem::absolute(argv[0], ec).parent_path() / "builtin";
   return momo::embedder::Run(options);
 }

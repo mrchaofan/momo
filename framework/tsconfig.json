@@ -19,9 +19,8 @@
     "skipLibCheck": false,
     "noEmit": true,
     "paths": {
-      "@momo/framework": ["./packages/momo/src/index.ts"],
-      "@momo/framework/*": ["./packages/momo/src/*/index.ts"],
-      "@momo-examples/ext-webview": ["../extensions/examples/webview-extension/js/index.ts"]
+      "momo:framework": ["./packages/momo/src/index.ts"],
+      "momo:webview": ["../extensions/webview/js/index.ts"]
     }
   },
   "include": [
@@ -30,6 +29,6 @@
     "../examples/counter/src/**/*.ts",
     "../examples/todo/src/**/*.ts",
     "../examples/webview/src/**/*.ts",
-    "../extensions/examples/webview-extension/js/**/*.ts"
+    "../extensions/webview/js/**/*.ts"
   ]
 }

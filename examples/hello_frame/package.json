@@ -1,0 +1,6 @@
+{
+  "name": "momo-example-hello-frame",
+  "private": true,
+  "type": "module",
+  "main": "main.js"
+}

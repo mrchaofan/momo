@@ -1,10 +1,10 @@
 // examples/todo — View 版待办(docs/11 M4 验收):TextField 输入、添加、勾选、删除、列表滚动。
-// 构建: node framework/packages/cli/momo.mjs bundle examples/todo  (→ examples/todo/dist/bundle.js)
+// 运行: (cd examples/todo && npm run build) 把本文件编译成 dist/main.js, 然后 Momo --dev examples/todo
 import {
   AppBar, Checkbox, Color, Colors, Column, Container, Divider, EdgeInsets, ElevatedButton, Expanded, InputDecoration, ListTile,
   ListView, MaterialApp, Padding, Row, Scaffold, SizedBox, State, StatefulView, Text, TextButton, TextEditingController, TextField,
   TextStyle, Theme, ThemeData, ValueKey, FocusNode, Center, app, runApp, type BuildContext, type View,
-} from "@momo/framework";
+} from "momo:framework";
 
 /** 待办项。 */
 interface TodoItem {

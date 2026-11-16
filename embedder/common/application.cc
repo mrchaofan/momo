@@ -6,14 +6,19 @@
 
 #include "base/logging.h"
 #include "base/native_message_pump.h"
-#include "embedder/common/asset_resolver.h"
 #include "embedder/common/engine_platform.h"
+#include "engine/common/app_layout.h"
 
 namespace momo::embedder {
 
 namespace {
 
 constexpr const char kLabel[] = "momo";
+// 打包后的应用在 <resources>/app/(docs/09 §4);V8 code cache 在 <cache>/v8/。
+constexpr const char kPackagedAppDirName[] = "app";
+constexpr const char kCodeCacheDirName[] = "v8";
+// 运行时自带的 JS 模块(框架、内置扩展)在 <resources>/builtin/(engine/common/settings.h)。
+constexpr const char kBuiltinDirName[] = "builtin";
 
 }  // namespace
 
@@ -163,15 +168,17 @@ Status Application::LaunchEngine() {
   settings.enable_inspector = options_.config.dev_mode && options_.config.inspector_port >= 0;
   settings.inspector_port = options_.config.inspector_port;
   settings.inspector_wait = options_.config.inspector_wait;
-  AssetResolver resolver(options_.resources_dir, options_.cache_dir);
-  // bundle: --bundle 给了就用它, 否则用应用包内的默认 bundle。是否存在不在这里检查: 加载失败(不存在、
-  // 语法错误、顶层抛出)都由引擎在执行入口时报告, 启动随之失败, 进程以非零退出码有序退出。
-  MOMO_ASSIGN_OR_RETURN(ResolvedAssets assets, resolver.Resolve(options_.config));
-  settings.bundle_path = assets.bundle_path;
-  settings.assets_dir = assets.assets_dir;
-  // V8 code cache: 入口给出的应用缓存目录下。--dev 下 bundle 频繁变化, 缓存反复失效, 不启用。
-  if (!options_.config.dev_mode) {
-    settings.code_cache_dir = assets.code_cache_dir;
+  // 应用: 命令行给了路径就用它, 否则是应用包内的 <resources>/app。入口是否存在不在这里检查: 加载失败
+  // (不存在、语法错误、顶层抛出)都由引擎在执行入口时报告, 启动随之失败, 进程以非零退出码有序退出。
+  MOMO_ASSIGN_OR_RETURN(
+      engine::AppLayout app,
+      engine::LocateApp(options_.config.app_path.value_or(options_.resources_dir / kPackagedAppDirName)));
+  settings.bundle_path = app.entry;
+  settings.assets_dir = app.assets_dir;
+  settings.builtin_dir = options_.resources_dir / kBuiltinDirName;
+  // V8 code cache: 平台入口给出的应用缓存目录下(没给就不缓存)。--dev 下代码频繁变化, 缓存反复失效, 不启用。
+  if (!options_.config.dev_mode && !options_.cache_dir.empty()) {
+    settings.code_cache_dir = options_.cache_dir / kCodeCacheDirName;
   }
   // 主显示器(列表第一个)的刷新率, 供 vsync 回退定时器使用;未知时由引擎取默认值。
   const std::vector<DisplayInfo> displays = platform_->displays();

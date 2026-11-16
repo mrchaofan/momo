@@ -326,6 +326,49 @@ TEST(JsRuntimeCodeCacheTest, CompileCacheIsWritten) {
   std::filesystem::remove_all(dir);
 }
 
+// 运行时自带的 JS 模块: momo:<name> 解析到 <builtin_dir>/<name>/package.json 的 main;它是普通的文件模块(相对
+// 导入照常), 多处 import 得到同一份;目录里没有的名字仍是引擎的原生模块。
+TEST(JsRuntimeBuiltinTest, MomoSpecifierResolvesToTheBuiltinDirectory) {
+  momo::testing::ScopedTestEventLoop loop;  // JsRuntime 归属当前(ui)线程
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() / "momo_builtin_test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir / "kit" / "lib");
+  std::ofstream(dir / "kit" / "package.json") << R"({"type": "module", "main": "lib/main.js"})";
+  std::ofstream(dir / "kit" / "lib" / "main.js")
+      << "import { base } from './base.js';\n"
+         "globalThis.kitLoads = (globalThis.kitLoads ?? 0) + 1;\n"
+         "export const answer = base + 2;\n";
+  std::ofstream(dir / "kit" / "lib" / "base.js") << "export const base = 40;\n";
+  // 依赖 momo:kit 的另一个自带模块: 与应用拿到的是同一份。
+  std::filesystem::create_directories(dir / "widget");
+  std::ofstream(dir / "widget" / "package.json") << R"({"type": "module"})";
+  std::ofstream(dir / "widget" / "index.js")
+      << "import { answer } from 'momo:kit';\nexport const doubled = answer * 2;\n";
+
+  JsRuntime::Options options;
+  options.builtin_dir = dir;
+  auto rt = JsRuntime::Create(options);
+  ASSERT_TRUE(rt.ok()) << rt.status();
+  (*rt)->RegisterNativeModule(
+      "momo:native", [](v8::Isolate* isolate, v8::Local<v8::Context> context,
+                        v8::Local<v8::Object> exports) {
+        exports->Set(context, V8String(isolate, "seven"), v8::Number::New(isolate, 7)).Check();
+      });
+  Status status = (*rt)->RunModuleSource(
+      "import { answer } from 'momo:kit';\n"
+      "import { doubled } from 'momo:widget';\n"
+      "import { seven } from 'momo:native';\n"
+      "globalThis.r = [answer, doubled, seven, globalThis.kitLoads].join();\n",
+      "main.js");
+  ASSERT_TRUE(status.ok()) << status;
+  EXPECT_EQ(*(*rt)->EvalToString("r"), "42,84,7,1");
+
+  status = (*rt)->RunModuleSource("import 'momo:../kit';", "escape.js");
+  EXPECT_FALSE(status.ok()) << "only plain names map into the built-in directory";
+  rt->reset();
+  std::filesystem::remove_all(dir);
+}
+
 // 反复创建/销毁运行时(测试进程里常见): 每次都是全新的 Node 环境, poll 线程与 uv 循环干净退出。
 TEST(JsRuntimeLifecycleTest, RepeatedCreateAndDestroy) {
   momo::testing::ScopedTestEventLoop loop;

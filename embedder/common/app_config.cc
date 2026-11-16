@@ -24,11 +24,20 @@ StatusOr<double> ParseDimension(std::string_view key, std::string_view value) {
 
 StatusOr<AppConfig> AppConfig::Parse(std::span<const std::string> args) {
   AppConfig config;
+  bool system_value_next = false;  // 上一个是单横线的系统参数: 这一个若不是选项, 就是它的值
   for (const std::string& raw : args) {
     std::string_view arg(raw);
     if (!arg.starts_with("--")) {
-      continue;  // 位置参数与系统参数(如 -psn_0_123、-NSDocumentRevisionsDebugMode)
+      if (arg.starts_with("-")) {
+        system_value_next = true;
+      } else if (system_value_next) {
+        system_value_next = false;
+      } else if (!config.app_path && !arg.empty()) {
+        config.app_path = std::filesystem::path(std::u8string(arg.begin(), arg.end()));
+      }
+      continue;
     }
+    system_value_next = false;
     arg.remove_prefix(2);
     const size_t eq = arg.find('=');
     const std::string_view key = arg.substr(0, eq);
@@ -59,12 +68,6 @@ StatusOr<AppConfig> AppConfig::Parse(std::span<const std::string> args) {
         return InvalidArgumentError("--inspect-port must be -1..65535");
       }
       config.inspector_port = static_cast<int>(port);
-    } else if (key == "bundle") {
-      MOMO_RETURN_IF_ERROR(require_value());
-      config.bundle_path = std::filesystem::path(std::u8string(value.begin(), value.end()));
-    } else if (key == "assets") {
-      MOMO_RETURN_IF_ERROR(require_value());
-      config.assets_dir = std::filesystem::path(std::u8string(value.begin(), value.end()));
     } else if (key == "title") {
       MOMO_RETURN_IF_ERROR(require_value());
       config.window.title = std::string(value);

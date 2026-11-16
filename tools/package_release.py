@@ -7,14 +7,15 @@
 
 产物(<v> = framework/packages/momo/package.json 的 version, <p> = darwin-arm64 / win32-x64, 即 Node 的
 process.platform-process.arch):
-  momo-v<v>-<p>.zip            运行时。macOS: Momo.app;Windows: Momo.exe + libnode.dll + icudtl.dat + bundle.js。
+  momo-v<v>-<p>.zip            运行时。macOS: Momo.app;Windows: Momo.exe + libnode.dll + icudtl.dat + builtin/ + app/(默认应用)。
+                               运行时自带框架与内置扩展(builtin/, 应用以 momo:framework 等导入)。
                                另有 version 文件。解压后即 `momo build --runtime=` 接受的运行时。
-  momo-headless-v<v>-<p>.zip   momo_headless(无窗口运行 bundle 的测试运行器)+ libnode
+  momo-headless-v<v>-<p>.zip   momo_headless(无窗口运行应用的测试运行器)+ libnode + builtin/
   momo-ext-sdk-v<v>-<p>.zip    原生扩展 SDK: include/{momo, node}、lib/cmake/MomoExtSdk/;Windows 另有
                                Release/node.lib(libnode.dll 的导入库)
   --platform-independent 时另出(与平台无关, 发布流程里只由一个平台产出):
-  momo-framework-v<v>.tgz      @momo/framework 的 npm 包(npm pack)
-  momo-cli-v<v>.tgz            @momo/cli 的 npm 包: momo bundle / build / ext。版本必须与 @momo/framework 相同。
+  momo-framework-v<v>.tgz      @momo/framework 的 npm 包(npm pack): 框架的 TS 源码, 应用用它做类型检查(实现由运行时提供)
+  momo-cli-v<v>.tgz            @momo/cli 的 npm 包: momo build(把应用目录打包)。版本必须与 @momo/framework 相同。
 
 各包的内容由 CMake 的安装组件(runtime / headless / sdk)决定, 本脚本只负责 暂存 → 签名 → 压缩。
 macOS 上的二进制是 ad-hoc 签名, 没有 Developer ID 签名与公证(应用开发者对自己的 .app 签名)。

@@ -214,7 +214,8 @@ void InstallServicesModule(v8::Isolate* isolate, v8::Local<v8::Context> context,
                V8String(isolate, assets_dir))
       .Check();
   // 宿主能力表(momo_host.h)的地址: 原生扩展把它转回 const MomoHost*。用 BigInt 而不是 v8::External:
-  // Node-API 的 external 有自己的包装, 读不出 V8 原生的 External。
+  // Node-API 读不了 V8 原生的 External(Node 26 上实测: napi_get_value_external 读它会崩溃), 而引擎这一侧
+  // 拿不到 napi_env 来创建 Node-API 的 external。
   exports->Set(context, V8String(isolate, "nativeHost"),
                v8::BigInt::NewFromUnsigned(isolate, reinterpret_cast<uintptr_t>(impl.host.native_host)))
       .Check();

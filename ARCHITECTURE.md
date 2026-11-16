@@ -28,7 +28,7 @@
 
 | 层 | 语言 | 目录 | 一句话职责 |
 |---|---|---|---|
-| Framework | TypeScript | `framework/packages/momo/src` | View/Element/RenderObject 三棵树、布局、绘制组织、手势、动画、Material 控件;应用(`app`)与原生窗口(`Widget`)对象。运行在引擎内嵌的 V8 中 |
+| Framework | TypeScript | `framework/packages/momo/src` | View/Element/RenderObject 三棵树、布局、绘制组织、手势、动画、Material 控件;应用(`app`)与原生窗口(`Widget`)对象。运行在引擎内嵌的 V8 中;由运行时自带,应用以 `import "momo:framework"` 使用(§4.6) |
 | Engine | C++20 | `engine/` | V8 运行时与 `momo:*` 绑定、帧调度、DisplayList/LayerTree、Skia 光栅化、文本排版、图片解码、原生扩展的宿主能力表 |
 | Embedder | C++ / Objective-C++ | `embedder/` | 可执行程序本身：进程入口、原生消息循环、窗口、渲染表面、VSync、输入/IME，并负责装配与驱动 Engine |
 | base | C++20 | `base/` | 全项目基础库：`Object`（线程归属 + 延迟析构）、`EventLoop`、`TaskRunner`、`Pipeline`、`Status` |
@@ -36,7 +36,8 @@
 依赖方向由 CMake 保证（不提供反向链接）：
 
 ```
-framework (JS) ── 只通过 import "momo:*" 与 engine 交互
+应用 (JS) ── import "momo:framework"、内置扩展 "momo:webview"（运行时自带的 JS 模块）
+framework (JS) ── 只通过 import "momo:ui" / "momo:services" 与 engine 交互
 embedder ──► engine（含 engine/platform 契约）──► base
    └──────────────────────────────────────────► base
 ```
@@ -69,7 +70,7 @@ main()                                         embedder/macos/main_mac.mm
    ├─ PlatformChannels                (platform)  宿主通道 momo/clipboard、momo/url、momo/textinput
    └─ engine::Shell                   (platform)  引擎实例的协调中枢
        ├─ MessageChannelHub           (任意线程)  异步消息通道
-       ├─ ExtensionHost               (platform)  原生扩展的宿主能力表
+       ├─ NativeHost               (platform)  原生扩展的宿主能力表
        ├─ ObjectPtr<MacVsyncDisplayLink> (platform)
        ├─ Engine                      (ui)
        │   ├─ Animator → VsyncWaiter  (ui)        帧调度与背压
@@ -207,7 +208,7 @@ GCD 主队列由主 CFRunLoop 在 common modes 下服务，所以窗口拖拽缩
 
 | 目录 | 内容 | 能否单测 |
 |---|---|---|
-| `embedder/common/` | 平台无关的装配逻辑：`Application`（生命周期状态机、有序关闭）、`WindowController`（窗口 ⇄ Shell）、`AppConfig`（命令行）、`AssetResolver`（bundle 与资源定位）；embedder 自己的平台抽象 `PlatformIntegration`、`PlatformWindow`、`WindowDelegate`、`DisplayInfo` | 能，用 `common/testing/mock_platform.h` |
+| `embedder/common/` | 平台无关的装配逻辑：`Application`（生命周期状态机、有序关闭）、`WindowController`（窗口 ⇄ Shell）、`AppConfig`（命令行：应用路径与窗口参数）；embedder 自己的平台抽象 `PlatformIntegration`、`PlatformWindow`、`WindowDelegate`、`DisplayInfo` | 能，用 `common/testing/mock_platform.h` |
 | `embedder/macos/` | Cocoa 实现与入口，见下表 | `momo_embedder_macos_unittests` |
 | `embedder/headless/` | `momo_headless`：无窗口宿主，离屏软件 surface；框架 TS 测试的引擎侧运行器 | — |
 
@@ -240,7 +241,7 @@ macOS 实现（`embedder/macos/`）：
 ```objc
 // 伪代码：进程入口（embedder/macos/main_mac.mm）
 int main(argc, argv) {
-  config   = AppConfig::Parse(args);                    // --bundle --assets --title --width --height --dev --inspect-port --inspect-brk
+  config   = AppConfig::Parse(args);                    // [<app>] --title --width --height --dev --inspect-port --inspect-brk
   platform = macos::CreateMacPlatformIntegration();     // [NSApplication sharedApplication]，ActivationPolicyRegular
   NSApp.delegate = [MacAppDelegate new];
   [MacAppDelegate installMainMenuWithAppName:title];
@@ -276,8 +277,9 @@ Application::OnRuntimeStarted(status) {   // Shell::Run 的结果, platform 线�
 }
 
 Application::LaunchEngine() {
-  settings = { bundle/assets 路径 ← AssetResolver,
+  settings = { 入口/assets 路径 ← engine::LocateApp(命令行的 <app> 或 <resources>/app),
                dev_mode, inspector,
+               builtin_dir = <resources>/builtin（运行时自带的 JS 模块: 框架、内置扩展）,
                code_cache_dir = <入口给出的应用缓存目录>/v8（非 --dev）,
                refresh_rate = 主显示器刷新率（vsync 回退定时器用） };
   // 第一阶段: 只组装引擎(没有 JS 运行时, 不等待其他线程)
@@ -296,7 +298,7 @@ Application::LaunchEngine() {
 
 "合适的时机创建 JS 环境"在实现中的含义：窗口先 `Show()`（用户立刻看到原生窗口和闪屏底色），然后才创建 Shell；V8 初始化与 bundle 执行在 ui 线程进行，Rasterizer 初始化在 raster 线程**并行**进行，主线程不等它们——`Launch()` 返回后就进入消息循环（窗口可响应，`--inspect-brk` 等待调试器时也不卡主线程）。
 
-资源默认布局（`AssetResolver`）：`<Momo.app>/Contents/Resources/{bundle.js, native/, assets/}`（`native/` 放原生扩展的 `.node`，由 bundle 按相对路径 import）。`--bundle=` / `--assets=` 可覆盖；`--dev` 下 bundle 缺失只告警，以占位驱动启动。
+应用的定位（`engine::LocateApp`，`engine/common/app_layout.h`）：应用路径是一个目录（入口是其 `package.json` 的 `main`，缺省 `index.js`；资源在 `<dir>/assets/`）或一个 JS 文件（它自己就是入口，资源在它旁边的 `assets/`）。命令行的第一个位置参数给出应用路径，缺省是应用包内的 `<Momo.app>/Contents/Resources/app`——打包后的应用与开发时走同一条路。目录里读不到 `package.json`、JSON 不合法、`main` 不是字符串时启动即报错。应用旁边的 `<resources>/builtin/` 是运行时自带的 JS 模块（框架与内置扩展，§4.6），应用的文件里没有它们。
 
 ### 3.3 生命周期
 
@@ -511,7 +513,7 @@ void Application::TearDown() {                           // 消息循环结束�
 
 ### 3.9 开发模式
 
-- bundle：`--bundle=<path>` 给了就用它，否则用应用包内的默认 bundle（`<resources>/bundle.js`）。不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。换 bundle 就是重启进程：没有热重启。
+- 应用：命令行给了 `<app>`（目录或 JS 文件，如 `Momo --dev examples/counter`）就用它，否则用应用包内的 `<resources>/app`。入口文件不提前检查是否存在；加载失败（不存在、有错）时启动失败，进程有序退出，退出码非零。换应用就是重启进程：没有热重启。
 - `--dev` 同时启用 Node 的 inspector（默认 `127.0.0.1:9229`，`--inspect-port=` 修改，`--inspect-brk` 在执行 bundle 前等待调试器），Chrome DevTools 可直接连接。等待调试器期间主线程照常泵消息、窗口可以关闭；此时退出应用，销毁会等到调试器连上（bundle 随之执行）并断开之后才完成——不强行打断等待。
 - 非 `--dev` 时启用 V8 code cache。缓存目录由平台入口给出（`Application::Options::cache_dir`，每个应用一个：macOS `~/Library/Caches/<bundle identifier>`，Windows `%LOCALAPPDATA%\<exe 名>`），code cache 在它的 `v8/` 下；`embedder/common` 不碰平台 API。
 
@@ -579,7 +581,7 @@ void Application::TearDown() {                           // 消息循环结束�
 | `graphics/` | DisplayList、LayerTree、软件光栅、Metal 光栅（Skia） | `display_list.h`、`layer.h`、`software_rasterizer.cc`、`gpu/metal_rasterizer.mm` |
 | `text/` | 字体集合（系统 + 内嵌 + 回退）、段落排版（SkParagraph） | `font_collection.cc`、`paragraph.cc` |
 | `assets/` | 资源读取（防路径越界）、图片解码（静态/多帧） | `asset_manager.cc`、`image_decoder.cc` |
-| `extension/` | 原生扩展的宿主能力表 `MomoHost` 的实现（平台任务、外部纹理、平台视图工厂）；不加载任何东西 | `extension_host.cc` |
+| `native_host/` | 原生扩展的宿主能力表 `MomoHost` 的实现（平台任务、外部纹理、平台视图工厂）；不加载任何东西 | `native_host.cc` |
 
 模块依赖单向无环；硬性规则：Skia 头只出现在 `graphics/`、`text/`、`assets/` 的实现文件里，`v8.h` 只出现在 `runtime/`、`ui/` 的实现文件里，`shell/` 只看到不含 V8 的 `ui/app_driver.h`。
 
@@ -590,7 +592,7 @@ void Application::TearDown() {                           // 消息循环结束�
 ```cpp
 // 伪代码（engine/shell/shell.cc）
 StatusOr<unique_ptr<Shell>> Shell::Create(runners, settings, on_exit_requested) {
-  shell = new Shell(...);                         // 创建 MessageChannelHub、TextureRegistry、平台视图表、ExtensionHost(宿主能力表)
+  shell = new Shell(...);                         // 创建 MessageChannelHub、TextureRegistry、平台视图表、NativeHost(宿主能力表)
   // raster 与 ui 各自在自己的线程上构造，platform 线程不等待
   runners.raster->PostTask([=] { shell->rasterizer_ = make_unique<Rasterizer>(); });
   shell->RegisterPlatformViewChannel();           // momo/platform_views(平台视图表归引擎)
@@ -611,7 +613,7 @@ void Shell::Run(done) {
 }
 
 void Shell::Shutdown() {             // 同步。扩展(Node 插件)的代码随 JS 运行时结束, 所以引擎对扩展的调用先结束
-  extension_host_.Close();                               // 宿主能力表此后返回 kMomoErrClosed, 未执行的平台任务丢弃
+  native_host_.Close();                               // 宿主能力表此后返回 kMomoErrClosed, 未执行的平台任务丢弃
   platform_views_->Clear(...);                           // 全部平台视图: 移出窗口, 交给扩展的工厂释放;清空工厂
   PostTaskAndWait(ui, [&] { engine_.reset(); });         // 销毁 JS 运行时(扩展的清理函数在这里执行), 再是 Engine 其余部分。
                                                          // 排在此前投递给 JS 的事件之后;JS 不返回就等着, 不强行终止
@@ -640,7 +642,7 @@ void Shell::OnPlatformViewCreated(id, native) { for (d : delegates_) d->OnPlatfo
 
 | 归属线程 | Shell 持有的子系统 |
 |---|---|
-| platform | 各视图的 `Delegate`、应用唯一的 `ObjectPtr<VsyncSource>`、`ExtensionHost`、平台视图表 |
+| platform | 各视图的 `Delegate`、应用唯一的 `ObjectPtr<VsyncSource>`、`NativeHost`、平台视图表 |
 | ui | `Engine`（`Animator` + `AppDriver`） |
 | raster | `Rasterizer` |
 | 任意线程 | `MessageChannelHub`、`TextureRegistry`（内部加锁） |
@@ -770,7 +772,12 @@ raster cache（缓存不变子树为纹理）目前**没有实现**，每帧都�
 
 - 每个 Shell 一个 **Node.js 环境**（libnode：libuv 循环 + `v8::Isolate` + 主 `Context` + `node::Environment`），只在 ui 线程使用。`JsRuntime`（`js_runtime.h`）就是这个环境；它的头文件含 V8 类型，只被 runtime 与 ui 的实现文件包含，引擎的其余部分经不含 V8 的 `ui::AppDriver` 驱动 JS。一个进程里只有一个运行时，没有热重启。JS 可用 `node:*`、npm 包和 Node 的定时器/IO。
 - **libuv 跑在 ui 线程**（`NodeBindings`，对照 Electron）：poll 线程只等 `uv_backend_fd`，有事件就向 ui 投递 `UvRunOnce`（`uv_run(NOWAIT)`），两者以 `uv_sem` 交替；uv 回调都在 ui 线程执行。
-- **ESM 模块**：`RunMainModule(bundle)` 经 Node 的 ESM 加载器导入 bundle，并以 `uv_run` 泵送直到求值完成。`momo:*` 由 `RegisterNativeModule(specifier, factory)` 注册为 Node 的 linked binding，bootstrap 的模块钩子把它们映射成 ESM 模块，被 import 时才调用 factory 填充导出。同一个钩子让 `import addon from "./x.node"` 可用（原生扩展，§4.9）：默认导出是插件的 exports。
+- **ESM 模块**：`RunMainModule(bundle)` 经 Node 的 ESM 加载器导入 bundle，并以 `uv_run` 泵送直到求值完成。同一个模块钩子让 ESM 的 `import addon from "./x.node"` 可用（原生扩展，§4.9）：默认导出是插件的 exports。
+- **`momo:*` 是运行时提供的模块**，由 bootstrap（`node_bootstrap.cc`）的模块钩子解析，有两种来源：
+  - **运行时自带的 JS 模块**（框架 `momo:framework`、内置扩展 `momo:webview`）：`<builtin_dir>/<name>/package.json` 存在，就解析到它的 `main`，之后是一个普通的文件模块（它的相对导入、旁边的 `.node` 照常解析）。`builtin_dir` 来自 `Settings`（embedder 设为 `<resources>/builtin`，`momo_headless` 用可执行文件同目录的 `builtin/`）。
+  - **引擎的原生模块**（`momo:ui`、`momo:services`）：没有上面那个目录时走这里。由 `RegisterNativeModule(specifier, factory)` 注册为 Node 的 linked binding，钩子把它映射成 ESM 模块，被 import 时才调用 factory 填充导出。
+
+  应用、框架、内置扩展 import 同一个 `momo:<name>` 拿到的是同一份模块。应用的产物里 `momo:*` 的导入原样保留，所以框架的版本就是运行时的版本，`momo:ui` 是框架与引擎之间的内部接口。
 - **从 C++ 进入 JS**（帧回调、事件、消息回复）经 `JsRuntime::Call`：与 `node::MakeCallback` 相同，在 `node::CallbackScope` 里调用，最外层的调用返回前按 Node 语义排空 `process.nextTick` 与 microtask——每次进入 JS 都是一个完整的宏任务。入口都是 ui 线程上的任务，与 libuv 回调同属一个循环，顺序就是到达顺序，不另经 uv 排队。绑定层随后调用 `DrainMicrotasks()` 唤醒 poll 线程按新的定时器/IO 状态等待。
 - **宿主类绑定**：C++ 对象继承 `Wrappable`，用 `ClassBuilder<T>` 暴露成 JS 类。`this` 的类型校验不依赖 RTTI；GC 弱回调释放 C++ 对象，运行时销毁时兜底释放剩余的。
 
@@ -856,10 +863,14 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 
 ### 4.9 原生扩展
 
-原生扩展 = Node.js 原生插件（`.node`，Node-API）+ JS 门面，是一个普通的 npm 包。JS 与原生之间只用 Node-API；引擎自己的能力（平台线程、外部纹理、平台视图）以一张很小的**宿主能力表**（`extensions/sdk/include/momo/momo_host.h`，稳定 C ABI，只在末尾追加）提供，由 `ExtensionHost` 实现。没有 manifest，宿主不知道有哪些扩展，也不加载任何东西：
+原生扩展 = Node.js 原生插件（`.node`，Node-API）+ JS 门面。JS 与原生之间只用 Node-API；引擎自己的能力（平台线程、外部纹理、平台视图）以一张很小的**宿主能力表**（`extensions/sdk/include/momo/momo_host.h`，稳定 C ABI，只在末尾追加）提供，由 `NativeHost` 实现。没有 manifest，宿主不知道有哪些扩展，也不加载任何东西。扩展有两种来源，只是 JS 从哪里来不同：
+
+- **内置扩展**：运行时自带的 JS 模块（§4.6），JS 与 `.node` 在 `<builtin_dir>/<name>/` 同一个目录里，应用以 `momo:<name>` 导入。目前只有 `momo:webview`（macOS，源码 `extensions/webview/`）。
+- **三方扩展**：一个普通的 npm 包，属于应用的业务代码，由 Node 从应用的 `node_modules` 加载。Momo 对它没有专门的配置项或概念。
 
 ```
-JS: import addon from "./x.node"
+JS: import { … } from "@acme/ext-x"                  （三方：Node 从应用的 node_modules 加载整包；内置：import "momo:webview"）
+  → 包内的 JS: import addon from "../build/x.node"   （相对路径，指向包内；内置扩展是 "./ext_webview.node"）
   → 运行时的模块钩子（engine/runtime/node_bootstrap.cc）把 .node 交给 Node 的 require → dlopen → NAPI_MODULE_INIT
   → 需要宿主能力的门面：import { nativeHost } from "momo:services"（BigInt：表的地址），原样传给插件
        插件：momo_host_from_napi(env, value) → const MomoHost*                    [以上全部在 ui（JS）线程]
@@ -869,7 +880,7 @@ JS: import addon from "./x.node"
        → dispose 全部平台视图、清空工厂 → 销毁 JS 运行时（插件登记的清理函数在这一步执行）→ raster
 ```
 
-加载失败就是一次普通的 `import` 失败。打包时 `momo bundle` 把按路径 import 的 `.node` 拷到 `<out>/native/` 并改写导入。外部纹理（`TextureLayer`）是扩展"借助引擎绘制"的方式：扩展在自己的线程生成像素推给纹理，引擎合成时取最新帧；目前只支持 CPU 像素帧。
+加载失败就是一次普通的 `import` 失败。带原生插件的三方包必须保持原样留在应用的 `node_modules` 里，包内的 JS 才能按相对路径找到自己的 `.node` 与动态库：应用在自己的构建配置里把它排除（不编译进 `main`），打包时用 `momo.include` 把 `node_modules/<包>/` 带进应用包。需要框架的扩展（带视图的）直接 `import "momo:framework"`，与应用拿到的是同一份（docs/07 §2）。外部纹理（`TextureLayer`）是扩展"借助引擎绘制"的方式：扩展在自己的线程生成像素推给纹理，引擎合成时取最新帧；目前只支持 CPU 像素帧。
 
 回调线程：宿主只在 platform 线程调用扩展，而且只有两类回调——平台任务、视图工厂（`create` / `dispose`）。回到 JS 线程用 `napi_threadsafe_function`，后台线程用 `napi_async_work` 或扩展自己开。清理函数执行时宿主已不会再调用扩展，扩展在那里停掉自己的线程。
 
@@ -880,9 +891,9 @@ JS: import addon from "./x.node"
 | `include/momo/momo_host.h` | 宿主能力表 |
 | `include/node/` | Momo 运行时所带 Node 的头文件（`node_api.h` 等；不含 openssl） |
 | `Release/node.lib` | 仅 Windows：`libnode.dll` 的导入库（未运行验证） |
-| `lib/cmake/MomoExtSdk/` | `find_package(MomoExtSdk)` 的包配置：`momo::ext_sdk` 与 `momo_add_extension()`（产物 `<包>/build/<name>.node`） |
+| `lib/cmake/MomoExtSdk/` | `find_package(MomoExtSdk)` 的包配置：`momo::ext_sdk` 与 `momo_add_extension()`（产物 `<包>/build/<name>.node`；设了 `MOMO_EXTENSION_OUTPUT_DIR` 则输出到那里，内置 webview 用它把插件输出到 builtin 目录） |
 
-JS 门面用到的类型（`declare module "*.node"`、`momo:services` 的 `nativeHost`）在 `@momo/framework` 的 `momo-ui.d.ts` 里。
+扩展的 JS 用到的 `momo:services` 的 `nativeHost` 类型在 npm 包 `@momo/framework` 的 `momo-ui.d.ts` 里；插件导出的类型由扩展自己的 `.d.ts` 给出。
 
 设计文档：[docs/02-engine.md](docs/02-engine.md)、[docs/04-js-runtime.md](docs/04-js-runtime.md)、[docs/05-rendering-pipeline.md](docs/05-rendering-pipeline.md)、[docs/07-extension-system.md](docs/07-extension-system.md)。
 
@@ -892,7 +903,7 @@ JS 门面用到的类型（`declare module "*.node"`、`momo:services` 的 `nati
 
 ### 5.1 包结构
 
-发布为 npm 包 `@momo/framework`（`framework/packages/momo`，`exports` 直接指向 TS 源码）。不依赖任何浏览器或 Node API，全局只有引擎注入的 `momo:*` 模块。
+源码在 `framework/packages/momo`。框架由运行时自带：构建运行时的时候编译成 `<builtin_dir>/framework/index.js`，应用以 `import "momo:framework"` 使用，不进应用的代码（§4.6、§7）。同一份源码另发布为 npm 包 `@momo/framework`（`exports` 直接指向 TS 源码），应用只用它做类型检查。不依赖任何浏览器或 Node API，只用引擎提供的 `momo:ui` / `momo:services`。
 
 | 目录 | 内容 |
 |---|---|
@@ -1112,13 +1123,15 @@ handlePointerPacket(data: Float64Array, count, dpr) {
 | CMake target | 产物 / 用途 |
 |---|---|
 | `momo_base`、`momo_engine_*`、`momo_embedder_common`、`momo_embedder_macos` | 各层静态库 |
-| `momo_app_mac` | `Momo.app`：`Contents/MacOS/Momo`、`Contents/Resources/bundle.js`、`Contents/Frameworks/libnode.*.dylib`(V8 来自 libnode)。默认把 `examples/hello_frame/main.js` 打包为 `bundle.js`（CMake 缓存变量 `MOMO_APP_DEFAULT_BUNDLE`） |
+| `momo_app_mac` | `Momo.app`：`Contents/MacOS/Momo`、`Contents/Resources/{app, builtin}/`、`Contents/Frameworks/libnode.*.dylib`(V8 来自 libnode)。默认把应用目录 `examples/hello_frame` 拷为 `Resources/app/`（CMake 缓存变量 `MOMO_DEFAULT_APP`） |
+| `momo_builtin` | 运行时自带的 JS 模块 `out/<build>/embedder/builtin/<name>/{package.json, index.js}`：`framework/scripts/build_builtin.mjs` 用 esbuild 编译框架与内置扩展（需要 node 与 `framework/` 下装好的 esbuild；没有时 CMake 给出警告，运行时不带 `momo:framework`）。`momo_app_builtin` 把它同步进 `Momo.app/Contents/Resources/builtin/` |
 | `momo_headless` | 无窗口宿主，离屏软件 surface；用于冒烟测试和在真实引擎上跑框架测试 |
 | `momo_ext_sdk_package` | 扩展 SDK 产物 `out/<build>/sdk/{include/momo, include/node, lib/cmake/MomoExtSdk}`（默认构建；`cmake --install . --component sdk` 安装到任意前缀） |
-| `ext_hello` / `ext_texture` / `ext_webview` | 示例扩展（Node 插件，产物在各自包的 `build/*.node`）：纯 C / C++ 外部纹理 / ObjC++ 平台视图 |
+| `ext_hello` / `ext_texture` | 三方扩展的示例（Node 插件，产物在各自包的 `build/*.node`）：纯 C / C++ 外部纹理 |
+| `ext_webview` | 内置扩展 `momo:webview` 的原生插件（macOS，ObjC++ 平台视图），输出到 `builtin/webview/ext_webview.node` |
 | `*_unittests` | `momo_base_unittests`、`momo_engine_unittests`、`momo_embedder_unittests`（mock 平台）、`momo_embedder_macos_unittests` 等，经 CTest 运行 |
 
-`framework/packages/cli/momo.mjs build <app>` 把一个应用打包成可分发的 `.app`：esbuild 打 bundle（`momo:*` 保持外部导入）→ 把按路径 import 的原生扩展（`.node`）拷到 `native/` → 复制预编译的 `Momo.app` 为 `<Name>.app` 并放入资源（`--dmg` 时再产出 DMG）。
+CLI（`framework/packages/cli/momo.mjs`，npm 包 `@momo/cli`）只做打包：`momo build <app>` 复制预编译的 `Momo.app` 为 `<Name>.app` → 把应用目录里选中的文件（`package.json`、`main`、`assets/**`，加 `momo.include`，去掉 `momo.ignore`）原样、保持相对位置放进 `Contents/Resources/app/`（`--dmg` 时再产出 DMG）。它不编译，不分析文件内容，也不知道依赖：应用的源码怎么变成 `main` 由应用自己选工具（要求只有 `momo:*` 的导入原样保留、产物是 ESM；示例用一行 esbuild），留在 `node_modules` 里的三方包由应用用 `momo.include` 带上。
 
 测试分层：
 
@@ -1136,5 +1149,5 @@ handlePointerPacket(data: Float64Array, count, dpr) {
 - **新增一个窗口能力**（例如全屏）：`PlatformWindow` 加可选方法与 `WindowCapability` 位 → 平台实现 → `window_channel.cc` 里 `RegisterWindowMethod` 一行 → 框架 `Widget` 加方法（宿主推送的变化加事件）。不改 engine。
 - **新增一个应用能力**（例如 Dock 角标）：`PlatformApp` 加方法与 `AppCapability` 位 → 平台实现 → `app_channel.cc` 里 `Register` 一行 → 框架 `app` 加方法。不改 engine。
 - **新增一个 `momo:ui` API**：在 `engine/ui/*_bindings.cc` 用 `ClassBuilder` 绑定 → 同步更新 `momo-ui.d.ts` 与框架测试的 mock（`framework/test/mock/`）。
-- **写一个三方扩展**：`node framework/packages/cli/momo.mjs ext create <dir> --name=<thing>` 生成 Node 插件（Node-API）模板与 TS 门面，参考 `extensions/examples/` 与 docs/07。
+- **写一个三方扩展**：一个普通的 npm 包（`package.json` + `js/index.js` + `js/index.d.ts` + `native/CMakeLists.txt` + `native/src/*.c`），原生侧是 Node 插件（Node-API）；照着 `extensions/examples/hello-extension` 写，参考 docs/07。
 - **移植新平台**：在 `embedder/<os>/` 实现 embedder 的抽象 `PlatformIntegration`、`PlatformWindow`（可选能力按平台逐项实现并在 `capabilities()` 声明）、`NativeLoop`、`PlatformServices`、`TextInputConnection`，以及 engine 契约 `RenderSurface`、`VsyncSource`；写一个只做翻译的入口；如需 GPU，在 `engine/shell/render_backend.cc` 增加对应后端。`embedder/common` 和整个 engine 不需要改动。

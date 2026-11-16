@@ -86,7 +86,9 @@ view/element 树只有一棵,渲染树每个窗口一棵(对标 Flutter `View`/`
 
 ## 6. 与 JS 生态的关系
 
-- 框架以 npm 包形式发布(`@momo/framework`),应用用 esbuild 打 bundle;**不依赖任何浏览器/Node API**(唯一的例外是 scheduler 的延迟任务用运行时的 `setTimeout`),全局只存在引擎注入的 `momo:*` 模块——framework/ 的 lint 规则禁止引用 `window.document`、`fetch` 等。
+- **框架由运行时自带**:构建运行时的时候编译成 `<resources>/builtin/framework/{package.json, index.js}`(docs/09 §4), 应用以 `import … from "momo:framework"` 使用(解析见 docs/04 §4)。框架不进应用的代码:应用的产物里这条导入原样保留, 框架版本 = 运行时版本, `momo:ui` 是框架与引擎之间的内部接口。内置扩展(`momo:webview`)里的 `import "momo:framework"` 与应用拿到的是同一份。
+- npm 包 `@momo/framework`(TS 源码)仍然发布, 但应用只用它做类型检查与编辑器提示:tsconfig 的 `paths` 把 `momo:framework` 指到它的 `src/index.ts`(参考 `framework/tsconfig.json`)。
+- **不依赖任何浏览器/Node API**(唯一的例外是 scheduler 的延迟任务用运行时的 `setTimeout`),只用引擎提供的 `momo:ui` / `momo:services`——framework/ 的 lint 规则禁止引用 `window.document`、`fetch` 等。
 - 网络/文件等能力来自 Node 的内置模块(docs/04)或原生扩展包(docs/07),框架核心不内置 IO。
 
 ## 7. 测试
