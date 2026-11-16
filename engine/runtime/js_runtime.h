@@ -49,6 +49,8 @@ class JsRuntime final : public Object {
   struct Options {
     // Node 编译缓存目录(module.enableCompileCache;空 = 不缓存)。
     std::filesystem::path code_cache_dir;
+    // 运行时自带的 JS 模块所在目录(Settings::builtin_dir;空 = 没有)。
+    std::filesystem::path builtin_dir;
     // Node inspector(Chrome DevTools)。进程级: 只在进程内第一次创建运行时时生效。
     bool enable_inspector = false;
     int inspector_port = 9229;      // 0 = 系统分配
@@ -111,7 +113,7 @@ class JsRuntime final : public Object {
                                 v8::Local<v8::Context> context, void* priv);
   // Node preload: 执行 node_bootstrap, 保存宿主对象。
   void RunBootstrap(v8::Local<v8::Value> process, v8::Local<v8::Value> require,
-                    const std::string& code_cache_dir);
+                    const std::string& code_cache_dir, const std::string& builtin_dir);
   Status PromiseToStatus(v8::Local<v8::Promise> promise, std::string_view what);
 
   std::unique_ptr<node::CommonEnvironmentSetup> setup_;

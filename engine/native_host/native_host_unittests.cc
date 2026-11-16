@@ -1,7 +1,7 @@
 // 宿主能力表(momo_host.h)的单元测试: 只经 C 函数表调用, 与原生扩展看到的一样。
 // 真实插件(.node)经引擎加载的端到端测试在 extensions/examples/examples_unittests.cc。
 
-#include "engine/extension/extension_host.h"
+#include "engine/native_host/native_host.h"
 
 #include <thread>
 #include <vector>
@@ -12,22 +12,22 @@
 namespace momo::engine {
 namespace {
 
-class ExtensionHostTest : public ::testing::Test {
+class NativeHostTest : public ::testing::Test {
  protected:
   // 测试线程上的事件循环充当 platform 线程。
   momo::testing::ScopedTestEventLoop loop_;
   std::shared_ptr<graphics::TextureRegistry> textures_ = std::make_shared<graphics::TextureRegistry>();
   std::shared_ptr<PlatformViewRegistry> views_ = std::make_shared<PlatformViewRegistry>();
-  ExtensionHost extension_host_{loop_.task_runner(), textures_, views_};
-  const MomoHost* const host_ = extension_host_.host();
+  NativeHost native_host_{loop_.task_runner(), textures_, views_};
+  const MomoHost* const host_ = native_host_.table();
 };
 
-TEST_F(ExtensionHostTest, TableIsVersioned) {
+TEST_F(NativeHostTest, TableIsVersioned) {
   EXPECT_EQ(host_->struct_size, sizeof(MomoHost));
   EXPECT_EQ(host_->api_version, MOMO_HOST_API_VERSION);
 }
 
-TEST_F(ExtensionHostTest, PlatformTasksRunOnThePlatformThreadInOrder) {
+TEST_F(NativeHostTest, PlatformTasksRunOnThePlatformThreadInOrder) {
   struct Record {
     std::vector<int> order;
     std::thread::id thread;
@@ -53,7 +53,7 @@ TEST_F(ExtensionHostTest, PlatformTasksRunOnThePlatformThreadInOrder) {
   EXPECT_EQ(host_->post_platform_task(host_, nullptr, nullptr), kMomoErrInvalidArgs);
 }
 
-TEST_F(ExtensionHostTest, TexturesReceivePixelsAndNotifyTheEngine) {
+TEST_F(NativeHostTest, TexturesReceivePixelsAndNotifyTheEngine) {
   std::vector<int64_t> frames;
   textures_->SetFrameListener(loop_.task_runner(), [&](int64_t id) { frames.push_back(id); });
   int64_t id = 0;
@@ -95,7 +95,7 @@ MomoPlatformViewFactory MakeFactory(ViewLog* log) {
   return factory;
 }
 
-TEST_F(ExtensionHostTest, PlatformViewFactoriesServeTheRegistry) {
+TEST_F(NativeHostTest, PlatformViewFactoriesServeTheRegistry) {
   ViewLog log;
   const MomoPlatformViewFactory factory = MakeFactory(&log);
   // 注册可以在任意线程(插件在 JS 线程上注册)。
@@ -118,14 +118,14 @@ TEST_F(ExtensionHostTest, PlatformViewFactoriesServeTheRegistry) {
 }
 
 // 关闭之后: 每个函数都被拒绝, 已投递而未执行的平台任务不再执行。
-TEST_F(ExtensionHostTest, ClosedTableRejectsEverythingAndDropsQueuedTasks) {
+TEST_F(NativeHostTest, ClosedTableRejectsEverythingAndDropsQueuedTasks) {
   int runs = 0;
   ASSERT_EQ(host_->post_platform_task(host_, [](void* data) { ++*static_cast<int*>(data); }, &runs),
             kMomoOk);
   int64_t id = 0;
   ASSERT_EQ(host_->texture_create(host_, &id), kMomoOk);
 
-  extension_host_.Close();
+  native_host_.Close();
   loop_.RunUntilIdle();
   EXPECT_EQ(runs, 0) << "a task queued before Close must not run after it";
 

@@ -46,10 +46,14 @@ class ApplicationTest : public ::testing::Test {
     std::filesystem::remove_all(resources_, ec);
   }
 
-  // 导入 momo:services: JS 端点就位(宿主发往 JS 的询问由 JS 侧回复;没有处理器的通道回复空 = 允许)。
-  void WriteBundle() {
-    std::ofstream(resources_ / "bundle.js") << "import 'momo:services';\n// test bundle\n";
+  // 打包后的应用: <resources>/app/{package.json, main.js}。
+  void WriteApp(const char* source) {
+    std::filesystem::create_directories(resources_ / "app");
+    std::ofstream(resources_ / "app" / "package.json") << R"({"main": "main.js"})";
+    std::ofstream(resources_ / "app" / "main.js") << source;
   }
+  // 导入 momo:services: JS 端点就位(宿主发往 JS 的询问由 JS 侧回复;没有处理器的通道回复空 = 允许)。
+  void WriteBundle() { WriteApp("import 'momo:services';\n// test bundle\n"); }
 
   // 模拟 JS 经宿主通道发出的方法调用(从 ui 线程发送, 与 momo:services.send 相同的路径);
   // 结果在 ui 线程回调。
@@ -105,7 +109,7 @@ class ApplicationTest : public ::testing::Test {
   };
   std::unique_ptr<Application> LaunchWithFakeJs(FakeJs& js, AppConfig config = {}) {
     // 这个 bundle 不导入 momo:services: 真实的 JS 端点不会安装, 由下面的假 JS 充当 JS 侧。
-    std::ofstream(resources_ / "bundle.js") << "// test bundle: the test plays the JS side\n";
+    WriteApp("// test bundle: the test plays the JS side\n");
     auto app = MakeApp(std::move(config));
     EXPECT_TRUE(LaunchAndWait(*app).ok());
     app->shell()->hub()->SetJsEndpoint(
@@ -463,8 +467,8 @@ TEST_F(ApplicationTest, RepeatedQuitRequestsAreCoalesced) {
 }
 
 #if MOMO_HAS_JS_RUNTIME
-// bundle 不存在不会提前检查: JS 运行时加载时才发现, 结果在事件循环里到达。启动失败, 有序清理, 退出码非零——
-// 无论是包内默认 bundle 还是 --bundle 指定的, 也无论是否 --dev。
+// 入口不存在不会提前检查: JS 运行时加载时才发现, 结果在事件循环里到达。启动失败, 有序清理, 退出码非零——
+// 无论是包内的应用还是命令行给出的, 也无论是否 --dev。
 TEST_F(ApplicationTest, MissingBundleFailsLaunchAndCleansUp) {
   auto app = MakeApp();
   ASSERT_TRUE(app->Launch().ok()) << "the bundle is not checked synchronously";
@@ -478,11 +482,11 @@ TEST_F(ApplicationTest, MissingBundleFailsLaunchAndCleansUp) {
 }
 
 TEST_F(ApplicationTest, MissingExplicitBundleFailsLaunchEvenInDevMode) {
-  WriteBundle();  // 包内的默认 bundle 存在, 但命令行指定了另一个
+  WriteBundle();  // 包内的应用存在, 但命令行指定了另一个
   AppConfig config;
   config.dev_mode = true;
   config.inspector_port = -1;
-  config.bundle_path = resources_ / "nope.js";
+  config.app_path = resources_ / "nope.js";
   auto app = MakeApp(config);
   ASSERT_TRUE(app->Launch().ok());
   EXPECT_EQ(app->Run(), 1);

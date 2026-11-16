@@ -1,6 +1,0 @@
-{
-  "name": "@momo-examples/ext-webview",
-  "version": "0.1.0",
-  "description": "Momo native extension demo: the system WebView (WKWebView) embedded as a platform view",
-  "main": "js/index.ts"
-}

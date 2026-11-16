@@ -1,4 +1,4 @@
-// @momo/framework 统一导出。也可按子包导入:@momo/framework/views 等。
+// 框架的统一导出。运行时自带(<resources>/builtin/framework), 应用 `import … from "momo:framework"`。
 export * from "./foundation/index";
 export * from "./scheduler/index";
 export * from "./animation/index";

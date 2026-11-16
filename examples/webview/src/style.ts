@@ -1,5 +1,5 @@
 // 黑白简约风格的配色与文字样式。
-import { Color, FontWeight, TextStyle } from "@momo/framework";
+import { Color, FontWeight, TextStyle } from "momo:framework";
 
 export const Palette = {
   black: new Color(0xff111111),

@@ -385,10 +385,3 @@ declare module "momo:services" {
    */
   export const nativeHost: bigint;
 }
-
-// 原生扩展(docs/07)是 Node 插件: `import addon from "../build/acme.node"`, 默认导出是插件的 exports。
-// 扩展的 JS 门面自己声明它的形状: `const native = addon as { add(a: number, b: number): number }`。
-declare module "*.node" {
-  const addon: unknown;
-  export default addon;
-}

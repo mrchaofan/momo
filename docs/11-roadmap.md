@@ -61,10 +61,11 @@
 目标:三方原生扩展端到端跑通。
 
 - [x] extensions/sdk:宿主能力表 `momo_host.h`(C ABI v1)、momo_ext_sdk target;SDK 带 Node 头文件(原生扩展 = Node 原生插件, docs/07)
-- [x] engine/extension:ExtensionHost, 宿主能力表的实现(平台任务/外部纹理/平台视图工厂)
+- [x] engine/native_host:NativeHost, 宿主能力表的实现(平台任务/外部纹理/平台视图工厂)
 - [x] 纹理注入:TextureRegistry + TextureLayer + JS Texture widget(v1 CPU 像素帧)
-- [x] 打包链路(`framework/packages/cli`(`@momo/cli`)):按路径 import 的 `.node` 拷到 `native/`
-- [x] 示例扩展:hello(纯 C, 只用 Node-API)、texture(外部纹理)、webview(macOS 平台视图);tray 示例已于精简时删除
+- [x] 打包链路(`framework/packages/cli`(`@momo/cli`)):CLI 只打包(`momo build`), 不编译;三方扩展是应用的业务代码——带原生插件的包留在应用的 `node_modules` 里由 Node 加载, 应用用 `momo.include` 把它带进应用包
+- [x] 框架与内置扩展由运行时自带(`<resources>/builtin/`, 应用以 `momo:framework`、`momo:webview` 导入), 不进应用的代码
+- [x] 扩展:三方扩展的示例 hello(纯 C, 只用 Node-API)、texture(外部纹理);内置扩展 webview(macOS 平台视图);tray 示例已于精简时删除
 - [~] 验收:`examples/extensions-demo` ✅(示例已于精简时删除);端到端测试(真实引擎加载真实的 `.node`, `NativeExtensionTest.*`)与 SDK 独立构建(`ExtensionSdk.StandaloneCxxBuild`)✅;Windows 未运行验证, 多编译器矩阵需 CI
 
 ## M6 · 打磨与发布(持续)

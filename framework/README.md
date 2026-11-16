@@ -1,6 +1,8 @@
 # framework/ — UI 框架层(TypeScript)
 
-设计文档:`docs/06-framework-js.md`。运行在引擎 V8 中,发布为 npm 包 `@momo/framework`。
+设计文档:`docs/06-framework-js.md`。运行在引擎 V8 中, **由运行时自带**:构建运行时的时候编译成
+`<resources>/builtin/framework/index.js`, 应用以 `import … from "momo:framework"` 使用, 不进应用的代码。同一份源码另发布为
+npm 包 `@momo/framework`(TS 源码), 应用只用它做类型检查。
 
 ```
 packages/momo/src/
@@ -27,22 +29,32 @@ test/            # headless 引擎驱动的框架测试 + golden
 
 ```bash
 cd framework
-npm install                      # 工作区的两个包(packages/momo、packages/cli)+ esbuild、typescript
+npm install                      # 工作区的两个包(packages/momo、packages/cli)+ esbuild、typescript。构建运行时之前就要装(见下)
 npx tsc --noEmit                 # 类型检查(strict;含 test/ 与 examples/counter、examples/todo)
 npm test                         # 构建并运行全部测试(Node + mock momo:ui/momo:services)
 node out/test/node_main.mjs <过滤子串>   # 只跑名称包含子串的测试(先 npm run build:tests)
 
-# 示例 → 单文件 ESM bundle(只保留 `import ... from "momo:*"`)
-node packages/cli/momo.mjs bundle ../examples/counter   # → ../examples/counter/dist/bundle.js
-node packages/cli/momo.mjs bundle ../examples/todo
-#   可选 --out=<dir> / --minify(压缩且不带 sourcemap)
+# 运行时自带的模块(CMake target momo_builtin 调用, 一般不用手动跑): 每个模块 → <out-dir>/<name>/{package.json, index.js}
+node scripts/build_builtin.mjs <out-dir> framework webview
+
+# 示例 → 单文件 ESM(示例自己的 build 脚本: 一行 esbuild, `momo:*` 的导入原样保留;示例不需要 npm install)
+(cd ../examples/counter && npm run build)   # → ../examples/counter/dist/main.js
+(cd ../examples/todo && npm run build)
 ```
 
 - 工作区:`framework/package.json` 为 npm workspace 根;发布包为 `packages/momo`(`@momo/framework`,
-  `exports` 指向 TS 源码, 子路径 `@momo/framework/widgets` 等)。构建脚本把 `@momo/framework` 别名到源码。
+  `exports` 指向 TS 源码, 子路径 `@momo/framework/views` 等;应用用它做类型检查)与 `packages/cli`(`@momo/cli`, 只有
+  `momo build`: 把应用目录打包, 不编译, 没有 npm 依赖)。
+- 运行时自带的模块:`scripts/build_builtin.mjs` 用 esbuild 把框架(`packages/momo/src/index.ts`)与内置扩展
+  (`../extensions/webview/js/index.ts`)各编译成一个 ESM 文件, 由 `embedder/CMakeLists.txt` 的 `momo_builtin` 在构建运行时的
+  时候调用——所以**构建运行时需要这里装好的 esbuild**(没有时 CMake 给出警告, 运行时不带 `momo:framework`)。esbuild 的
+  设置在 `scripts/common.mjs`, 与测试打包共用。
+- 类型:`tsconfig.json` 的 `paths` 把 `momo:framework` 指到 `packages/momo/src/index.ts`、`momo:webview` 指到
+  `../extensions/webview/js/index.ts`;应用的 tsconfig 照此把 `momo:framework` 指到 `@momo/framework` 的 `src/index.ts`。
 - 测试布局:`test/*_test.ts` 写成与宿主无关的场景函数(`test/harness.ts` 极简运行器 + `test/tester.ts` ViewTester,
   只通过 `window` 回调与 `defaultBinaryMessenger` 驱动框架);`test/mock/` 是 Node 宿主用的 momo:ui / momo:services mock
-  (记录绘制与合成调用、Ahem 固定宽度字形模型)。`test/examples/*_main.ts` 在 mock 下端到端运行两个示例。
+  (记录绘制与合成调用、Ahem 固定宽度字形模型)。`test/examples/*_main.ts` 在 mock 下端到端运行示例。测试打包时
+`momo:framework`、`momo:webview` 解析到源码(`scripts/common.mjs` 的 `builtinFromSource`)。
 - 引擎宿主(`momo_headless`, CTest `FrameworkTests.EngineHeadless`):`npm run build:tests` 产出 `out/test/momo_tests.js`(momo:* 为外部导入), 用法:
   `import { runTests } from "./momo_tests.js"; const s = await runTests({ name: "engine-headless", log: print, ahemText: false, mock: null });`
   依赖 mock 观察能力或 Ahem 字形度量的用例会自动 skip。

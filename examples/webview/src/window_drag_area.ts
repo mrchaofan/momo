@@ -9,7 +9,7 @@
 import {
   GestureBinding, PointerDownEvent, RenderProxyBox, SingleChildRenderObjectView, Size, Widget, kPrimaryButton,
   type BoxConstraints, type GestureArenaMember, type HitTestEntry, type Key, type Offset, type PointerEvent, type View,
-} from "@momo/framework";
+} from "momo:framework";
 
 /** 一次按下在竞技场里的拖动请求: 获胜时让宿主以这次按下的序列开始窗口拖动。 */
 class WindowDragRequest implements GestureArenaMember {

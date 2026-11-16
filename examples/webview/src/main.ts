@@ -16,7 +16,9 @@
 //   - 每个标签一个系统 WebView。非活动标签用 Offstage 隐藏: 不参与合成(原生视图被隐藏), 但 WebView
 //     对象与页面状态保留, 切回时无需重新加载。
 // 注意: 键盘焦点在网页里时按键由 WebView 处理, 快捷键需先点击 momo 区域(标签栏/工具栏)。
-// 构建与运行(macOS, 需先构建 momo_app_mac 与 ext_webview):
+// 运行(macOS;WebView 是内置扩展 momo:webview, 随运行时提供):
+//   (cd examples/webview && npm run build) && out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev examples/webview
+// 打包成 .app:
 //   node framework/packages/cli/momo.mjs build examples/webview --runtime=out/debug/embedder/Momo.app \
 //     && open examples/webview/dist/MomoBrowser.app
 import {
@@ -26,8 +28,8 @@ import {
   StatefulView, TextEditingController, TextField, TextSelection, ThemeData, Title, ValueKey, ViewAnchor, RootView, Widget,
   WindowChrome, app, isApplePlatform, openUrl, reportError, runView,
   type BuildContext, type Offset, type PointerCapture, type PointerEvent, type View,
-} from "@momo/framework";
-import { WebView, registerProtocol, type WebViewController, type WebViewState } from "@momo-examples/ext-webview";
+} from "momo:framework";
+import { WebView, registerProtocol, type WebViewController, type WebViewState } from "momo:webview";
 import { showContextMenu } from "./context_menu";
 import { Palette, TextStyles, kStripLeadingPadding, kTabStripHeight, kTabStripTitleBarHeight, kTabStripTopInset, kToolbarHeight } from "./style";
 import { IconTap, Tab, TabStrip, dropIndex, tabWidthFor, type TabDrag } from "./tabs";

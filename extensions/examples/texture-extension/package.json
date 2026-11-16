@@ -2,5 +2,7 @@
   "name": "@momo-examples/ext-texture",
   "version": "0.1.0",
   "description": "Momo native extension demo: an external texture fed from the addon's own thread",
-  "main": "js/index.ts"
+  "type": "module",
+  "main": "js/index.js",
+  "types": "js/index.d.ts"
 }

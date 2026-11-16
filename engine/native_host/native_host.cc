@@ -1,4 +1,4 @@
-#include "engine/extension/extension_host.h"
+#include "engine/native_host/native_host.h"
 
 #include <utility>
 #include <vector>
@@ -9,7 +9,7 @@
 namespace momo::engine {
 
 // MomoHost 是首成员: 插件手里的 const MomoHost* 就是 Table*。
-struct ExtensionHost::Table {
+struct NativeHost::Table {
   MomoHost api{};
   // 以下三项在 Close 时清空: 表活到进程结束, 但不该把引擎的对象也留到那时。
   Mutex mutex;
@@ -20,7 +20,7 @@ struct ExtensionHost::Table {
 
 namespace {
 
-using Table = ExtensionHost::Table;
+using Table = NativeHost::Table;
 
 // 取表里的一项;已关闭为空。
 template <typename T>
@@ -113,7 +113,7 @@ MomoStatus PlatformViewGet(const MomoHost* host, int64_t view_id, void** out) {
 
 }  // namespace
 
-ExtensionHost::ExtensionHost(std::shared_ptr<TaskRunner> platform_runner,
+NativeHost::NativeHost(std::shared_ptr<TaskRunner> platform_runner,
                              std::shared_ptr<graphics::TextureRegistry> textures,
                              std::shared_ptr<PlatformViewRegistry> platform_views)
     : table_(new Table) {
@@ -132,11 +132,11 @@ ExtensionHost::ExtensionHost(std::shared_ptr<TaskRunner> platform_runner,
   api.platform_view_get = &PlatformViewGet;
 }
 
-ExtensionHost::~ExtensionHost() { Close(); }
+NativeHost::~NativeHost() { Close(); }
 
-const MomoHost* ExtensionHost::host() const { return &table_->api; }
+const MomoHost* NativeHost::table() const { return &table_->api; }
 
-void ExtensionHost::Close() {
+void NativeHost::Close() {
   std::shared_ptr<TaskRunner> runner;
   std::shared_ptr<graphics::TextureRegistry> textures;
   std::shared_ptr<PlatformViewRegistry> views;

@@ -7,52 +7,122 @@
 
 ## 1. 扩展的形态
 
-一个扩展 = 一个普通的 npm 包: **JS 门面 + 一个 `.node` 文件**。
+一个扩展 = **JS 门面 + 一个 `.node` 文件**。按 JS 从哪里来分两种, 原生一侧(Node-API、宿主能力表、SDK)完全相同:
+
+| | 内置扩展 | 三方扩展 |
+|---|---|---|
+| 是什么 | 运行时的一部分, 随运行时发布 | 应用的依赖, 属于业务代码 |
+| 在哪里 | `<resources>/builtin/<name>/`: JS 与 `.node` 在同一个目录 | 应用的 `node_modules/<包>/` |
+| 怎么导入 | `import { WebView } from "momo:webview"` | `import { Database } from "@acme/ext-sqlite"` |
+| 应用要做什么 | 什么都不用做 | 自己安装、自己决定怎么带进应用包(§2) |
+| 现有的 | `momo:webview`(仅 macOS;源码 `extensions/webview/`) | 示例 `extensions/examples/{hello,texture}-extension` |
+
+三方扩展是一个普通的 npm 包:
 
 ```
 ext-sqlite/
-├── package.json          # 普通的 package.json, 没有 Momo 专有的声明
-├── js/index.ts           # JS 门面: import 插件, 给它的函数加上类型, 提供好用的 API
+├── package.json          # 普通的 package.json(type: module, main: js/index.js, types: js/index.d.ts), 没有 Momo 专有的声明
+├── js/index.js           # JS 门面: 按相对路径 import 插件, 提供好用的 API(必须是 JS: 运行时不执行 TS)
+├── js/index.d.ts         # 门面的类型
 ├── native/
 │   ├── CMakeLists.txt    # find_package(MomoExtSdk) + momo_add_extension(ext_sqlite ...)
 │   └── src/ext_sqlite.cc # Node-API 模块(NAPI_MODULE_INIT)
 └── build/ext_sqlite.node # 编译产物(node-gyp 的惯例位置;不入库)
 ```
 
-```ts
-// ext-sqlite/js/index.ts
-import addon from "../build/ext_sqlite.node";     // 默认导出 = 插件的 exports
-const native = addon as { open(path: string): Promise<number> };
+```js
+// ext-sqlite/js/index.js
+import addon from "../build/ext_sqlite.node";   // 相对路径, 指向包内;默认导出 = 插件的 exports
 export class Database {
-  static async open(path: string): Promise<Database> { ... }
+  static async open(path) { ... }
 }
 ```
 
 对应用开发者而言与任何 npm 包无差别: `npm i @acme/ext-sqlite` + `import { Database } from "@acme/ext-sqlite"`。
 
+内置扩展的源码只有 `js/index.ts`(单入口)与 `native/`, 没有 `package.json`: 构建运行时的时候 JS 被编译成
+`builtin/<name>/index.js`(连同生成的 `package.json`), 插件直接输出到同一个目录(docs/09 §4), JS 里写
+`import addon from "./ext_webview.node"`。
+
 **JS 与原生之间只有 Node-API 一条路**: 函数、对象、类、Promise、`napi_async_work`(线程池)、
 `napi_threadsafe_function`(从别的线程回到 JS)。不经过消息通道, 也没有 Momo 专有的参数/返回值 API。
 
-## 2. 加载
+## 2. 加载与打包
 
 没有 manifest, 没有宿主侧的扩展列表: 扩展由 JS 加载, 加载失败就是一次普通的 `import` 失败(异常里有原因)。
+不做"能力声明"与加载白名单: JS 本来就能 `process.dlopen`、读写文件、起子进程, 宿主拦不住, 就不假装拦。
+
+两种扩展的加载只差第一步, 之后是同一条路:
 
 ```
-JS: import addon from "./x.node"
+内置: import { WebView } from "momo:webview"
+        → 模块钩子: <builtin_dir>/webview/package.json 的 main → builtin/webview/index.js      (docs/04 §4)
+        → index.js: import addon from "./ext_webview.node"                 ← 相对路径, 同一个目录
+三方: import { Database } from "@acme/ext-sqlite"
+        → Node 的解析规则: 从应用的 node_modules 里找到这个包, 加载它的 js/index.js
+        → js/index.js: import addon from "../build/ext_sqlite.node"        ← 相对路径, 指向包内
  → 运行时的模块钩子(engine/runtime/node_bootstrap.cc)把 .node 交给 Node 的 require → dlopen → NAPI_MODULE_INIT
- → 需要宿主能力的门面: native.attach(nativeHost, …)        [全部在 ui(JS)线程]
+ → 需要宿主能力的门面: addon.attach(nativeHost, …)        [全部在 ui(JS)线程]
 ```
 
-- Node 自己只在 `require` 里认 `.node`;Momo 的模块钩子让 ESM 的 `import x from "./x.node"` 也能用(默认导出是
-  插件的 exports)。类型声明(`declare module "*.node"`)在 `@momo/framework` 里。
-- **打包**(`momo bundle` / `momo build`, docs/09 §4): 按路径 import 的 `.node` 被拷到 `<out>/native/`, bundle 里的
-  导入改为 `./native/<name>.node`。`.node` 不存在(扩展还没编译)时打包报错。只认静态的按路径 import;运行期自己
-  拼路径找 `.node` 的第三方包(如用 `node-gyp-build` 的)不会被拷贝, 这类包不要打进 bundle。
-- 不做"能力声明"与加载白名单: JS 本来就能 `process.dlopen`、读写文件、起子进程, 宿主拦不住, 就不假装拦。
+Node 自己只在 `require` 里认 `.node`;Momo 的模块钩子让 ESM 的 `import x from "./x.node"` 也能用(默认导出是插件的
+exports), 两种扩展的 JS 靠的都是它。
+
+### 2.1 内置扩展
+
+在运行时的 `builtin` 目录里(`engine/common/settings.h` 的 `builtin_dir`), 与框架并列:
+
+```
+Momo.app/Contents/Resources/        # Windows: Momo.exe 同级(目前没有 webview)
+├── builtin/
+│   ├── framework/{package.json, index.js}                    # momo:framework
+│   └── webview/{package.json, index.js, ext_webview.node}    # momo:webview: JS 与原生插件在同一个目录
+└── app/                                                      # 应用
+```
+
+- 应用什么都不用做: 不安装、不配置、不打包。应用的产物里 `momo:webview` 的导入原样保留(与 `momo:framework` 一样)。
+- 内置扩展里的 `import "momo:framework"` 与应用拿到的是同一份框架, 所以它可以直接提供视图(`WebView` 是一个 View)。
+- 版本 = 运行时版本。
+- 类型: `momo:webview` 目前没有单独发布的类型包;仓库内靠 `framework/tsconfig.json` 的 `paths` 指到
+  `extensions/webview/js/index.ts`。
+
+### 2.2 三方扩展: 业务代码, Momo 不关心
+
+三方扩展是应用的依赖。它怎么安装、怎么进应用的产物、怎么带进应用包, 都是应用自己的事: Momo 对此**没有任何专门的
+配置项或概念**(CLI 不编译、不分析文件内容、不知道依赖, docs/09 §4)。一个三方包只有两种去处:
+
+- **编译进应用的 `main`**: 纯 JS 的包可以这样, 由应用自己的构建工具完成;
+- **保持原样留在 `node_modules` 里**, 运行时由 Node 加载。**带原生插件的包必须这样**: 包内的 JS 按相对路径找自己的
+  `.node` 与它依赖的动态库(`.dylib` / `.dll`), 只有整包原样、文件的相对位置不变才找得到。
+
+留在 `node_modules` 里的包, 应用要做两件事, 用的都是通用的手段:
+
+```json
+// 应用的 package.json
+"scripts": {
+  "build": "esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --external:@acme/ext-sqlite --outfile=dist/main.js"
+},
+"momo": { "include": ["node_modules/@acme/ext-sqlite/"] }
+```
+
+1. 在**自己的构建配置**里把它排除(esbuild: `--external:@acme/ext-sqlite`), 导入在 `main` 里原样保留;
+2. 打包时用 `momo.include` 把 `node_modules/@acme/ext-sqlite/` 带进应用包(`momo.include` 是通用的"追加文件",
+   不是扩展专用的)。它自己还依赖别的包时, 把那些包也写上;用不到的文件(如包里的原生源码目录)可以用 `momo.ignore`
+   去掉。没匹配到任何文件的 include(写错了, 或依赖没安装)打包时报错, 不等到运行时才发现。
+
+开发时(`Momo --dev <应用目录>`)和打包后是同一条路: Node 从应用目录的 `node_modules` 加载这个包, 没有"拷贝 `.node`
+并改写导入"这一步。
+
+- 留在 `node_modules` 里的包必须是 JS(运行时不执行 TS), 类型写在旁边的 `.d.ts` 里。
+- **需要框架的三方扩展**(带视图的)直接 `import "momo:framework"`: 它由运行时提供, 与应用拿到的是同一份。所以带视图的
+  三方扩展也是一个保持原样的整包, 不需要把视图部分和应用一起编译。
+- **npm 上现成的原生包**按设计直接可用, 包括用 `node-gyp-build` 在运行期拼路径找 `.node` 的: 整包原样, 它按自身
+  位置找文件的逻辑照常成立(没有拿真实的 npm 原生包测过, 只测了仓库里的示例;插件本身能否加载见 §5)。
 
 ## 3. 宿主能力表(extensions/sdk/include/momo/momo_host.h)
 
-只有用到引擎能力的扩展才需要它。JS 侧 `import { nativeHost } from "momo:services"`(一个 BigInt: 表的地址),
+只有用到引擎能力的扩展才需要它。JS 侧 `import { nativeHost } from "momo:services"`(一个 BigInt: 表的地址;不用 External——Node 26 上
+`napi_get_value_external` 读 V8 原生的 External 会崩溃),
 原样传给插件, 插件用头文件里的 `momo_host_from_napi(env, value)` 取出 `const MomoHost*`。
 
 | 函数 | 调用线程 | 说明 |
@@ -68,7 +138,7 @@ JS: import addon from "./x.node"
 - 指针在进程存续期间一直有效, 可以保存、可以在任意线程使用;引擎关闭后各函数返回 `kMomoErrClosed`。
 - **宿主只在 platform 线程调用扩展**, 而且只有两类回调: 平台任务、视图工厂。
 - 这张表里没有、也不需要的东西: 回到 JS 线程用 `napi_threadsafe_function`;后台线程用 `napi_async_work` 或自己
-  开;读应用资源用 `momo:services` 的 `assetsDir`(门面传给插件)或 `node:fs`;日志用自己的方式;跟随帧节奏由 JS
+  开;读应用资源用 `momo:services` 的 `assetsDir`(JS 侧传给插件)或 `node:fs`;日志用自己的方式;跟随帧节奏由 JS
   驱动(框架的 Ticker)或插件自己定时。
 
 **外部纹理**是"扩展借助引擎绘制能力"的途径: 扩展不直接拿 SkCanvas(Skia 的 C++ ABI 不稳定), 而是在自己的线程
@@ -103,7 +173,7 @@ JS 侧用框架的 `PlatformView`, 经引擎的 `momo/platform_views` 通道请�
 
 一个进程里只有一个 JS 运行时(没有热重启, docs/04 §8), 所以扩展里"属于 JS"的状态与进程同寿, 没有别的生命周期
 事件。系统框架自己的在途回调(如 WebKit 的 completion handler)可能晚于 ③ 才到: 扩展要自己保证此时不再碰 JS
-(webview 示例: 清理函数里把 threadsafe function 置空, 之后的消息丢弃)。
+(内置的 webview: 清理函数里把 threadsafe function 置空, 之后的消息丢弃)。
 
 ## 5. SDK 与构建
 
@@ -122,6 +192,9 @@ find_package(MomoExtSdk 1 REQUIRED)        # -DMomoExtSdk_DIR=<sdk>/lib/cmake/Mo
 momo_add_extension(ext_acme src/acme.cc)   # CMakeLists.txt 在 <包>/native/ → 产物 <包>/build/ext_acme.node
 ```
 
+- `momo_add_extension()` 认变量 `MOMO_EXTENSION_OUTPUT_DIR`: 设了就输出到那里(不想写进源码树的构建;内置的 webview 用它把
+  插件输出到运行时的 `builtin/webview/`)。
+
 - **符号从哪来**: Node-API 的符号在 libnode 里, 不在应用的可执行文件里。macOS 上插件以
   `-undefined dynamic_lookup` 链接, 加载时从进程解析。Windows 上插件直接链接 SDK 里的导入库, 导入表指向
   `libnode.dll`(与应用 exe 叫什么无关), 所以不需要 node-gyp 的 delay-load 钩子。
@@ -137,15 +210,14 @@ momo_add_extension(ext_acme src/acme.cc)   # CMakeLists.txt 在 <包>/native/ �
 
 | 位置 | 内容 |
 |---|---|
-| `extensions/examples/hello-extension` | 纯 C, 只用 Node-API(不需要宿主表): 同步函数、字符串/字节、线程池上的 Promise |
-| `extensions/examples/texture-extension` | C++: 外部纹理, 自己的线程按约 60 fps 推帧;清理函数里停线程 |
-| `extensions/examples/webview-extension` | ObjC++(macOS): WKWebView 平台视图;命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。示例应用 `examples/webview`(多标签浏览器) |
+| `extensions/examples/hello-extension` | 三方扩展的样子。纯 C, 只用 Node-API(不需要宿主表): 同步函数、字符串/字节、线程池上的 Promise。门面是 `js/index.js` + `js/index.d.ts`, 按相对路径 `../build/ext_hello.node` 加载插件 |
+| `extensions/examples/texture-extension` | C++: 外部纹理, 自己的线程按约 60 fps 推帧;清理函数里停线程。包结构同 hello, 门面另把 `nativeHost` 传给插件 |
+| `extensions/webview` | 内置扩展 `momo:webview`。ObjC++(macOS): WKWebView 平台视图;命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。`js/index.ts`(依赖 `momo:framework`)+ `native/`。示例应用 `examples/webview`(多标签浏览器) |
 | `extensions/testing/lifecycle-addon` | 只供测试: 记录宿主对它的每次调用, 验证 §4 的关闭顺序 |
 
-- `engine/extension/extension_unittests.cc`: 宿主能力表的单元测试(只经 C 函数表调用)。
+- `engine/native_host/native_host_unittests.cc`: 宿主能力表的单元测试(只经 C 函数表调用)。
 - `extensions/examples/examples_unittests.cc`: 端到端——真实的引擎(Shell + Node 运行时)执行 JS, JS import 真实的 `.node`。
 - CTest `ExtensionSdk.StandaloneCxxBuild`: 只凭 `<build>/sdk` 独立配置并编译 texture 示例。
-- 工具: `momo ext create <dir>` 生成扩展骨架(`framework/packages/cli/momo.mjs`)。
 
 ## 7. 为什么不是自有的扩展 ABI
 

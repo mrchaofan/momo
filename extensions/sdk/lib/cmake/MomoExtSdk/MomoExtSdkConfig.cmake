@@ -5,7 +5,6 @@
 #   include/node/              Momo 运行时所带 Node 的头文件(node_api.h 等;同 Electron 发布自己的头文件)
 #   Release/node.lib           仅 Windows: libnode.dll 的导入库(路径同 node-gyp 的 --nodedir 约定)
 #   lib/cmake/MomoExtSdk/      本文件
-# (JS 门面用到的类型——`import addon from "./x.node"`、momo:services 的 nativeHost——在 @momo/framework 里。)
 #
 # 扩展作者用法(CMakeLists.txt 放在 <包>/native/):
 #   find_package(MomoExtSdk REQUIRED)            # -DMomoExtSdk_DIR=<sdk>/lib/cmake/MomoExtSdk
@@ -16,7 +15,7 @@
 #   momo::ext_sdk                    INTERFACE target: 头文件路径与链接方式
 #   momo_add_extension(<name> <src>...)
 #       建一个 Node 插件 <name>.node, 输出到 CMakeLists.txt 上一级目录的 build/(node-gyp 的惯例位置,
-#       JS 门面按相对路径 import);设了 MOMO_EXTENSION_OUTPUT_DIR 则输出到那里(不想写进源码树的构建)。
+#       包里的 JS 按相对路径 import);设了 MOMO_EXTENSION_OUTPUT_DIR 则输出到那里(不想写进源码树的构建)。
 #       隐藏可见性、C11 / C++17。插件内部可以使用异常与 RTTI, 但异常不得
 #       穿过 Node-API 与宿主表的回调边界。
 

@@ -7,9 +7,12 @@ namespace momo::engine::runtime {
 // getOrInitializeCascadedLoader)。不用 runEntryPointWithESMLoader: 它把加载/求值错误当作未捕获异常
 // 上报并让 Promise 正常结束, 宿主拿不到错误。
 //
-//   - momo:*: 由 module.registerHooks 解析, 模块内容来自 process._linkedBinding(宿主用
-//     node::AddLinkedBinding 注册), 导出名在加载时从绑定对象读出。
-//   - *.node(原生扩展, docs/07): `import addon from "./x.node"` 的默认导出是插件的 exports
+//   - momo:*: 运行时提供的模块, 由 module.registerHooks 解析。两种:
+//       · 运行时自带的 JS 模块(框架、内置扩展): momo:<name> → <builtinDir>/<name>/package.json 的 main,
+//         之后就是一个普通的文件模块(它的相对导入、它 import 的 .node 照常解析);
+//       · 引擎的原生模块(momo:ui、momo:services): 模块内容来自 process._linkedBinding(宿主用
+//         node::AddLinkedBinding 注册), 导出名在加载时从绑定对象读出。
+//   - *.node(Node 原生插件, docs/07): `import addon from "./x.node"` 的默认导出是插件的 exports
 //     (Node 自己只在 require 里认 .node)。
 //   - 宿主给出源码的模块(JsRuntime::RunModuleSource): url 带递增查询串, 每次都是新模块;
 //     相对导入按 baseDir 解析。
@@ -29,6 +32,25 @@ process.on('unhandledRejection', (reason) => console.error('Unhandled promise re
 if (codeCacheDir) Module.enableCompileCache(codeCacheDir);
 
 const isNative = (specifier) => specifier.startsWith('momo:');
+// momo:<name> → 运行时自带的 JS 模块的入口(file: URL);没有这个模块为 null(那就是引擎的原生模块)。
+const builtinEntries = new Map();
+function builtinEntry(specifier) {
+  if (!builtinEntries.has(specifier)) {
+    let entry = null;
+    const name = specifier.slice('momo:'.length);
+    if (builtinDir && /^[a-z][a-z0-9_-]*$/.test(name)) {
+      const dir = path.join(builtinDir, name);
+      try {
+        const main = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8')).main;
+        entry = pathToFileURL(path.join(dir, typeof main === 'string' ? main : 'index.js')).href;
+      } catch {
+        // 没有这个目录(或它不是一个包): 不是自带的 JS 模块。
+      }
+    }
+    builtinEntries.set(specifier, entry);
+  }
+  return builtinEntries.get(specifier);
+}
 const isAddon = (url) => url.startsWith('file:') && new URL(url).pathname.endsWith('.node');
 const hostSources = new Map();
 let nextSourceId = 0;
@@ -52,7 +74,7 @@ function nativeModuleSource(url) {
 
 Module.registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (isNative(specifier)) return { url: specifier, shortCircuit: true };
+    if (isNative(specifier)) return { url: builtinEntry(specifier) ?? specifier, shortCircuit: true };
     if (hostSources.has(specifier)) return { url: specifier, format: 'module', shortCircuit: true };
     return nextResolve(specifier, context);
   },

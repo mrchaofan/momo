@@ -46,5 +46,6 @@ add_subdirectory(embedder)
 add_subdirectory(extensions)
 add_subdirectory(third_party)
 
-# examples/ 与 framework/ 是 JS/TS 工程,不经 CMake 构建: 应用的 bundle 与打包都由
-# framework/packages/cli 完成(momo bundle / momo build, 见 docs/09-build-and-deps.md)。
+# framework/ 是 TS 工程: 它与内置扩展的 JS 编译成运行时自带的模块(embedder/CMakeLists.txt 的 momo_builtin)。
+# examples/ 是应用, 不经 CMake 构建: 各自编译自己的源码, 打包由 framework/packages/cli 完成(momo build,
+# 见 docs/09-build-and-deps.md)。

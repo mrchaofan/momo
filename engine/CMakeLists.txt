@@ -1,7 +1,7 @@
 # engine/: 每个模块一个静态库 momo_engine_<module>(docs/02 §1)。基础设施(线程/任务/对象/Status…)在顶层 base/。
 # 模块依赖(单向, 无环; A → B 表示 A 依赖 B):
-#   shell → {ui, extension};ui → {runtime, text, assets} → graphics → base
-#   extension → {common, graphics};各模块按需 → platform(纯接口)/ common(Settings、TaskRunners、消息通道)
+#   shell → {ui, native_host};ui → {runtime, text, assets} → graphics → base
+#   native_host → {common, graphics};各模块按需 → platform(纯接口)/ common(Settings、TaskRunners、消息通道)
 
 if(NOT MOMO_HAVE_SKIA)
   message(FATAL_ERROR "engine requires the Skia prebuilt: python3 tools/fetch_deps.py skia")
@@ -15,6 +15,7 @@ target_link_libraries(momo_engine_platform INTERFACE momo_base)
 
 # ---- momo_engine_common: 无 V8/Skia 的引擎公共设施(Settings、TaskRunners、消息通道、StandardCodec、JSON) ----
 add_library(momo_engine_common STATIC
+  common/app_layout.cc
   common/json.cc
   common/message_channel_hub.cc
   common/platform_view_registry.cc
@@ -54,10 +55,10 @@ add_library(momo_engine_assets STATIC
   assets/image_decoder.cc)
 target_link_libraries(momo_engine_assets PUBLIC momo_engine_graphics PRIVATE momo::skia)
 
-# ---- momo_engine_extension: 宿主能力表 MomoHost 的实现(原生扩展是 Node 插件, 由 JS 加载;不含 V8)----
-add_library(momo_engine_extension STATIC
-  extension/extension_host.cc)
-target_link_libraries(momo_engine_extension PUBLIC momo_base momo_engine_common momo_engine_graphics
+# ---- momo_engine_native_host: 宿主能力表 MomoHost 的实现(原生扩展是 Node 插件, 由 JS 加载;不含 V8)----
+add_library(momo_engine_native_host STATIC
+  native_host/native_host.cc)
+target_link_libraries(momo_engine_native_host PUBLIC momo_base momo_engine_common momo_engine_graphics
                       momo_ext_sdk)
 
 # ---- momo_engine_runtime / momo_engine_ui: V8(v8.h 只在这两个模块的实现文件中出现) ----
@@ -98,7 +99,7 @@ add_library(momo_engine_shell STATIC
   shell/shell.cc
   shell/thread_host.cc
   shell/vsync_waiter.cc)
-target_link_libraries(momo_engine_shell PUBLIC momo_base momo_engine_common momo_engine_extension
+target_link_libraries(momo_engine_shell PUBLIC momo_base momo_engine_common momo_engine_native_host
                       momo_engine_graphics momo_engine_platform momo_engine_ui)
 
 # ---- 聚合 target ----
@@ -108,9 +109,10 @@ add_library(momo::engine ALIAS momo_engine)
 
 if(MOMO_BUILD_TESTS)
   add_executable(momo_engine_unittests
+    common/app_layout_unittests.cc
     common/common_unittests.cc
     common/platform_view_registry_unittests.cc
-    extension/extension_unittests.cc
+    native_host/native_host_unittests.cc
     graphics/composition_unittests.cc
     graphics/graphics_unittests.cc
     graphics/testing/golden.cc

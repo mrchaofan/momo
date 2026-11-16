@@ -7,7 +7,7 @@ import {
   LogicalKeyboardKey, MediaQuery, MouseRegion, Offset, Opacity, OverlayEntry, Overlay, Positioned, Row, SizedBox, Stack,
   State, StatefulView, Text, Transform, Matrix4,
   type BuildContext, type View,
-} from "@momo/framework";
+} from "momo:framework";
 import { Palette, TextStyles } from "./style";
 
 export interface MenuItem {

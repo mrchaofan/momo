@@ -34,7 +34,7 @@
 #include "engine/common/standard_codec.h"
 #include "engine/common/settings.h"
 #include "engine/common/task_runners.h"
-#include "engine/extension/extension_host.h"
+#include "engine/native_host/native_host.h"
 #include "engine/graphics/texture.h"
 #include "engine/platform/input_types.h"
 #include "engine/platform/render_surface.h"
@@ -163,10 +163,10 @@ class Shell final : public Object {
   const double refresh_rate_;
   const std::shared_ptr<MessageChannelHub> hub_;
   const std::shared_ptr<graphics::TextureRegistry> textures_;
-  // 与 ExtensionHost 共享(扩展注册工厂), 实例的创建/销毁只经 Shell(platform 线程)。
+  // 与 NativeHost 共享(扩展注册工厂), 实例的创建/销毁只经 Shell(platform 线程)。
   const std::shared_ptr<PlatformViewRegistry> platform_views_;
   // 宿主能力表(原生扩展经 momo:services 的 nativeHost 取得)。
-  ExtensionHost extension_host_;
+  NativeHost native_host_;
   bool shut_down_ = false;
   bool run_called_ = false;  // 仅 platform 线程
 

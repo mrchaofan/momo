@@ -2,5 +2,7 @@
   "name": "@momo-examples/ext-hello",
   "version": "0.1.0",
   "description": "Minimal Momo native extension: a plain Node-API addon (sync functions, a Promise from a worker thread)",
-  "main": "js/index.ts"
+  "type": "module",
+  "main": "js/index.js",
+  "types": "js/index.d.ts"
 }

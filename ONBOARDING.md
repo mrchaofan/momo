@@ -30,6 +30,10 @@ python3 tools/fetch_deps.py
 ```
 
 ```bash
+(cd framework && npm install)
+```
+
+```bash
 cmake -S . -B out/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 ```
 
@@ -42,8 +46,10 @@ cd out/debug && ctest -j8
 ```
 
 ```bash
-cd framework && npm install && npm test
+cd framework && npm test
 ```
+
+`npm install` 要在 CMake 之前：框架与内置扩展是运行时的一部分（`momo:framework`、`momo:webview`），CMake target `momo_builtin` 用 `framework/` 下装好的 esbuild 把它们编译进 `out/debug/embedder/builtin/`。没装时 CMake 只给出警告，构建出的运行时不带 `momo:framework`，View 示例跑不起来。
 
 预期结果：
 
@@ -56,7 +62,7 @@ cd framework && npm install && npm test
 out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev
 ```
 
-会运行默认的 `hello_frame` 动画。再按 README 构建并运行 `examples/counter`，在终端里看日志。
+会运行默认的 `hello_frame` 动画。再按 README 构建并运行 `examples/counter`（`cd examples/counter && npm run build`，示例本身不需要 `npm install`），在终端里看日志。
 
 ## 2. 阅读路线
 
@@ -100,7 +106,7 @@ framework/.../views/binding.ts           drawFrame
 framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 ```
 
-**之后按需**：base 的对象模型（`base/object.h`、`base/event_loop.h` 的头部注释写得很完整）、V8 绑定（`engine/runtime/class_builder.h`）、扩展（`docs/07-extension-system.md`、`engine/extension/extension_host.h` + `extensions/sdk/include/momo/momo_host.h`）。
+**之后按需**：base 的对象模型（`base/object.h`、`base/event_loop.h` 的头部注释写得很完整）、V8 绑定（`engine/runtime/class_builder.h`）、扩展（`docs/07-extension-system.md`、`engine/native_host/native_host.h` + `extensions/sdk/include/momo/momo_host.h`）。
 
 > 读源码的小技巧：几乎每个头文件开头都有一段注释，写明了**线程约定**和**生命周期**。先读那段注释，再读代码。
 
@@ -123,9 +129,11 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | 命令行参数 | `embedder/common/app_config.cc` | README 的参数表 |
 | View / 布局 / 手势 | `framework/packages/momo/src/{views,rendering,gestures}/` | `framework/test/*_test.ts` |
 | Material 控件 | `framework/packages/momo/src/material/` | `material_test.ts` |
-| 扩展的宿主能力表（C ABI） | `extensions/sdk/include/momo/momo_host.h`、`engine/extension/extension_host.cc` | **只能在结构体末尾追加字段**（见 §4）；JS 与原生之间的事都用 Node-API，不进这张表（docs/07 §3） |
+| 扩展的宿主能力表（C ABI） | `extensions/sdk/include/momo/momo_host.h`、`engine/native_host/native_host.cc` | **只能在结构体末尾追加字段**（见 §4）；JS 与原生之间的事都用 Node-API，不进这张表（docs/07 §3） |
 | 扩展 SDK 打包 | `extensions/CMakeLists.txt`（`momo_ext_sdk_package`、install 规则）、`extensions/sdk/lib/cmake/MomoExtSdk/` | CTest `ExtensionSdk.StandaloneCxxBuild` |
-| 打包工具 | `framework/packages/cli/momo.mjs` | README「打包发布」 |
+| 运行时自带的 JS 模块（框架、内置扩展）怎么构建、怎么解析 | `embedder/CMakeLists.txt`（`momo_builtin`）、`framework/scripts/build_builtin.mjs`；解析在 `engine/runtime/node_bootstrap.cc`（`momo:<name>` → `<builtin_dir>/<name>/`） | `tools/package_release.py`（发布产物里的 `builtin/`）；docs/04 §4、docs/09 §4 |
+| 内置扩展 webview | `extensions/webview/`（`js/index.ts` + `native/`） | `framework/test/mock/ext_webview.ts`（Node 测试用的替身）、`extensions/webview/README.md` |
+| 打包工具（只打包，不编译） | `framework/packages/cli/momo.mjs` | README「打包发布」 |
 
 ## 4. 必须遵守的规则
 
@@ -219,8 +227,8 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | 测试 | 命令 | 覆盖 | 什么时候跑 |
 |---|---|---|---|
 | base 单测 | `ctest -R 'EventLoop\|Object\|Pipeline\|TaskUtil\|WorkerPool'` | 事件循环、延迟析构、背压 | 改 `base/` |
-| engine 单测 | `ctest -R 'Shell\|Animator\|Rasterizer\|Hub\|UiBindings\|Golden'` | Shell 时序、背压、绑定、golden | 改 `engine/` |
-| embedder 单测 | `ctest -R 'Application\|AppConfig\|AssetResolver\|Mac'` | 启动/关闭顺序（mock 平台）、macOS 实现 | 改 `embedder/` |
+| engine 单测 | `ctest -R 'Shell\|Animator\|Rasterizer\|Hub\|UiBindings\|Golden\|AppLayout'` | Shell 时序、背压、绑定、golden、应用定位 | 改 `engine/` |
+| embedder 单测 | `ctest -R 'Application\|AppConfig\|Mac'` | 启动/关闭顺序（mock 平台）、macOS 实现 | 改 `embedder/` |
 | 扩展 | `ctest -R 'Extension'` | 宿主能力表单测、端到端（真实引擎加载真实的 `.node`）、关闭顺序、SDK 产物独立构建 | 改扩展宿主或 SDK |
 | 框架（Node） | `cd framework && npm test` | 全部 TS 测试 + counter/todo 端到端 | 改 `framework/` |
 | 框架（真实引擎） | `ctest -R FrameworkTests` | 同一组 TS 测试跑在 `momo_headless` 上 | 改绑定或框架 |
@@ -245,7 +253,7 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 - **线程断言**：Debug 构建中，`MOMO_DCHECK_ON_AFFINITY_THREAD()` / `MOMO_DCHECK_RUNS_ON(runner)` 失败会打印"Called off the object's affinity thread"。看到它，就说明某处跨线程直接调用了对象。
 - **JS**：`--dev` 启动后用 Chrome DevTools 连 `localhost:9229`；`--inspect-brk` 在执行 bundle 前停下（等待期间窗口照常响应；此时退出应用，要等调试器连上并断开后才完成）。
 - **渲染问题**：`MOMO_SOFTWARE_RENDERING=1` 切到 CPU 光栅。如果问题消失，就是 Metal 路径的问题。
-- **不开窗口复现**：`momo_headless --bundle=x.js --width=800 --height=600 --screenshot=out.png`。bundle 通过 `momo/test` 通道调 `screenshot` / `done`，用法见 `embedder/headless/headless_main.cc` 开头的注释。
+- **不开窗口复现**：`momo_headless x.js --width=800 --height=600 --screenshot=out.png`（`x.js` 也可以是应用目录）。应用通过 `momo/test` 通道调 `screenshot` / `done`，用法见 `embedder/headless/headless_main.cc` 开头的注释。
 - **ThreadSanitizer**：`cmake -B out/tsan -DMOMO_ENABLE_TSAN=ON`。注意 sanitizer 构建里没有 V8（见 §8），JS 相关路径用占位驱动代替。
 
 ## 8. 已知的坑

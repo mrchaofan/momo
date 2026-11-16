@@ -6,7 +6,7 @@ import {
   Align, Alignment, Border, BorderRadius, BorderSide, BoxDecoration, Center, Column, Container, EdgeInsets, Expanded,
   FontWeight, FractionallySizedBox, GestureDetector, MediaQuery, MouseRegion, Padding, Row, SizedBox, State, StatefulView,
   StatelessView, Text, TextStyle, WindowChrome, type BuildContext, type View,
-} from "@momo/framework";
+} from "momo:framework";
 import { WindowDragArea } from "./window_drag_area";
 import type { BrowserAppState, DetachedWindow } from "./main";
 import { IconButton } from "./icons";
