@@ -38,8 +38,8 @@
 #include "embedder/common/menu_channel.h"
 #include "embedder/common/platform_channels.h"
 #include "embedder/common/platform_integration.h"
+#include "embedder/common/text_input_channel.h"
 #include "embedder/common/tray_channel.h"
-#include "embedder/common/window_channel.h"
 #include "embedder/common/window_manager.h"
 #include "engine/common/task_runners.h"
 #include "engine/shell/shell.h"
@@ -87,10 +87,10 @@ class Application final : public Object,
       Options options, std::unique_ptr<PlatformIntegration> platform);
   ~Application() override;  // 尚未销毁则在这里完成(Shutdown + TearDown)
 
-  // 启动时序第 4–5 步: 创建并显示启动窗口(config.startup_window)→ 创建引擎(Shell::Create, 不执行 JS)→
-  // 注册宿主通道、绑定窗口 → 异步启动 JS 运行时(Shell::Run)。不等待 bundle 执行: 返回时状态仍是 Launching,
+  // 启动时序第 4–5 步: 创建引擎(Shell::Create, 不执行 JS, 不等待其他线程)并注册宿主通道 → 创建并显示启动窗口
+  // (config.startup_window;创建即绑定为视图 0)→ 异步启动 JS 运行时(Shell::Run)。不等待 bundle 执行: 返回时状态仍是 Launching,
   // 结果稍后在事件循环里到达(成功 → Running;bundle 加载/执行失败 → Exit(1), Run() 返回 1)。
-  // 返回值只反映同步部分(窗口、资源解析、引擎创建)的错误;这类失败已完成有序销毁, 状态为 Terminating。
+  // 返回值只反映同步部分(资源解析、引擎创建、窗口)的错误;这类失败已完成有序销毁, 状态为 Terminating。
   Status Launch();
 
   // 启动时序第 7 步: 运行 platform EventLoop(原生消息循环)直到退出流程请求它结束, 然后逐级销毁(TearDown)。
@@ -116,6 +116,7 @@ class Application final : public Object,
   const engine::TaskRunners& task_runners() const { return task_runners_; }
   PlatformIntegration& platform() { return *platform_; }
   engine::Shell* shell() const { return shell_.get(); }
+  // 全部窗口。Launch 之后有效。
   WindowManager& windows() { return *window_manager_; }
 
   static bool IsValidTransition(State from, State to);
@@ -129,8 +130,8 @@ class Application final : public Object,
   bool TransitionTo(State to);
   void UpdateSuspended();
   void NotifyShutdownStep(ShutdownStep step);
-  // 解析 bundle/资源 → 创建 Shell → 注册宿主通道 → 绑定窗口 → Shell::Run(异步)。
-  Status LaunchEngine();
+  // 解析 bundle/资源 → 创建 Shell → 注册宿主通道、建立窗口注册表(还没有窗口, JS 运行时尚未启动)。
+  Status CreateEngine();
   // Shell::Run 的结果(platform 线程): 完成 Launching → Running, 或启动失败退出。
   void OnRuntimeStarted(Status status);
 
@@ -170,13 +171,15 @@ class Application final : public Object,
   std::shared_ptr<EventLoop> platform_loop_;  // 绑定 OS 主线程
   std::unique_ptr<engine::ThreadHost> thread_host_;  // ui/raster/io
   engine::TaskRunners task_runners_;
-  // 全部窗口。先于 shell_ 声明: 后于 Shell 析构(raster 停用 surface 之后才销毁窗口)。
-  std::unique_ptr<WindowManager> window_manager_;
+  // 以下都在 Launch 里创建(CreateEngine), TearDown 里销毁: 之前与之后为空。
   std::unique_ptr<engine::Shell> shell_;
   // 宿主通道: Shell 创建后、JS 运行时启动前注册;JS 运行时销毁(Shell 关闭)之后移除。
   std::unique_ptr<AppChannel> app_channel_;
-  std::unique_ptr<WindowChannel> window_channel_;
+  std::unique_ptr<TextInputChannel> text_input_channel_;
   std::unique_ptr<PlatformChannels> platform_channels_;
+  // 全部窗口与 momo/window。窗口创建即绑定引擎, 所以后于 Shell 创建;销毁在 Shell 关闭之后(raster 停用
+  // surface 之后才销毁窗口)。
+  std::unique_ptr<WindowManager> window_manager_;
   std::unique_ptr<MenuChannel> menu_channel_;
   std::unique_ptr<TrayChannel> tray_channel_;
 

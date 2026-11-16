@@ -104,8 +104,6 @@ Application::Application(Options options, std::unique_ptr<PlatformIntegration> p
       platform_loop_(std::move(platform_loop)) {
   thread_host_ = std::make_unique<engine::ThreadHost>(kLabel);
   task_runners_ = thread_host_->MakeTaskRunners(task_runner());
-  WindowManager::Observer& observer = *this;  // 私有基类: 在成员上下文内转换
-  window_manager_ = std::make_unique<WindowManager>(*platform_, options_.config.window, observer);
 }
 
 Application::~Application() {
@@ -133,17 +131,21 @@ Status Application::Launch() {
     return status;
   };
 
-  // 4) 启动窗口(隐式视图 0): 此时只有原生空窗口(闪屏底色), 先显示以尽早给用户反馈。引擎创建后再绑定。
+  // 4) 引擎与宿主通道: 只组装, 不等待任何线程, 没有 JS 在运行。
+  if (Status status = CreateEngine(); !status.ok()) {
+    return fail(std::move(status));
+  }
+  // 5) 启动窗口(隐式视图 0): 创建即绑定引擎并显示。此时只有闪屏底色, 尽早给用户反馈;bundle 的顶层代码就
+  //    可以渲染到它。
   if (options_.config.startup_window) {
     if (Status status = window_manager_->OpenStartupWindow(); !status.ok()) {
       return fail(std::move(status));
     }
   }
-
-  // 5) 引擎: 创建、绑定, 异步启动 JS 运行时。bundle 的执行结果由 OnRuntimeStarted 接收。
-  if (Status status = LaunchEngine(); !status.ok()) {
-    return fail(std::move(status));
-  }
+  // 6) 启动 JS 运行时: ui 线程执行 bundle, 本线程回到事件循环;结果由 OnRuntimeStarted 接收。
+  shell_->Run([weak = WeakPtr<Application>(this)](Status status) {
+    if (Application* self = weak.get()) self->OnRuntimeStarted(std::move(status));
+  });
   return Status::Ok();
 }
 
@@ -162,7 +164,7 @@ void Application::OnRuntimeStarted(Status status) {
   UpdateSuspended();
 }
 
-Status Application::LaunchEngine() {
+Status Application::CreateEngine() {
   engine::Settings settings;
   settings.dev_mode = options_.config.dev_mode;
   settings.enable_inspector = options_.config.dev_mode && options_.config.inspector_port >= 0;
@@ -192,23 +194,19 @@ Status Application::LaunchEngine() {
   // 引擎: 此时还没有 JS 运行时, 不等待任何线程。
   MOMO_ASSIGN_OR_RETURN(shell_, engine::Shell::Create(task_runners_, settings, on_exit_requested));
 
-  // 宿主通道与窗口在 JS bundle 执行之前就位(bundle 顶层代码就可能设置标题、打开窗口、退出;
-  // 启动窗口作为视图 0 在顶层即可渲染)。
+  // 宿主通道在 JS bundle 执行之前就位(bundle 顶层代码就可能设置标题、打开窗口、退出)。
   AppChannel::Host* app_host = this;  // 私有基类: 在成员上下文内转换
   app_channel_ = std::make_unique<AppChannel>(shell_->hub(), task_runner(), app_host);
-  window_channel_ = std::make_unique<WindowChannel>(shell_->hub(), task_runner(), window_manager_.get());
-  platform_channels_ = std::make_unique<PlatformChannels>(
-      shell_->hub(), task_runner(), &platform_->services(),
-      [this] { return window_manager_->FocusedTextInput(); });
+  // 输入法会话在获得焦点的窗口上(窗口注册表稍后创建, 调用时已存在)。
+  text_input_channel_ = std::make_unique<TextInputChannel>(
+      shell_->hub(), task_runner(), [this] { return window_manager_->FocusedTextInput(); });
+  platform_channels_ = std::make_unique<PlatformChannels>(shell_->hub(), task_runner(), platform_->services());
   MenuChannel::Host* menu_host = this;
   menu_channel_ = std::make_unique<MenuChannel>(shell_->hub(), task_runner(), platform_->menus(), menu_host);
   tray_channel_ = std::make_unique<TrayChannel>(shell_->hub(), task_runner(), platform_->menus());
-  window_manager_->AttachEngine(*shell_, *window_channel_, *platform_channels_);
-
-  // 启动 JS 运行时: ui 线程执行 bundle, 本线程回到事件循环;结果稍后到达。
-  shell_->Run([weak = WeakPtr<Application>(this)](Status status) {
-    if (Application* self = weak.get()) self->OnRuntimeStarted(std::move(status));
-  });
+  WindowManager::Observer& observer = *this;
+  window_manager_ = std::make_unique<WindowManager>(*platform_, options_.config.window, observer, *shell_,
+                                                    *text_input_channel_);
   return Status::Ok();
 }
 
@@ -293,9 +291,7 @@ void Application::PerformMenuRole(MenuRole role) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   auto edit = [this](const char* command) {
     // 与输入法的编辑命令同路: 交给获得文本焦点的 EditableText。
-    if (platform_channels_ != nullptr) {
-      platform_channels_->SendTextInput({.type = TextInputEvent::Type::kCommand, .command = command});
-    }
+    text_input_channel_->Send({.type = TextInputEvent::Type::kCommand, .command = command});
   };
   WindowController* focused = window_manager_->focused_window();
   switch (role) {
@@ -329,8 +325,8 @@ void Application::Quit() {
     return;  // 重复请求合并
   }
   quitting_ = true;
-  if (app_channel_ == nullptr) {  // 引擎尚未创建: 没有 JS 可询问
-    QuitCloseWindows();
+  if (app_channel_ == nullptr) {  // 尚未 Launch: 没有 JS 可询问, 也没有窗口
+    Shutdown();
     return;
   }
   // 启动期间(bundle 还在执行)也照常询问: 消息排在 bundle 之后;JS 没有注册处理器时答复为"允许"。
@@ -358,10 +354,6 @@ void Application::QuitCloseWindows() {
 }
 
 void Application::QuitWillQuit() {
-  if (app_channel_ == nullptr) {
-    Shutdown();
-    return;
-  }
   app_channel_->AskWillQuit([weak = WeakPtr<Application>(this)](bool allow) {
     Application* self = weak.get();
     if (self == nullptr || !self->quitting_) return;
@@ -385,7 +377,9 @@ void Application::Exit(int exit_code) {
   }
   exit_code_ = exit_code;
   // 不询问, 但窗口照常关闭(JS 收到各自的 'closed'): 退出时不留下还开着的窗口(同 Electron app.exit)。
-  window_manager_->CloseAll();
+  if (window_manager_ != nullptr) {
+    window_manager_->CloseAll();
+  }
   Shutdown();
 }
 
@@ -412,25 +406,25 @@ void Application::TearDown() {
   }
   torn_down_ = true;
 
-  // 1+2) 引擎最先(Shell::Shutdown): 平台视图(移出窗口后交给扩展释放)→ ui 线程销毁 JS 运行时(此前投递给它的
-  //      事件都已执行完)→ raster 上的 GPU 资源(同步停用各窗口的 surface)。
-  //      窗口此时仍绑定着: 平台视图要从它们身上移除。与 ui 线程汇合: JS 不返回就在这里等它。
-  if (shell_ != nullptr) {
+  if (shell_ != nullptr) {  // 已 Launch
+    // 1+2) 引擎最先(Shell::Shutdown): 平台视图(移出窗口后交给扩展释放)→ ui 线程销毁 JS 运行时(此前投递给它的
+    //      事件都已执行完)→ raster 上的 GPU 资源(同步停用各窗口的 surface)。
+    //      窗口此时仍绑定着: 平台视图要从它们身上移除。与 ui 线程汇合: JS 不返回就在这里等它。
     shell_->Shutdown();
-  }
-  // 已没有 JS, 也没有人使用 surface: 窗口放开引擎, 移除宿主通道。
-  window_manager_->DetachEngine();
-  app_channel_.reset();
-  window_channel_.reset();
-  platform_channels_.reset();
-  menu_channel_.reset();
-  tray_channel_.reset();  // 移除托盘图标
-  shell_.reset();
-  NotifyShutdownStep(ShutdownStep::kEngineShutdown);
+    // 已没有 JS, 也没有人使用 surface: 窗口放开引擎, 移除宿主通道。
+    window_manager_->DetachEngine();
+    app_channel_.reset();
+    text_input_channel_.reset();
+    platform_channels_.reset();
+    menu_channel_.reset();
+    tray_channel_.reset();  // 移除托盘图标
+    NotifyShutdownStep(ShutdownStep::kEngineShutdown);
 
-  // 3) 销毁 RenderSurface 与 PlatformWindow(platform 线程)。
-  window_manager_->DestroyAll();
-  NotifyShutdownStep(ShutdownStep::kWindowDestroyed);
+    // 3) 销毁 RenderSurface 与 PlatformWindow(platform 线程), 连同 momo/window;最后是 Shell。
+    window_manager_.reset();
+    shell_.reset();
+    NotifyShutdownStep(ShutdownStep::kWindowDestroyed);
+  }
 
   // 4) join ui → raster → io(顺序由 ThreadHost 保证)。
   thread_host_->Join();

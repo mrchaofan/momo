@@ -34,6 +34,7 @@ add_library(momo_embedder_common STATIC
   common/menu_channel.cc
   common/menu_model.cc
   common/platform_channels.cc
+  common/text_input_channel.cc
   common/tray_channel.cc
   common/window_channel.cc
   common/window_controller.cc
