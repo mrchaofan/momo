@@ -1,12 +1,13 @@
 // 在 mock 宿主下运行 examples/webview(多标签浏览器)并驱动交互: 新建/关闭标签(含缓动)、页面状态、地址栏。
 import { openedUrls, protocolResponses, viewCalls, webCommands } from "./browser_setup";
+import { webviewNative } from "../mock/ext_webview";
 import { __mock } from "../mock/momo_ui";
 import "../../../examples/webview/src/main";
 import { WebSession, WebViewController } from "../../../extensions/examples/webview-extension/js/index";
 import { IconButton, Spinner } from "../../../examples/webview/src/icons";
 import { runRegisteredTests, test, expect } from "../harness";
 import { Phase, ViewTester, type PointerOptions } from "../tester";
-import { LogicalKeyboardKey, Offset, PhysicalKeyboardKey, Size, defaultBinaryMessenger, TextField, utf8Encode } from "../../packages/momo/src/index";
+import { LogicalKeyboardKey, Offset, PhysicalKeyboardKey, Size, TextField, utf8Encode } from "../../packages/momo/src/index";
 
 /** 某个视图(窗口)最近一帧场景里的平台视图 id。 */
 function platformViewsIn(view: number): number[] {
@@ -18,8 +19,7 @@ function created(): number[] {
 }
 
 async function pushState(id: number, state: Record<string, unknown>): Promise<void> {
-  const json = JSON.stringify({ id, event: "state", url: "", title: "", loading: false, progress: 1, canGoBack: false, canGoForward: false, ...state });
-  await defaultBinaryMessenger.handlePlatformMessage("momo.webview/events", utf8Encode(json).slice().buffer);
+  webviewNative.emitEvent({ id, event: "state", url: "", title: "", loading: false, progress: 1, canGoBack: false, canGoForward: false, ...state });
 }
 
 // 地址栏聚焦时光标持续闪烁, pumpAndSettle 等不到静止: 按时长推进(覆盖 220ms 的标签动画)。
@@ -50,7 +50,7 @@ async function protocolRequest(t: ViewTester, requestId: number, url: string): P
   const frame = new Uint8Array(4 + header.length);
   new DataView(frame.buffer).setUint32(0, header.length, true);
   frame.set(header, 4);
-  await defaultBinaryMessenger.handlePlatformMessage("momo.webview/protocol", frame.buffer);
+  webviewNative.requestProtocol(frame.buffer);
   await t.flushMicrotasks();
   return protocolResponses.find((r) => r.header.requestId === requestId)!;
 }

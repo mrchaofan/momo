@@ -7,8 +7,10 @@ namespace momo::engine::runtime {
 // getOrInitializeCascadedLoader)。不用 runEntryPointWithESMLoader: 它把加载/求值错误当作未捕获异常
 // 上报并让 Promise 正常结束, 宿主拿不到错误。
 //
-//   - momo:* / ext:*: 由 module.registerHooks 解析, 模块内容来自 process._linkedBinding(宿主用
+//   - momo:*: 由 module.registerHooks 解析, 模块内容来自 process._linkedBinding(宿主用
 //     node::AddLinkedBinding 注册), 导出名在加载时从绑定对象读出。
+//   - *.node(原生扩展, docs/07): `import addon from "./x.node"` 的默认导出是插件的 exports
+//     (Node 自己只在 require 里认 .node)。
 //   - 宿主给出源码的模块(JsRuntime::RunModuleSource): url 带递增查询串, 每次都是新模块;
 //     相对导入按 baseDir 解析。
 //   - momo 应用代码一律是 ESM(含 .js);node_modules 中的包保持 Node 的格式判定。
@@ -26,7 +28,8 @@ process.on('unhandledRejection', (reason) => console.error('Unhandled promise re
 
 if (codeCacheDir) Module.enableCompileCache(codeCacheDir);
 
-const isNative = (specifier) => specifier.startsWith('momo:') || specifier.startsWith('ext:');
+const isNative = (specifier) => specifier.startsWith('momo:');
+const isAddon = (url) => url.startsWith('file:') && new URL(url).pathname.endsWith('.node');
 const hostSources = new Map();
 let nextSourceId = 0;
 
@@ -56,6 +59,11 @@ Module.registerHooks({
   load(url, context, nextLoad) {
     if (isNative(url)) {
       return { format: 'module', source: nativeModuleSource(url), shortCircuit: true };
+    }
+    if (isAddon(url)) {
+      const source = `import { createRequire } from 'node:module';\n` +
+          `export default createRequire(import.meta.url)(${JSON.stringify(fileURLToPath(url))});\n`;
+      return { format: 'module', source, shortCircuit: true };
     }
     const hostSource = hostSources.get(url);
     if (hostSource !== undefined) {

@@ -10,8 +10,9 @@ process.platform-process.arch):
   momo-v<v>-<p>.zip            运行时。macOS: Momo.app;Windows: Momo.exe + libnode.dll + icudtl.dat + bundle.js。
                                另有 version 文件。解压后即 `momo build --runtime=` 接受的运行时。
   momo-headless-v<v>-<p>.zip   momo_headless(无窗口运行 bundle 的测试运行器)+ libnode
+  momo-ext-sdk-v<v>-<p>.zip    原生扩展 SDK: include/{momo, node}、lib/cmake/MomoExtSdk/;Windows 另有
+                               Release/node.lib(libnode.dll 的导入库)
   --platform-independent 时另出(与平台无关, 发布流程里只由一个平台产出):
-  momo-ext-sdk-v<v>.zip        扩展 SDK: include/、lib/cmake/MomoExtSdk/、types/
   momo-framework-v<v>.tgz      @momo/framework 的 npm 包(npm pack)
   momo-cli-v<v>.tgz            @momo/cli 的 npm 包: momo bundle / build / ext。版本必须与 @momo/framework 相同。
 
@@ -110,7 +111,7 @@ def main():
     parser.add_argument("--out", required=True, help="产物输出目录")
     parser.add_argument("--config", default="Release", help="多配置生成器(Visual Studio)的配置名")
     parser.add_argument("--platform-independent", action="store_true",
-                        help="另出与平台无关的产物(扩展 SDK、框架与 CLI 的 npm 包)")
+                        help="另出与平台无关的产物(框架与 CLI 的 npm 包)")
     args = parser.parse_args()
 
     build_dir, out = os.path.abspath(args.build_dir), os.path.abspath(args.out)
@@ -137,11 +138,12 @@ def main():
     adhoc_sign(os.path.join(headless, "momo_headless"))
     write_zip(headless, os.path.join(out, f"momo-headless-v{version}-{target}.zip"))
 
-    if args.platform_independent:
-        sdk = os.path.join(stage, "sdk")
-        install_component(build_dir, args.config, "sdk", sdk)
-        write_zip(sdk, os.path.join(out, f"momo-ext-sdk-v{version}.zip"))
+    # 原生扩展 SDK(Windows 的包里有 libnode 的导入库, 所以按平台出)。
+    sdk = os.path.join(stage, "sdk")
+    install_component(build_dir, args.config, "sdk", sdk)
+    write_zip(sdk, os.path.join(out, f"momo-ext-sdk-v{version}-{target}.zip"))
 
+    if args.platform_independent:
         npm_pack(FRAMEWORK_PACKAGE, stage, os.path.join(out, f"momo-framework-v{version}.tgz"))
         npm_pack(CLI_PACKAGE, stage, os.path.join(out, f"momo-cli-v{version}.tgz"))
 

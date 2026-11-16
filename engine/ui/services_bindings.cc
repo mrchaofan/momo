@@ -208,6 +208,16 @@ void InstallServicesModule(v8::Isolate* isolate, v8::Local<v8::Context> context,
                v8::Boolean::New(isolate, impl.settings.enable_inspector || impl.settings.dev_mode))
       .Check();
   exports->Set(context, V8String(isolate, "platform"), V8String(isolate, PlatformName())).Check();
+  const std::u8string assets_dir_u8 = impl.settings.assets_dir.u8string();
+  const std::string assets_dir(assets_dir_u8.begin(), assets_dir_u8.end());
+  exports->Set(context, V8String(isolate, "assetsDir"),
+               V8String(isolate, assets_dir))
+      .Check();
+  // 宿主能力表(momo_host.h)的地址: 原生扩展把它转回 const MomoHost*。用 BigInt 而不是 v8::External:
+  // Node-API 的 external 有自己的包装, 读不出 V8 原生的 External。
+  exports->Set(context, V8String(isolate, "nativeHost"),
+               v8::BigInt::NewFromUnsigned(isolate, reinterpret_cast<uintptr_t>(impl.host.native_host)))
+      .Check();
   if (impl.host.hub && !impl.services_installed) {
     impl.services_installed = true;
     impl.host.hub->SetJsEndpoint(

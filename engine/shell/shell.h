@@ -52,9 +52,6 @@ class Shell final : public Object {
   // 引擎 → 宿主视图的请求, 在 platform 线程回调。由 embedder 的 WindowController 实现。
   class Delegate {
    public:
-    // 本视图的原生句柄(NSView* / HWND), 供扩展 get_window_handle 使用。无窗口时返回空。
-    virtual void* GetNativeWindowHandle() = 0;
-
     // ---- 平台视图(docs/05 §9;默认空实现 = 宿主不嵌入平台视图) ----
     // 平台视图表是全局的: 创建/销毁/聚焦请求广播给所有窗口。原生视图实际挂在哪个窗口由合成帧决定
     // (哪个窗口的画面里出现它, 就由那个窗口接管)。
@@ -78,10 +75,9 @@ class Shell final : public Object {
   // JS 运行时启动的结果(platform 线程): bundle 加载/执行失败时为错误(消息含 JS 栈)。
   using RunCallback = MoveOnlyFunction<void(Status)>;
 
-  // 在 platform 线程调用。组装子系统并加载 manifest 声明的扩展(on_attach), 不创建 JS 运行时、不执行
-  // bundle, 不等待其他线程。返回后、Run 之前, 宿主完成自己的准备(同 Flutter 桌面 embedder 在 Run 之前
-  // 注册插件通道): 在 hub() 上注册通道处理器、extensions().AddExtension 添加进程内扩展、AttachView 绑定
-  // 已有窗口——bundle 顶层代码因此看得到这些视图, 发出的通道调用也不会落空。
+  // 在 platform 线程调用。组装子系统, 不创建 JS 运行时、不执行 bundle, 不等待其他线程。返回后、Run 之前,
+  // 宿主完成自己的准备(同 Flutter 桌面 embedder 在 Run 之前注册插件通道): 在 hub() 上注册通道处理器、
+  // AttachView 绑定已有窗口——bundle 顶层代码因此看得到这些视图, 发出的通道调用也不会落空。
   // on_exit_requested: JS 调用 process.exit(code) 时在 platform 线程回调(此时 JS 已停止执行), 宿主据此做有序
   // 退出;为空时只停止 JS。
   static StatusOr<std::unique_ptr<Shell>> Create(
@@ -111,9 +107,9 @@ class Shell final : public Object {
   // 已绑定的视图(platform 线程)。
   std::vector<platform::ViewId> attached_views() const;
 
-  // 有序关闭, JS 环境最先: ui(销毁 JS 运行时, 再是 Engine 的其余部分)→ 销毁全部平台视图 → 扩展 on_detach →
-  // raster(释放 GPU 资源)。同步, 幂等。与 ui 线程汇合: 此前投递给 JS 的事件都先执行完;JS 不返回(等待调试器
-  // 连接、脚本死循环)时本调用就等着它——不强行终止 JS。
+  // 有序关闭: 关闭宿主能力表 → 销毁全部平台视图(此后不再调用原生扩展)→ ui(销毁 JS 运行时, 再是 Engine 的
+  // 其余部分)→ raster(释放 GPU 资源)。同步, 幂等。与 ui 线程汇合: 此前投递给 JS 的事件都先执行完;JS 不返回
+  // (等待调试器连接、脚本死循环)时本调用就等着它——不强行终止 JS。
   void Shutdown();
   bool is_shut_down() const { return shut_down_; }
 
@@ -141,9 +137,6 @@ class Shell final : public Object {
   const TaskRunners& task_runners() const { return task_runners_; }
   // 消息通道(任意线程可用;Shell 关闭后仍可安全调用, 只是不再有 handler)。
   const std::shared_ptr<MessageChannelHub>& hub() const { return hub_; }
-  // 扩展宿主(platform 线程)。Create 时按 settings.extensions_dir 的 manifest 加载;进程内扩展
-  // (静态链接/测试)在 Run 之前以 extensions().AddExtension(id, init) 添加。
-  ExtensionHost& extensions() { return *extensions_; }
   const std::shared_ptr<graphics::TextureRegistry>& textures() const { return textures_; }
   // 平台视图表(platform 线程)。
   PlatformViewRegistry& platform_views() { return *platform_views_; }
@@ -159,12 +152,9 @@ class Shell final : public Object {
   // source 未绑定时为回退定时器。
   std::unique_ptr<VsyncWaiter> MakeVsyncWaiter(WeakPtr<platform::VsyncSource> source) const;
 
-  // 销毁全部平台视图(Shutdown;platform 线程): 先通知窗口移除, 再交给扩展释放。
-  void DisposeAllPlatformViews();
-  // 引擎自己的通道: momo/platform_views、momo/extensions(platform 线程处理)。
-  void RegisterEngineChannels();
+  // 引擎自己的通道 momo/platform_views(platform 线程处理)。
+  void RegisterPlatformViewChannel();
   StatusOr<EncodableValue> HandlePlatformViewCall(const MethodCall& call);
-  StatusOr<EncodableValue> HandleExtensionsCall(const MethodCall& call);
 
   // ui 线程(Engine 的 on_draw): 把新帧投递给 raster。
   void OnEngineDraw(std::shared_ptr<LayerTreePipeline> pipeline);
@@ -173,10 +163,10 @@ class Shell final : public Object {
   const double refresh_rate_;
   const std::shared_ptr<MessageChannelHub> hub_;
   const std::shared_ptr<graphics::TextureRegistry> textures_;
-  // platform 线程。与 ExtensionHost 共享(扩展注册工厂), 实例的创建/销毁只经 Shell。
+  // 与 ExtensionHost 共享(扩展注册工厂), 实例的创建/销毁只经 Shell(platform 线程)。
   const std::shared_ptr<PlatformViewRegistry> platform_views_;
-  // platform 线程。先于 Engine 创建(on_attach 注册的模块在 JS 运行时创建时安装), 在 Engine 销毁后 detach。
-  std::unique_ptr<ExtensionHost> extensions_;
+  // 宿主能力表(原生扩展经 momo:services 的 nativeHost 取得)。
+  ExtensionHost extension_host_;
   bool shut_down_ = false;
   bool run_called_ = false;  // 仅 platform 线程
 

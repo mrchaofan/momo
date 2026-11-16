@@ -3,7 +3,6 @@
 #include <utility>
 
 #include "base/logging.h"
-#include "engine/extension/extension_host.h"
 
 namespace momo::engine {
 
@@ -13,15 +12,11 @@ Engine::Engine(const Settings& settings, DrawCallback on_draw, std::unique_ptr<V
       settings_(settings),
       host_(host),
       animator_(*this, task_runner(), std::move(waiter)) {
-  // 帧请求端都在 ui 线程: 纹理新帧由 TextureRegistry 投递到本线程, 扩展的帧回调本来就在本线程注册。
-  // 纹理通知可能在 Engine 析构后才执行: 经 WeakPtr 判活。
+  // 外部纹理有新帧时出一帧: 通知由 TextureRegistry 投递到本线程, 可能在 Engine 析构后才执行, 经 WeakPtr 判活。
   if (host_.textures) {
     host_.textures->SetFrameListener(task_runner(), [weak = WeakPtr<Engine>(this)](int64_t) {
       if (Engine* self = weak.get()) self->animator_.RequestFrame();
     });
-  }
-  if (host_.extensions != nullptr) {
-    host_.extensions->SetFrameRequester([this] { animator_.RequestFrame(); });
   }
   UpdateAnimator();
 }
@@ -29,9 +24,6 @@ Engine::Engine(const Settings& settings, DrawCallback on_draw, std::unique_ptr<V
 Engine::~Engine() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   InvalidateWeakPtrs();
-  if (host_.extensions != nullptr) {
-    host_.extensions->SetFrameRequester(nullptr);
-  }
   if (host_.textures) {
     host_.textures->SetFrameListener(nullptr, nullptr);
   }
@@ -63,14 +55,9 @@ Status Engine::StartRuntime() {
 
 void Engine::OnAnimatorBeginFrame(TimePoint frame_start, TimePoint) {
   if (driver_ == nullptr) {
-    return;  // 没有运行时: 不出帧, 也不执行扩展帧回调
+    return;  // 没有运行时: 不出帧
   }
-  // 扩展帧回调先于应用帧(视频/图表类扩展在此推送纹理帧);仍有回调时持续出帧。
-  const bool more = host_.extensions != nullptr && host_.extensions->RunFrameCallbacks();
   driver_->BeginFrame(frame_start);
-  if (more) {
-    animator_.RequestFrame();
-  }
 }
 
 // ---- 视图 ----

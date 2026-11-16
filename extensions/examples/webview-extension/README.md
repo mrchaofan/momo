@@ -3,7 +3,7 @@
 系统 WebView(macOS `WKWebView`)作为**平台视图**嵌入 momo 界面的扩展。原理见 `docs/05-rendering-pipeline.md` §9,
 扩展侧接口见 `docs/07-extension-system.md` §3。
 
-- 原生部分 `native/src/ext_webview.mm`:只用 C ABI(`momo_extension.hpp`),注册视图类型 `momo.webview`。线上协议在文件头。
+- 原生部分 `native/src/ext_webview.mm`:一个 Node 插件(产物 `build/ext_webview.node`)。与 JS 之间用 Node-API, 与引擎之间用宿主能力表(`momo_host.h`):注册视图类型 `momo.webview`, 命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。线上协议在文件头。
 - JS 门面 `js/index.ts`:下面的全部接口。
 
 接口参照 Tauri(wry)的取舍, 只保留 WKWebView 与 WebView2 都能实现的部分。
@@ -126,7 +126,7 @@ WKWebView 要求在创建视图之前。导航拦截(允许/拒绝某次跳转)�
 `momo://newtab` 就是用 `registerProtocol` 声明的。运行(macOS,需先构建 `momo_app_mac` 与 `ext_webview`):
 
 ```bash
-node framework/packages/cli/momo.mjs build examples/webview --runtime=out/debug/embedder/Momo.app --native-dir=out/debug/extensions
+node framework/packages/cli/momo.mjs build examples/webview --runtime=out/debug/embedder/Momo.app
 ```
 
 只实现了 macOS;Windows 需要 embedder 侧的平台视图支持(契约已就绪, Windows 宿主未实现)。

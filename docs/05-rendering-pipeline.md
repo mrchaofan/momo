@@ -167,6 +167,6 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
     新的按下结束旧序列。
   - 限制:可命中区域按包围盒记录(圆形按钮的四角也算);框架侧的手势识别器不与原生视图竞争(落在网页上的事件 momo 看不到)。
 - **生命周期**:视图由 JS 经 `momo/platform_views`(create/dispose/focus)请求,Shell 在 platform 线程调用扩展工厂
-  (`PlatformViewRegistry`);引擎关闭时销毁全部视图(JS 运行时已销毁;先移出窗口再交给扩展释放,早于扩展 `on_detach`)。
+  (`PlatformViewRegistry`);引擎关闭时销毁全部视图(先移出窗口再交给扩展释放;早于 JS 运行时的销毁, 此时 JS 还在运行, docs/07 §4)。
 - **限制**:只支持平移与正向缩放(旋转/斜切按包围盒近似并告警);圆角只支持与可见区域贴合的一层;
   软件渲染 surface 不支持平台视图;Windows embedder 未实现(契约已就绪, 需要子 HWND + 覆盖层合成)。

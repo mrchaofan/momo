@@ -138,7 +138,6 @@ void WindowController::OnPlatformViewDisposed(int64_t view_id) { window_->Remove
 
 void WindowController::OnPlatformViewFocusRequested(int64_t view_id) { window_->FocusPlatformView(view_id); }
 
-void* WindowController::GetNativeWindowHandle() { return window_->native_handle(); }
 
 void WindowController::OnFirstFramePresented() {
   if (first_frame_) {

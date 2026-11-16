@@ -27,7 +27,6 @@ using testing::WaitFor;
 
 class RecordingShellDelegate final : public Shell::Delegate {
  public:
-  void* GetNativeWindowHandle() override { return nullptr; }
   void OnFirstFramePresented() override { first_frames++; }
   int first_frames = 0;
 };
@@ -65,7 +64,7 @@ class ShellTest : public ::testing::Test {
     }
     return *result;
   }
-  // 宿主的启动流程: Create → setup(注册通道、添加进程内扩展、绑定视图)→ Run, 等到 bundle 执行完。
+  // 宿主的启动流程: Create → setup(注册通道、绑定视图)→ Run, 等到 bundle 执行完。
   // 运行时启动失败时关闭 Shell 并返回错误。
   StatusOr<std::unique_ptr<Shell>> Launch(const Settings& settings,
                                           const std::function<void(Shell&)>& setup = nullptr,
@@ -375,34 +374,6 @@ TEST_F(ShellTest, HostChannelsRegisteredBeforeRunSeeTopLevelCalls) {
   (*shell)->Shutdown();
 }
 
-// 扩展比 JS 运行时活得久: on_attach 早于运行时发出的任何消息, on_detach 时运行时已经销毁。
-std::vector<std::string>* g_extension_log = nullptr;
-
-bool InitLoggingExtension(uint32_t version, MomoExtension* out) {
-  out->id = "test.logging";
-  out->on_attach = [](void*, const MomoHostApi*, MomoEngineRef) { g_extension_log->push_back("attach"); };
-  out->on_detach = [](void*) { g_extension_log->push_back("detach"); };
-  return version >= 1;
-}
-
-TEST_F(ShellTest, ExtensionsOutliveTheRuntime) {
-  Settings settings;
-  settings.bundle_path = std::filesystem::path(MOMO_SOURCE_DIR) / "examples/hello_frame/main.js";
-  std::vector<std::string> log;
-  g_extension_log = &log;
-  // bundle 顶层会调用 momo/window setTitle: 作为"运行时发出的消息"记进同一份日志。
-  auto shell = Launch(settings, [&](Shell& shell) {
-    AttachStartupView()(shell);
-    RecordCalls("momo/window", &log, runners_.platform)(shell);
-    ASSERT_TRUE(shell.extensions().AddExtension("test.logging", &InitLoggingExtension).ok());
-  });
-  ASSERT_TRUE(shell.ok()) << shell.status();
-  ASSERT_TRUE(PumpUntil([&] { return log.size() == 2; }));
-  (*shell)->Shutdown();
-  EXPECT_EQ(log, (std::vector<std::string>{"attach", "setTitle:Momo · hello_frame", "detach"}));
-  g_extension_log = nullptr;
-}
-
 // Run 之前绑定的视图在 bundle 顶层就可见(尺寸已就位);启动窗口不需要引擎预置"隐式视图"。
 TEST_F(ShellTest, ViewsAttachedBeforeRunAreVisibleToTopLevelCode) {
   const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_views_at_start.mjs";
@@ -478,45 +449,6 @@ TEST_F(ShellTest, ShutdownLetsQueuedJsEventsRun) {
   (*shell)->Shutdown();  // 紧跟在消息之后
   Pump();                // JS 的回报已投递到本线程
   EXPECT_EQ(reports, (std::vector<uint8_t>{0, 7})) << "the message sent right before Shutdown was handled by JS";
-  std::filesystem::remove(bundle);
-}
-
-// 扩展加载错误是可查询的状态: JS 任何时候都能经 momo/extensions getErrors 问到。
-bool InitRejectingExtension(uint32_t, MomoExtension*) { return false; }
-
-TEST_F(ShellTest, ExtensionLoadErrorsCanBeQueried) {
-  const auto bundle = std::filesystem::temp_directory_path() / "momo_shell_ext_errors.mjs";
-  // 手写 StandardMethodCodec: 方法名(string)+ 参数(null);回复的信封原样转发给测试解码。
-  std::ofstream(bundle) << R"JS(
-    import { send } from 'momo:services';
-    const name = new TextEncoder().encode('getErrors');
-    const call = new Uint8Array([7, name.length, ...name, 0]);
-    const reply = await send('momo/extensions', call);
-    send('test/report', reply);
-  )JS";
-  Settings settings;
-  settings.bundle_path = bundle;
-  std::vector<std::vector<std::string>> reports;
-  auto shell = Launch(settings, [&](Shell& shell) {
-    EXPECT_FALSE(shell.extensions().AddExtension("test.broken", &InitRejectingExtension).ok());
-    shell.hub()->SetNativeHandler("test/report", runners_.platform, [&](MessageBytes message, MessageReply) {
-      StatusOr<EncodableValue> value = DecodeEnvelope(message);
-      std::vector<std::string> errors;
-      if (value.ok() && value->Is<EncodableList>()) {
-        for (const EncodableValue& item : *value->GetIf<EncodableList>()) {
-          errors.push_back(item.AsString().value_or("?"));
-        }
-      } else {
-        errors.push_back("<bad reply>");
-      }
-      reports.push_back(std::move(errors));
-    });
-  });
-  ASSERT_TRUE(shell.ok()) << shell.status();
-  ASSERT_TRUE(PumpUntil([&] { return reports.size() == 1; }));
-  ASSERT_EQ(reports[0].size(), 1u);
-  EXPECT_EQ(reports[0][0].rfind("test.broken: ", 0), 0u) << reports[0][0];
-  (*shell)->Shutdown();
   std::filesystem::remove(bundle);
 }
 

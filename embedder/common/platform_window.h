@@ -76,7 +76,7 @@ class PlatformWindow {
   virtual platform::RenderSurface& surface() = 0;
   virtual void SetCursor(SystemCursor cursor) = 0;
   virtual TextInputConnection& text_input() = 0;
-  virtual void* native_handle() const = 0;  // HWND / NSView*, 供扩展使用(docs/07)
+  virtual void* native_handle() const = 0;  // HWND / NSView*
   // 把窗口带到最前并成为 key window(最小化时先还原)。
   virtual void Activate() { Show(); }
   // 当前状态(显示、最小化、最大化、全屏)。

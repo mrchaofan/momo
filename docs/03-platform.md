@@ -117,7 +117,7 @@ class PlatformWindow {
   virtual RenderSurface& surface() = 0;
   virtual void SetCursor(SystemCursor) = 0;
   virtual TextInputConnection& text_input() = 0;
-  virtual void* native_handle() const = 0;   // HWND / NSView*, 供扩展使用(docs/07)
+  virtual void* native_handle() const = 0;   // HWND / NSView*
 };
 
 // 事件走回调(platform 线程调用, 由 embedder 的 WindowController 转投 ui 线程)
@@ -157,7 +157,7 @@ class RenderSurface {
 
 ## 5. 平台服务与消息通道
 
-应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 之后、`Shell::Run` 之前, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层, 这与扩展机制使用同一套通路(docs/07)。
+应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 之后、`Shell::Run` 之前, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层。
 
 所有宿主通道共用 `HostChannel` 的错误码映射:`unimplemented`(未知方法、平台不支持)、`notFound`、`invalidArgument`, 其余为 `error`。
 

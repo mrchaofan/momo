@@ -104,9 +104,6 @@ UiBindings::Impl::Impl(JsRuntime* runtime, WindowClient* client, const AppHost& 
 UiBindings::Impl::~Impl() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   InvalidateWeakPtrs();
-  if (host.extensions != nullptr) {
-    host.extensions->SetPromiseSink(nullptr);
-  }
   if (host.hub && services_installed) {
     host.hub->SetJsEndpoint(nullptr, nullptr);
   }
@@ -337,7 +334,6 @@ std::unique_ptr<UiBindings> UiBindings::Install(runtime::JsRuntime& js, WindowCl
             .Check();
         raw->InstallExports(isolate, context, exports);
       });
-  InstallExtensionModules(*raw);
   js.RegisterNativeModule(
       "momo:services", [](v8::Isolate* isolate, v8::Local<v8::Context> context,
                           v8::Local<v8::Object> exports) {

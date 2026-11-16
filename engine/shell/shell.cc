@@ -34,30 +34,12 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(const TaskRunners& task_runners,
       });
     });
   });
-  raw->RegisterEngineChannels();
-
-  // 扩展: manifest 声明的动态库, on_attach 在本(platform)线程(docs/07 §5)。
-  ExtensionHost::Environment env;
-  env.runners = task_runners;
-  env.hub = raw->hub_;
-  env.textures = raw->textures_;
-  env.extensions_dir = settings.extensions_dir;
-  env.assets_dir = settings.assets_dir;
-  env.platform_views = raw->platform_views_;
-  env.window_handle = [raw](int64_t view_id) -> void* {
-    Delegate* delegate = raw->DelegateOf(view_id);
-    return delegate != nullptr ? delegate->GetNativeWindowHandle() : nullptr;
-  };
-  env.js_glue = ui::GetExtensionJsGlue();
-  raw->extensions_ = std::make_unique<ExtensionHost>(std::move(env));
-  if (Status status = raw->extensions_->LoadFromManifest(); !status.ok()) {
-    MOMO_LOG(ERROR) << "Extensions manifest: " << status;
-  }
+  raw->RegisterPlatformViewChannel();
 
   ui::AppHost host;
   host.io_runner = task_runners.io;
   host.hub = raw->hub_;
-  host.extensions = raw->extensions_.get();
+  host.native_host = raw->extension_host_.host();
   host.textures = raw->textures_;
   if (on_exit_requested) {
     // ui 线程(JS 调用栈内)调用: 投递到 platform, 由宿主做有序关闭(它会与 ui 线程同步汇合, 不能在这里等)。
@@ -82,6 +64,7 @@ Shell::Shell(const TaskRunners& task_runners, const Settings& settings)
       hub_(std::make_shared<MessageChannelHub>()),
       textures_(std::make_shared<graphics::TextureRegistry>()),
       platform_views_(std::make_shared<PlatformViewRegistry>()),
+      extension_host_(task_runners.platform, textures_, platform_views_),
       weak_this_(this) {}
 
 Shell::~Shell() { Shutdown(); }
@@ -94,17 +77,19 @@ void Shell::Shutdown() {
   shut_down_ = true;
   InvalidateWeakPtrs();
   hub_->SetNativeHandler("momo/platform_views", nullptr, nullptr);
-  hub_->SetNativeHandler("momo/extensions", nullptr, nullptr);
-  // 1) ui: 销毁 Engine(JS 运行时与 Animator)。此前投递到 ui 的任务按 FIFO 已执行完毕(包括尚未执行的
-  //    Run), 之后不再投递。必须在线程 join 前同步销毁(docs/01 §4), 所以这里同步汇合。返回后没有 JS 在
-  //    运行, 引擎不再出帧、不再执行扩展帧回调。
+  // 原生扩展(Node 插件)的代码随 JS 运行时一起结束, 所以引擎对它们的调用要先结束(docs/07 §4):
+  // 1) 关闭宿主能力表: 扩展此后的调用都被拒绝, 已投递而未执行的平台任务不再执行。
+  extension_host_.Close();
+  // 2) 销毁全部平台视图(先移出窗口, 再交给扩展的工厂释放)并清空工厂。此后引擎不再调用任何扩展代码。
+  platform_views_->Clear([this](int64_t view_id) {
+    for (const auto& [view, delegate] : delegates_) {
+      delegate->OnPlatformViewDisposed(view_id);
+    }
+  });
+  // 3) ui: 销毁 Engine(JS 运行时与 Animator);扩展登记的清理函数在这里执行。此前投递到 ui 的任务按 FIFO
+  //    已执行完毕(包括尚未执行的 Run), 之后不再投递。必须在线程 join 前同步销毁(docs/01 §4), 所以这里
+  //    同步汇合。返回后没有 JS 在运行, 引擎不再出帧。
   PostTaskAndWait(*task_runners_.ui, [this] { engine_.reset(); });
-  // 2) JS 创建的平台视图: 先移出窗口再交给扩展释放(JS 已不在, 不会与扩展的 JS 函数并发)。
-  DisposeAllPlatformViews();
-  // 3) 扩展 on_detach(platform 线程, 线程 join 之前;docs/08 §5)。
-  if (extensions_) {
-    extensions_->DetachAll();
-  }
   // 释放 VsyncSource(DeleteLater, platform 事件循环安全点析构)。
   delegates_.clear();
   vsync_source_.reset();
@@ -270,15 +255,6 @@ void Shell::OnPlatformViewFocused(int64_t view_id) {
                  EncodeMethodCall({"focused", EncodableValue(EncodableMap{{"id", view_id}})}));
 }
 
-void Shell::DisposeAllPlatformViews() {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  platform_views_->DisposeAll([this](int64_t view_id) {
-    for (const auto& [view, delegate] : delegates_) {
-      delegate->OnPlatformViewDisposed(view_id);
-    }
-  });
-}
-
 void Shell::SetAppSuspended(bool suspended) {
   PostToEngine([suspended](Engine& engine) { engine.SetAppSuspended(suspended); });
 }
@@ -288,12 +264,8 @@ void Shell::SetAppSuspended(bool suspended) {
 //   create  {id: int, viewType: string, params: bytes|null}
 //   dispose {id: int}
 //   focus   {id: int}
-// 平台视图表归引擎(扩展经 C ABI 注册工厂, 合成帧按 LayerTree 中的位置切片), 所以这个通道由 Shell 处理;
+// 平台视图表归引擎(扩展经宿主能力表注册工厂, 合成帧按 LayerTree 中的位置切片), 所以这个通道由 Shell 处理;
 // 原生视图挂进哪个窗口由宿主决定(Shell::Delegate 的平台视图回调)。
-//
-// 扩展通道(momo/extensions, JS→引擎):
-//   getErrors  → string[]   加载失败的扩展("<id>: <原因>");全部成功为空数组
-// 这是可查询的状态而不是事件: 任何时刻都能问到同样的结果。
 
 namespace {
 
@@ -307,37 +279,21 @@ void ReplyTo(MessageReply& reply, StatusOr<EncodableValue> result) {
 
 }  // namespace
 
-void Shell::RegisterEngineChannels() {
-  using Handler = StatusOr<EncodableValue> (Shell::*)(const MethodCall&);
-  const auto bind = [this](const char* channel, Handler handler) {
-    hub_->SetNativeHandler(channel, task_runners_.platform,
-                           [weak = weak_this_, handler](MessageBytes message, MessageReply reply) {
-                             StatusOr<MethodCall> call = DecodeMethodCall(message);
-                             if (!call.ok()) {
-                               ReplyTo(reply, call.status());
-                               return;
-                             }
-                             Shell* self = weak.get();
-                             if (self == nullptr || self->shut_down_) {
-                               ReplyTo(reply, UnavailableError("engine is shutting down"));
-                               return;
-                             }
-                             ReplyTo(reply, (self->*handler)(*call));
-                           });
-  };
-  bind("momo/platform_views", &Shell::HandlePlatformViewCall);
-  bind("momo/extensions", &Shell::HandleExtensionsCall);
-}
-
-StatusOr<EncodableValue> Shell::HandleExtensionsCall(const MethodCall& call) {
-  if (call.method == "getErrors") {
-    EncodableList errors;
-    for (std::string& error : extensions_->errors()) {
-      errors.emplace_back(std::move(error));
-    }
-    return EncodableValue(std::move(errors));
-  }
-  return UnimplementedError("momo/extensions: unknown method " + call.method);
+void Shell::RegisterPlatformViewChannel() {
+  hub_->SetNativeHandler("momo/platform_views", task_runners_.platform,
+                         [weak = weak_this_](MessageBytes message, MessageReply reply) {
+                           StatusOr<MethodCall> call = DecodeMethodCall(message);
+                           if (!call.ok()) {
+                             ReplyTo(reply, call.status());
+                             return;
+                           }
+                           Shell* self = weak.get();
+                           if (self == nullptr || self->shut_down_) {
+                             ReplyTo(reply, UnavailableError("engine is shutting down"));
+                             return;
+                           }
+                           ReplyTo(reply, self->HandlePlatformViewCall(*call));
+                         });
 }
 
 StatusOr<EncodableValue> Shell::HandlePlatformViewCall(const MethodCall& call) {

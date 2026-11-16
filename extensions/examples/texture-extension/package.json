@@ -1,18 +1,6 @@
 {
   "name": "@momo-examples/ext-texture",
   "version": "0.1.0",
-  "description": "Momo extension demo: external texture injection driven by frame callbacks",
-  "main": "js/index.ts",
-  "momo": {
-    "extension": {
-      "id": "momo.example.texture",
-      "specifier": "ext:texture",
-      "native": {
-        "macos-arm64": "prebuilt/macos-arm64/libext_texture.dylib",
-        "macos-x64": "prebuilt/macos-x64/libext_texture.dylib",
-        "windows-x64": "prebuilt/windows-x64/ext_texture.dll"
-      },
-      "capabilities": ["texture"]
-    }
-  }
+  "description": "Momo native extension demo: an external texture fed from the addon's own thread",
+  "main": "js/index.ts"
 }

@@ -60,12 +60,12 @@
 
 目标:三方原生扩展端到端跑通。
 
-- [x] extensions/sdk:momo_extension.h C ABI v1 定稿、momo_ext_sdk target
-- [x] engine/extension:ExtensionHost、HostApi 实现(模块注册/通道/post_task/窗口句柄/帧回调/资源)
+- [x] extensions/sdk:宿主能力表 `momo_host.h`(C ABI v1)、momo_ext_sdk target;SDK 带 Node 头文件(原生扩展 = Node 原生插件, docs/07)
+- [x] engine/extension:ExtensionHost, 宿主能力表的实现(平台任务/外部纹理/平台视图工厂)
 - [x] 纹理注入:TextureRegistry + TextureLayer + JS Texture widget(v1 CPU 像素帧)
-- [x] manifest 生成与打包链路(`framework/packages/cli`(`@momo/cli`))
-- [x] 示例扩展:hello(纯 C)、texture;tray 示例已于精简时删除
-- [~] 验收:`examples/extensions-demo` ✅(示例已于精简时删除);ABI 校验(`momo ext verify` + 纯 C 扩展)✅, 多编译器矩阵需 CI
+- [x] 打包链路(`framework/packages/cli`(`@momo/cli`)):按路径 import 的 `.node` 拷到 `native/`
+- [x] 示例扩展:hello(纯 C, 只用 Node-API)、texture(外部纹理)、webview(macOS 平台视图);tray 示例已于精简时删除
+- [~] 验收:`examples/extensions-demo` ✅(示例已于精简时删除);端到端测试(真实引擎加载真实的 `.node`, `NativeExtensionTest.*`)与 SDK 独立构建(`ExtensionSdk.StandaloneCxxBuild`)✅;Windows 未运行验证, 多编译器矩阵需 CI
 
 ## M6 · 打磨与发布(持续)
 
@@ -93,7 +93,7 @@ ui 线程:`uv_run(UV_RUN_NOWAIT)` 由 ui 线程执行,独立的 poll 线程只�
 
 - [x] P0:libnode 预编译(`tools/build_libnode.py`,源码构建);momo 改用 libnode 内置的 V8 14.6;最低 macOS 13.5
 - [x] P1:NodeBindings(uv 循环、poll 线程、`uv_sem`)、Node 平台替换 momo `V8Platform`、`node::Environment`、入口经
-      Node ESM 加载器 + `uv_run` 泵送、UI 事件 `CallbackScope`、`momo:*` / `ext:*` 经 `module.registerHooks`、Node inspector
+      Node ESM 加载器 + `uv_run` 泵送、UI 事件 `CallbackScope`、`momo:*` 与 `.node` 经 `module.registerHooks`、Node inspector
       (删除自研 inspector)、Node 编译缓存替换自研 code cache;文档 04/08、ARCHITECTURE
 - [x] P2a:`process.exit()` 走应用的有序退出(`node::SetProcessExitHandler` → `Application::Exit`)
 - [~] P2:Windows `PollEvents`(IOCP, `engine/runtime/node_bindings_win.cc`)与 libnode 的 Windows 构建(`build_libnode.py`)已写, 未在

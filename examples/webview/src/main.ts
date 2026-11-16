@@ -18,7 +18,7 @@
 // 注意: 键盘焦点在网页里时按键由 WebView 处理, 快捷键需先点击 momo 区域(标签栏/工具栏)。
 // 构建与运行(macOS, 需先构建 momo_app_mac 与 ext_webview):
 //   node framework/packages/cli/momo.mjs build examples/webview --runtime=out/debug/embedder/Momo.app \
-//     --native-dir=out/debug/extensions && open examples/webview/dist/MomoBrowser.app
+//     && open examples/webview/dist/MomoBrowser.app
 import {
   Actions, BorderRadius, GestureBinding, PointerCancelEvent, PointerUpEvent, Border, BorderSide, BoxDecoration, CallbackAction, Color, Column, Container, EdgeInsets,
   Expanded, FocusNode, Focus, FractionallySizedBox, Align, Alignment, InputDecoration, Intent, LogicalKeyboardKey,

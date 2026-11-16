@@ -91,7 +91,7 @@
   <text x="543" y="473" class="n">Teardown()</text><text x="543" y="490" class="d">停用 surface</text>
 
   <rect x="670" y="327" width="125" height="44" rx="5" class="pf"/>
-  <text x="678" y="345" class="n">⑤ Shell::Shutdown</text><text x="678" y="362" class="d">扩展 on_detach</text>
+  <text x="678" y="345" class="n">⑤ Shell::Shutdown</text><text x="678" y="362" class="d">先关宿主表 · 平台视图</text>
   <rect x="670" y="391" width="125" height="44" rx="5" class="ui"/>
   <text x="678" y="409" class="n">engine_.reset()</text><text x="678" y="426" class="d">销毁 JS 运行时</text>
   <rect x="670" y="455" width="125" height="44" rx="5" class="rs"/>

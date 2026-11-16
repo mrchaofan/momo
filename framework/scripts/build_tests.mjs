@@ -7,12 +7,15 @@ import path from "node:path";
 import * as esbuild from "esbuild";
 import { baseOptions, frameworkRoot, momoExternal, momoFrameworkAlias, momoMock } from "./common.mjs";
 
-// 示例依赖的本地扩展包: 只打包其 JS 门面(原生部分由 mock 通道代替)。
+// 示例依赖的本地扩展包: 只打包其 JS 门面, 原生插件(.node)换成 test/mock 里的替身。
 const localExtensions = {
   name: "momo-local-extensions",
   setup(build) {
     build.onResolve({ filter: /^@momo-examples\/ext-webview$/ }, () => ({
       path: path.join(frameworkRoot, "../extensions/examples/webview-extension/js/index.ts"),
+    }));
+    build.onResolve({ filter: /\/ext_webview\.node$/ }, () => ({
+      path: path.join(frameworkRoot, "test/mock/ext_webview.ts"),
     }));
   },
 };

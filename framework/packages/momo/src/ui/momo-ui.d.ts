@@ -350,7 +350,7 @@ declare module "momo:ui" {
 
 // 消息通道(docs/04 §5): 异步、字节流、双向。平台服务与扩展共用。
 // 内置通道(载荷编码见 framework services/standard_codec.ts 与 engine/runtime/standard_codec.h):
-// 引擎注册的: momo/platform_views、momo/extensions;宿主(embedder)注册的: momo/app、momo/window、
+// 引擎注册的: momo/platform_views;宿主(embedder)注册的: momo/app、momo/window、
 // momo/clipboard、momo/url、momo/textinput(应用、窗口与平台服务不经引擎, 见 embedder/common/*_channel.h)。
 //   momo/app         双向       应用生命周期与退出(框架 services/app.ts 的 app;协议见 app_channel.h)
 //   momo/window      双向       窗口(框架 services/widget.ts 的 Widget;协议见 window_channel.h)
@@ -362,7 +362,6 @@ declare module "momo:ui" {
 //                                          composingEnd(), command({command})
 //                               replaceStart/End(UTF-16): 输入法显式指定的替换区间(重音字符/重新转换),
 //                               缺省时替换 composing 区间, 否则替换选区。
-//   momo/extensions  JS→native  方法调用: getErrors() → string[](加载失败的扩展 "<id>: <原因>";随时可查)
 //   momo/platform_views  JS→native  create {id, viewType, params?: Uint8Array} / dispose {id} / focus {id}
 //                        native→JS  focused {id}(用户点击等使平台视图获得键盘焦点)
 // 方法调用编码(StandardMethodCodec, 与 Flutter 一致): 请求 = method(string 值)后紧接 args 值;
@@ -378,4 +377,18 @@ declare module "momo:services" {
   export const isDev: boolean;
   /** 当前平台: "macos" | "windows" | "linux" | "headless"。 */
   export const platform: string;
+  /** 应用资源目录(assets/)的绝对路径。 */
+  export const assetsDir: string;
+  /**
+   * 宿主能力表(momo_host.h 的 `const MomoHost*`)的地址, 给原生扩展用(docs/07): 原样传给插件, 插件用
+   * momo_host_from_napi 取出。需要平台线程、外部纹理或平台视图的插件才用得到。
+   */
+  export const nativeHost: bigint;
+}
+
+// 原生扩展(docs/07)是 Node 插件: `import addon from "../build/acme.node"`, 默认导出是插件的 exports。
+// 扩展的 JS 门面自己声明它的形状: `const native = addon as { add(a: number, b: number): number }`。
+declare module "*.node" {
+  const addon: unknown;
+  export default addon;
 }

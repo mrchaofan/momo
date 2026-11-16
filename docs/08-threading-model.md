@@ -4,12 +4,12 @@
 
 | Runner | 宿主线程 | 运行内容 | 禁止事项 |
 |---|---|---|---|
-| platform | OS 主线程(消息循环) | 平台 API、窗口/输入回调、扩展 on_attach | 长任务(>1ms 量级需转移) |
+| platform | OS 主线程(消息循环) | 平台 API、窗口/输入回调、原生扩展的平台任务与视图工厂回调(docs/07 §3) | 长任务(>1ms 量级需转移) |
 | ui | 引擎创建的专用线程 | V8/JS 全部执行、LayerTree 生成、Animator | 阻塞 IO、平台 API、GPU 调用 |
 | raster | 引擎创建的专用线程 | GPU context、DisplayList 重放、present | 调用 JS、平台 API(present 除外,surface 实现内部处理) |
 | io | 引擎创建的专用线程(+可扩为池) | 文件读取、图片解码、字体加载 | 调用 JS |
 
-另有 `WorkerPool`(base):CPU 密集一次性任务(扩展可用),不保证顺序。
+另有 `WorkerPool`(base):CPU 密集一次性任务,不保证顺序。
 
 Node.js(docs/04 §1)另带几类线程,都不执行 JS、不碰 momo 对象:
 - **uv poll 线程**("momo.uv.poll",每个 JS 运行时一个):只在 `uv_backend_fd` 上等待,有事件时向 ui 投递 `UvRunOnce`;
@@ -81,7 +81,7 @@ class TaskRunner {
 
 ## 5. 关闭时序
 
-严格逆序关停(docs/01 §4)。实现要点:每个 `EventLoop` 支持 `Terminate()`(§2 结束语义:排空已到期任务、丢弃其余、清理全部 DeleteLater 对象);platform EventLoop 由 `Application::Terminate` 请求结束,在当前任务返回后的安全点完成清理再退出原生循环(未进入消息循环时由 `~Application` 以 `RunUntilIdle` 收尾);`Shell::Shutdown()` 在 platform 线程同步完成 JS 运行时停止 → ui(Engine)→ 扩展 on_detach → raster 的销毁;线程由宿主持有的 `ThreadHost` 拥有,在窗口销毁之后由 `ThreadHost::Join()` 按 ui → raster → io 顺序 join;扩展 on_detach 在 join 之前完成,确保没有扩展回调悬挂在队列里。
+严格逆序关停(docs/01 §4)。实现要点:每个 `EventLoop` 支持 `Terminate()`(§2 结束语义:排空已到期任务、丢弃其余、清理全部 DeleteLater 对象);platform EventLoop 由 `Application::Terminate` 请求结束,在当前任务返回后的安全点完成清理再退出原生循环(未进入消息循环时由 `~Application` 以 `RunUntilIdle` 收尾);`Shell::Shutdown()` 在 platform 线程同步完成 关闭扩展的宿主能力表 → 销毁全部平台视图 → ui(JS 运行时与 Engine;扩展登记的清理函数在这一步执行)→ raster 的销毁(docs/07 §4);线程由宿主持有的 `ThreadHost` 拥有,在窗口销毁之后由 `ThreadHost::Join()` 按 ui → raster → io 顺序 join;宿主能力表在 join 之前已关闭(已投递而未执行的平台任务被丢弃),确保没有扩展回调悬挂在队列里。
 
 ## 6. 调试支持
 

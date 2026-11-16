@@ -1,6 +1,5 @@
 #include "engine/common/platform_view_registry.h"
 
-#include <iterator>
 #include <string>
 
 #include "base/logging.h"
@@ -14,17 +13,11 @@ Status PlatformViewRegistry::RegisterFactory(const std::string& type, Factory fa
   if (type.rfind("momo/", 0) == 0) {
     return InvalidArgumentError("platform view type '" + type + "': the momo/ prefix is reserved");
   }
-  if (factories_.count(type) != 0) {
+  MutexLock lock(factories_mutex_);
+  if (!factories_.emplace(type, std::move(factory)).second) {
     return FailedPreconditionError("platform view type '" + type + "' is already registered");
   }
-  factories_.emplace(type, std::move(factory));
   return Status::Ok();
-}
-
-void PlatformViewRegistry::UnregisterFactoriesOf(const std::string& owner) {
-  for (auto it = factories_.begin(); it != factories_.end();) {
-    it = it->second.owner == owner ? factories_.erase(it) : std::next(it);
-  }
 }
 
 StatusOr<void*> PlatformViewRegistry::Create(int64_t view_id, const std::string& type,
@@ -35,23 +28,25 @@ StatusOr<void*> PlatformViewRegistry::Create(int64_t view_id, const std::string&
   if (views_.count(view_id) != 0) {
     return FailedPreconditionError("platform view " + std::to_string(view_id) + " already exists");
   }
-  auto it = factories_.find(type);
-  if (it == factories_.end()) {
-    return NotFoundError("no platform view factory registered for type '" + type + "'");
+  Factory factory;  // 拷贝: 回调不在锁内执行
+  {
+    MutexLock lock(factories_mutex_);
+    auto it = factories_.find(type);
+    if (it == factories_.end()) {
+      return NotFoundError("no platform view factory registered for type '" + type + "'");
+    }
+    factory = it->second;
   }
-  Factory factory = it->second;  // 拷贝: create 回调期间表可能被修改
-  std::string error;
-  void* native = factory.create(view_id, params, &error);
+  void* native = factory.create(view_id, params);
   if (native == nullptr) {
-    return InternalError("platform view '" + type + "' create failed" +
-                         (error.empty() ? std::string() : ": " + error));
+    return InternalError("platform view '" + type + "' create failed");
   }
   if (views_.count(view_id) != 0) {
     // create 回调里重入创建了同一 id(不应发生): 立即释放刚创建的视图。
     factory.dispose(view_id, native);
     return FailedPreconditionError("platform view " + std::to_string(view_id) + " already exists");
   }
-  views_.emplace(view_id, Entry{View{view_id, type, native}, std::move(factory)});
+  views_.emplace(view_id, Entry{View{view_id, type, native}, std::move(factory.dispose)});
   return native;
 }
 
@@ -59,7 +54,7 @@ void PlatformViewRegistry::DisposeEntry(Entry entry, const BeforeDispose& before
   if (before) {
     before(entry.view.id);
   }
-  entry.factory.dispose(entry.view.id, entry.view.native);
+  entry.dispose(entry.view.id, entry.view.native);
 }
 
 Status PlatformViewRegistry::Dispose(int64_t view_id, const BeforeDispose& before) {
@@ -73,25 +68,14 @@ Status PlatformViewRegistry::Dispose(int64_t view_id, const BeforeDispose& befor
   return Status::Ok();
 }
 
-void PlatformViewRegistry::DisposeAll(const BeforeDispose& before) {
+void PlatformViewRegistry::Clear(const BeforeDispose& before) {
+  {
+    MutexLock lock(factories_mutex_);
+    factories_.clear();
+  }
   std::map<int64_t, Entry> all;
   all.swap(views_);
   for (auto& [id, entry] : all) {
-    DisposeEntry(std::move(entry), before);
-  }
-}
-
-void PlatformViewRegistry::DisposeViewsOf(const std::string& owner, const BeforeDispose& before) {
-  std::vector<Entry> owned;
-  for (auto it = views_.begin(); it != views_.end();) {
-    if (it->second.factory.owner == owner) {
-      owned.push_back(std::move(it->second));
-      it = views_.erase(it);
-    } else {
-      ++it;
-    }
-  }
-  for (Entry& entry : owned) {
     DisposeEntry(std::move(entry), before);
   }
 }

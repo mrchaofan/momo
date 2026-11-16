@@ -32,7 +32,6 @@ TEST_F(AssetResolverTest, DefaultsToResourcesLayout) {
   ASSERT_TRUE(assets.ok()) << assets.status();
   EXPECT_EQ(assets->bundle_path, (root_ / "Resources" / "bundle.js").lexically_normal());
   EXPECT_EQ(assets->assets_dir, (root_ / "Resources" / "assets").lexically_normal());
-  EXPECT_EQ(assets->extensions_dir, (root_ / "Resources" / "extensions").lexically_normal());
   EXPECT_TRUE(assets->bundle_path.is_absolute());
 }
 

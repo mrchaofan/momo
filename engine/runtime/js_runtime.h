@@ -7,8 +7,8 @@
 // isolate 进入状态。
 //   - 事件循环: NodeBindings 把 libuv 接到 ui 线程(见 node_bindings.h, 对照 Electron)。
 //   - 模块: 主程序为 ESM, 由 Node 的 ESM 加载器执行: 可以 import `node:*`、npm 包(node_modules), 以及
-//     `momo:*` / `ext:*` 原生模块——经 module.registerHooks 映射到 node::AddLinkedBinding 注册的原生绑定
-//     (RegisterNativeModule;node_bootstrap.cc)。
+//     `momo:*` 原生模块——经 module.registerHooks 映射到 node::AddLinkedBinding 注册的原生绑定
+//     (RegisterNativeModule;node_bootstrap.cc)——和原生扩展 `*.node`(docs/07)。
 //   - 从 momo 进入 JS(帧、输入、通道回调): Call 在 node::CallbackScope 里调用(同 node::MakeCallback),
 //     返回时按 Node 语义排空 process.nextTick 与 microtask;DrainMicrotasks 另外唤醒 poll 线程。
 

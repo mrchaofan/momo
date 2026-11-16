@@ -12,7 +12,6 @@ namespace momo::engine::runtime {
 // v8::External
 inline constexpr v8::ExternalPointerTypeTag kCallbackTag = 1;  // ClassBuilder 方法/构造函数指针
 inline constexpr v8::ExternalPointerTypeTag kUiImplTag = 2;    // ui::UiBindings::Impl
-inline constexpr v8::ExternalPointerTypeTag kExtFnTag = 3;     // ui 扩展函数绑定(ExtFunction)
 
 // internal field(Wrappable)
 inline constexpr v8::EmbedderDataTypeTag kWrappableTag = 1;

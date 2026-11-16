@@ -100,7 +100,7 @@ framework/.../views/binding.ts           drawFrame
 framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 ```
 
-**之后按需**：base 的对象模型（`base/object.h`、`base/event_loop.h` 的头部注释写得很完整）、V8 绑定（`engine/runtime/class_builder.h`）、扩展（`engine/extension/extension_host.h` + `extensions/sdk/include/momo/momo_extension.h`）。
+**之后按需**：base 的对象模型（`base/object.h`、`base/event_loop.h` 的头部注释写得很完整）、V8 绑定（`engine/runtime/class_builder.h`）、扩展（`docs/07-extension-system.md`、`engine/extension/extension_host.h` + `extensions/sdk/include/momo/momo_host.h`）。
 
 > 读源码的小技巧：几乎每个头文件开头都有一段注释，写明了**线程约定**和**生命周期**。先读那段注释，再读代码。
 
@@ -123,7 +123,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | 命令行参数 | `embedder/common/app_config.cc` | README 的参数表 |
 | View / 布局 / 手势 | `framework/packages/momo/src/{views,rendering,gestures}/` | `framework/test/*_test.ts` |
 | Material 控件 | `framework/packages/momo/src/material/` | `material_test.ts` |
-| 扩展 C ABI | `extensions/sdk/include/momo/momo_extension.h`、`engine/extension/extension_host.cc`、`engine/ui/extension_bindings.cc` | **只能在结构体末尾追加字段**（见 §4）；新增能力时同步 C++ 封装 `momo_extension.hpp` |
+| 扩展的宿主能力表（C ABI） | `extensions/sdk/include/momo/momo_host.h`、`engine/extension/extension_host.cc` | **只能在结构体末尾追加字段**（见 §4）；JS 与原生之间的事都用 Node-API，不进这张表（docs/07 §3） |
 | 扩展 SDK 打包 | `extensions/CMakeLists.txt`（`momo_ext_sdk_package`、install 规则）、`extensions/sdk/lib/cmake/MomoExtSdk/` | CTest `ExtensionSdk.StandaloneCxxBuild` |
 | 打包工具 | `framework/packages/cli/momo.mjs` | README「打包发布」 |
 
@@ -136,7 +136,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 - **每个对象只在它的归属线程上使用和析构。** 继承 `momo::Object` 的类在方法开头写 `MOMO_DCHECK_ON_AFFINITY_THREAD();`，Debug 构建会断言。不确定当前在哪个线程时，看头文件里的"线程约定"注释。
 - **V8 只在 ui 线程，GPU 只在 raster 线程，平台 API 只在 platform（主）线程。** 跨线程只能投递任务，数据要么复制，要么是不可变的（`shared_ptr<const DisplayList>`）。
 - **帧路径上不允许阻塞等待。** `PostTaskAndWait` / `WaitableEvent` 只用于启动和关闭的汇合点。
-- **回调一律在调用方线程执行。** 谁注册回调，回调就在谁的线程上被调用。例外只有一种：注册时用 runner 参数（`TaskRunner` / `MomoTaskRunner`）显式指定了执行线程。系统线程（CVDisplayLink、DwmFlush、inspector 网络线程）和扩展线程只负责投递（`PostToObject` / `runner->PostTask`），从不直接调用别人的回调。写新接口时，要么回调回到注册线程，要么让调用方显式传 runner。`ShellTest`、`TextureRegistryTest`、`ExtensionHostTest.CallbacksOnlyRunOnRegisteringThread` 都断言了这一点。
+- **回调一律在调用方线程执行。** 谁注册回调，回调就在谁的线程上被调用。例外只有一种：注册时用 runner 参数（`TaskRunner`）显式指定了执行线程。系统线程（CVDisplayLink、DwmFlush、inspector 网络线程）和扩展线程只负责投递（`PostToObject` / `runner->PostTask`），从不直接调用别人的回调。写新接口时，要么回调回到注册线程，要么让调用方显式传 runner。`ShellTest`、`TextureRegistryTest` 都断言了这一点。
 - engine / embedder 中不直接使用 `std::thread`、`std::mutex`、`condition_variable`；需要时先在 `base/` 提炼通用设施。
 
 ### 4.2 所有权与生命周期
@@ -144,7 +144,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 - 默认 `std::unique_ptr`。有线程归属的对象用 `ObjectPtr<T>`（释放 = `DeleteLater`，在归属线程的安全点析构）。
 - **不要用 `shared_ptr` 表达跨线程生命周期。** 别的线程只拿 `WeakPtr<T>`，并通过 `PostToObject(weak, fn)` 回到归属线程判活后调用。
 - 已被 `ObjectPtr` 持有的对象，不要再手动调用 `DeleteLater()`。
-- 退出与销毁是分开的两步，都是有意设计的（同 Electron）：退出流程（`Quit` / `Exit`）只关闭窗口并让消息循环结束，不销毁任何东西；销毁（`Application::TearDown`）在循环结束之后逐级进行，JS 环境最先，然后是引擎其余部分、窗口，最后 join 线程。没有“直接终止”的入口：不强行终止 JS，也不强杀进程，JS 不返回时退出就等着它。调整前先读 ARCHITECTURE §3.8，并跑 `ApplicationTest`。
+- 退出与销毁是分开的两步，都是有意设计的（同 Electron）：退出流程（`Quit` / `Exit`）只关闭窗口并让消息循环结束，不销毁任何东西；销毁（`Application::TearDown`）在循环结束之后逐级进行：先结束引擎对原生扩展的调用（关闭宿主能力表、销毁平台视图），然后是 JS 环境、引擎其余部分、窗口，最后 join 线程。没有“直接终止”的入口：不强行终止 JS，也不强杀进程，JS 不返回时退出就等着它。调整前先读 ARCHITECTURE §3.8，并跑 `ApplicationTest`。
 
 ### 4.3 错误处理
 
@@ -162,7 +162,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 
 - `framework/packages/momo/src/ui/momo-ui.d.ts` 是 JS⇄C++ 的接口契约。改绑定必须同步改它，以及 Node mock（`framework/test/mock/`），否则 Node 下的框架测试会和真实引擎行为不一致。
 - `StandardCodec` 的线格式在 C++（`engine/common/standard_codec.cc`）和 JS（`services/standard_codec.ts`）各实现一份，必须一致。
-- 扩展 C ABI（`momo_extension.h`）已定稿 v1：`MomoHostApi` / `MomoCallApi` **只增不改不删，只能在末尾追加**，扩展用 `struct_size` 判断宿主是否提供某个字段。
+- 扩展的宿主能力表（`momo_host.h`，v1）：`MomoHost` **只增不改不删，只能在末尾追加**，扩展用 `struct_size` 判断宿主是否提供某个函数。
 
 ### 4.6 Windows 代码
 
@@ -221,7 +221,7 @@ framework/.../rendering/object.ts        PipelineOwner、PaintingContext
 | base 单测 | `ctest -R 'EventLoop\|Object\|Pipeline\|TaskUtil\|WorkerPool'` | 事件循环、延迟析构、背压 | 改 `base/` |
 | engine 单测 | `ctest -R 'Shell\|Animator\|Rasterizer\|Hub\|UiBindings\|Golden'` | Shell 时序、背压、绑定、golden | 改 `engine/` |
 | embedder 单测 | `ctest -R 'Application\|AppConfig\|AssetResolver\|Mac'` | 启动/关闭顺序（mock 平台）、macOS 实现 | 改 `embedder/` |
-| 扩展 | `ctest -R 'Extension'` | 加载、隔离、端到端、回调线程、ABI 符号、SDK 产物独立构建 | 改扩展宿主或 SDK |
+| 扩展 | `ctest -R 'Extension'` | 宿主能力表单测、端到端（真实引擎加载真实的 `.node`）、关闭顺序、SDK 产物独立构建 | 改扩展宿主或 SDK |
 | 框架（Node） | `cd framework && npm test` | 全部 TS 测试 + counter/todo 端到端 | 改 `framework/` |
 | 框架（真实引擎） | `ctest -R FrameworkTests` | 同一组 TS 测试跑在 `momo_headless` 上 | 改绑定或框架 |
 | 冒烟 | `ctest -R HeadlessSmoke` | 无窗口完整跑一个 bundle 并截图 | 任何引擎改动 |
@@ -256,7 +256,7 @@ MOMO_UPDATE_GOLDENS=1 ctest -R Golden
 - **`nextDrawable` 可能返回 nil**：此时直接丢帧，不能阻塞等待。
 - **AppKit 的键盘怪癖**：按住 Command 时 `-[NSApplication sendEvent:]` 会吞掉 `keyUp`。`MomoContentView` 用本地事件监视器补发（Flutter macOS 也是这么做），并在 `keyUp:` 里按事件对象去重。`flagsChanged` 事件不能访问 `characters`（会抛 ObjC 异常），修饰键只看 `modifierFlags`。
 - **JS 运行时先于引擎的其余部分销毁**（`Shell::Shutdown` 的第一步），而 io 线程上的解码、通道回复可能在这之后才回来。所以绑定层中所有异步回调都要用 `WeakPtr<Impl>` 判活（见 `ui_impl.h`）。
-- **没有热重启**：一个进程里只有一个 JS 运行时，`Shell::Run` 启动它，`Shell::Shutdown` 销毁它。扩展里“属于 JS”的状态因此与扩展自身同寿，在 `on_detach` 清理。
+- **没有热重启**：一个进程里只有一个 JS 运行时，`Shell::Run` 启动它，`Shell::Shutdown` 销毁它。扩展里“属于 JS”的状态因此与进程同寿；扩展用 `napi_add_env_cleanup_hook` 登记的清理函数在 JS 运行时销毁时执行（docs/07 §4）。
 - **框架代码不直接用 DOM/Node API**：延迟任务用 `SchedulerBinding.instance.scheduleDelayed`（内部由 `setTimeout` 驱动、等待期间不出帧，测试里换成假时钟），不要直接调 `setTimeout`。
 
 ## 9. 文档维护约定

@@ -20,8 +20,8 @@
 //   Shutdown(内部): 进入 Terminating(JS 收到这一状态, 相当于 Electron 的 'quit' 事件), 请求消息循环结束。
 //              这里不销毁任何东西: JS 照常运行到循环结束。
 //   最后一个窗口关闭不退出: 只发 momo/app windowAllClosed, 由 JS 决定。
-// 销毁(TearDown): 消息循环结束之后(Run 返回前)按依赖逐级进行, JS 环境最先(docs/01 §4):
-//   JS 运行时 → 引擎其余部分(平台视图、扩展 on_detach、GPU 资源)→ 宿主通道 → 窗口 → 线程 join。
+// 销毁(TearDown): 消息循环结束之后(Run 返回前)按依赖逐级进行, 引擎最先(docs/01 §4):
+//   引擎(平台视图 → JS 运行时 → GPU 资源, 见 Shell::Shutdown)→ 宿主通道 → 窗口 → 线程 join。
 //   销毁要与 ui 线程汇合。JS 不返回(等待调试器连接、脚本死循环)时退出就停在这里等它——不强行终止 JS,
 //   也不强杀进程。
 // 线程约定: momo::Object, 归属 platform 线程(OS 主线程);除 state() 外所有方法仅在该线程调用。
