@@ -5,14 +5,11 @@ import { MethodChannel, type MethodCall } from "./platform_channel";
  * 平台视图服务(docs/05 §9): 经 momo/platform_views 通道创建/销毁/聚焦由扩展提供的系统原生视图。
  * 一般通过 {@link PlatformView} view 使用;需要自管生命周期时用 {@link PlatformViewsService.create}。
  *
- * 视图 id 由 JS 分配: 高位是每个 JS 运行时随机的标签, 低 20 位递增。热重启后旧运行时的在途消息
- * 不会误伤新运行时的视图(引擎在热重启时销毁全部旧视图)。
+ * 视图 id 由 JS 分配, 从 1 递增(一个进程里只有一个 JS 运行时, 不会与别人分配的 id 冲突)。
  */
 const channel = new MethodChannel("momo/platform_views");
 
-const kCounterBits = 2 ** 20;
-const runtimeTag = 1 + Math.floor(Math.random() * (2 ** 30 - 1));
-let nextCounter = 1;
+let nextViewId = 1;
 
 type FocusListener = () => void;
 const focusListeners = new Map<number, FocusListener>();
@@ -77,8 +74,7 @@ export class PlatformViewController {
 export const PlatformViewsService = {
   /** 分配一个新的视图 id(尚未创建)。 */
   allocateId(): number {
-    const counter = ((nextCounter++ - 1) % (kCounterBits - 1)) + 1;  // 1 .. 2^20-1
-    return runtimeTag * kCounterBits + counter;
+    return nextViewId++;
   },
 
   /**

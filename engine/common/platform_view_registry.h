@@ -52,7 +52,7 @@ class PlatformViewRegistry {
                          const std::vector<uint8_t>& params);
   // 销毁视图: 先从表中移除, 再 before(id), 最后工厂 dispose。未知 id 返回 NotFound。
   Status Dispose(int64_t view_id, const BeforeDispose& before = nullptr);
-  // 销毁全部视图(热重启、关闭)。
+  // 销毁全部视图(引擎关闭)。
   void DisposeAll(const BeforeDispose& before = nullptr);
   // 销毁某个注册方的工厂创建的全部视图(扩展 detach 前)。
   void DisposeViewsOf(const std::string& owner, const BeforeDispose& before = nullptr);

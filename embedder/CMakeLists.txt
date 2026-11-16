@@ -19,6 +19,13 @@ add_library(momo_embedder_windows_portable STATIC
   windows/win_screen_layout.cc)
 target_link_libraries(momo_embedder_windows_portable PUBLIC momo_engine_platform momo_embedder_pointer)
 
+# surface 的平台无关部分: GPU → 软件回退(FallbackSurface)、呈现队列与拖拽缩放同步(PresentQueue)。
+# 两个平台的窗口与 surface 实现都链接它;单测在所有平台运行。
+add_library(momo_embedder_surface STATIC
+  common/fallback_surface.cc
+  common/present_queue.cc)
+target_link_libraries(momo_embedder_surface PUBLIC momo_engine_platform)
+
 add_library(momo_embedder_common STATIC
   common/app_channel.cc
   common/app_config.cc
@@ -48,7 +55,7 @@ if(APPLE)
     macos/mac_window.mm)
   # 实现只需要接口头(embedder/common/platform_*.h 为 header-only), 不链接引擎库。
   target_link_libraries(momo_embedder_macos
-    PUBLIC momo_engine_platform momo_embedder_pointer
+    PUBLIC momo_engine_platform momo_embedder_pointer momo_embedder_surface
     PRIVATE "-framework Cocoa" "-framework QuartzCore" "-framework CoreVideo"
             "-framework IOSurface" "-framework Metal")
 
@@ -122,7 +129,7 @@ elseif(WIN32)
     windows/win_vsync_dwm.cc
     windows/win_window.cc)
   target_link_libraries(momo_embedder_windows
-    PUBLIC momo_engine_platform momo_embedder_pointer momo_embedder_windows_portable
+    PUBLIC momo_engine_platform momo_embedder_pointer momo_embedder_windows_portable momo_embedder_surface
     PRIVATE user32 gdi32 dwmapi imm32 shcore shell32 ole32 advapi32 winmm d3d12 dxgi)
   target_compile_definitions(momo_embedder_windows PRIVATE ${_momo_win_defines})
 
@@ -203,8 +210,10 @@ if(MOMO_BUILD_TESTS)
     common/application_unittests.cc
     common/asset_resolver_unittests.cc
     common/pointer_dispatcher_unittests.cc
+    common/surface_unittests.cc
     common/window_channel_unittests.cc)
-  target_link_libraries(momo_embedder_unittests PRIVATE momo_embedder_common GTest::gtest_main)
+  target_link_libraries(momo_embedder_unittests PRIVATE momo_embedder_common momo_embedder_surface
+                        GTest::gtest_main)
   # 仅测试用: bundle 的加载失败只在有 JS 运行时的构建里发生。
   target_compile_definitions(momo_embedder_unittests PRIVATE MOMO_HAS_JS_RUNTIME=$<BOOL:${MOMO_HAVE_V8}>)
   gtest_discover_tests(momo_embedder_unittests)

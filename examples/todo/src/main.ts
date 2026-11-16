@@ -1,5 +1,5 @@
 // examples/todo — View 版待办(docs/11 M4 验收):TextField 输入、添加、勾选、删除、列表滚动。
-// 构建: node tools/momo-cli/momo.mjs bundle examples/todo  (→ examples/todo/dist/bundle.js)
+// 构建: node framework/packages/cli/momo.mjs bundle examples/todo  (→ examples/todo/dist/bundle.js)
 import {
   AppBar, Checkbox, Color, Colors, Column, Container, Divider, EdgeInsets, ElevatedButton, Expanded, InputDecoration, ListTile,
   ListView, MaterialApp, Padding, Row, Scaffold, SizedBox, State, StatefulView, Text, TextButton, TextEditingController, TextField,

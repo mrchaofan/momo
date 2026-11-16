@@ -45,9 +45,6 @@ StatusOr<AppConfig> AppConfig::Parse(std::span<const std::string> args) {
 
     if (key == "dev") {
       config.dev_mode = true;
-    } else if (key == "experimental-hot-restart") {
-      config.dev_mode = true;
-      config.hot_restart = true;
     } else if (key == "no-startup-window") {
       config.startup_window = false;
     } else if (key == "inspect-brk") {

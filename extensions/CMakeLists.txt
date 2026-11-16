@@ -78,7 +78,7 @@ if(MOMO_BUILD_TESTS AND MOMO_NODE)
   foreach(ext ext_hello ext_texture ext_webview)
     if(TARGET ${ext})
       add_test(NAME ExtensionAbiVerify.${ext}
-               COMMAND ${MOMO_NODE} ${PROJECT_SOURCE_DIR}/tools/momo-cli/momo.mjs ext verify
+               COMMAND ${MOMO_NODE} ${PROJECT_SOURCE_DIR}/framework/packages/cli/momo.mjs ext verify
                        $<TARGET_FILE:${ext}> ${_momo_verify_options})
     endif()
   endforeach()

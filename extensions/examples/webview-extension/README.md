@@ -126,7 +126,7 @@ WKWebView 要求在创建视图之前。导航拦截(允许/拒绝某次跳转)�
 `momo://newtab` 就是用 `registerProtocol` 声明的。运行(macOS,需先构建 `momo_app_mac` 与 `ext_webview`):
 
 ```bash
-node tools/momo-cli/momo.mjs build examples/webview
+node framework/packages/cli/momo.mjs build examples/webview --runtime=out/debug/embedder/Momo.app --native-dir=out/debug/extensions
 ```
 
 只实现了 macOS;Windows 需要 embedder 侧的平台视图支持(契约已就绪, Windows 宿主未实现)。

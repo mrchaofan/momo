@@ -81,55 +81,6 @@ TEST_F(ExtensionHostTest, CallsAfterDetachAreRejected) {
   EXPECT_FALSE(host_->AddExtension("test.inprocess", &InitInProcess).ok());
 }
 
-// 生命周期事件: 建立类按注册顺序、拆除类逆序;代数由调用方(Shell)给出;回调里可以注销监听器;
-// on_detach 之后不再回调。
-std::vector<std::string>* g_lifecycle_log = nullptr;
-uint64_t g_lifecycle_ids[3] = {};
-
-void RecordLifecycle(void* user_data, const MomoLifecycleInfo* info) {
-  const char* name = static_cast<const char*>(user_data);
-  ASSERT_GE(info->struct_size, sizeof(MomoLifecycleInfo));
-  const char* event = info->event == kMomoLifecycleRuntimeStarting ? "starting" : "stopped";
-  g_lifecycle_log->push_back(std::string(name) + ":" + event + "#" +
-                             std::to_string(info->runtime_generation) + "/" +
-                             std::to_string(info->reason));
-  // "b" 在第一次 Stopped 时注销 "a"(排在它之后回调)和自己。
-  if (std::string(name) == "b" && info->event == kMomoLifecycleRuntimeStopped) {
-    EXPECT_EQ(g_api->lifecycle_remove_listener(g_engine_ref, g_lifecycle_ids[0]), kMomoOk);
-    EXPECT_EQ(g_api->lifecycle_remove_listener(g_engine_ref, g_lifecycle_ids[1]), kMomoOk);
-  }
-}
-
-TEST_F(ExtensionHostTest, LifecycleListenersSeeRuntimeTurnover) {
-  std::vector<std::string> log;
-  g_lifecycle_log = &log;
-  CreateHost();
-  ASSERT_TRUE(host_->AddExtension("test.inprocess", &InitInProcess).ok());
-  ASSERT_GE(g_api->struct_size, offsetof(MomoHostApi, lifecycle_remove_listener) + sizeof(void*));
-  static char a[] = "a", b[] = "b", c[] = "c";
-  char* names[] = {a, b, c};
-  for (int i = 0; i < 3; ++i) {
-    ASSERT_EQ(g_api->lifecycle_add_listener(g_engine_ref, &RecordLifecycle, names[i], &g_lifecycle_ids[i]),
-              kMomoOk);
-  }
-  EXPECT_EQ(g_api->lifecycle_add_listener(g_engine_ref, nullptr, nullptr, &g_lifecycle_ids[0]),
-            kMomoErrInvalidArgs);
-  EXPECT_EQ(g_api->lifecycle_remove_listener(g_engine_ref, 9999), kMomoErrNotFound);
-
-  host_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonLaunch, 1);
-  host_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonHotRestart, 1);
-  host_->NotifyLifecycle(kMomoLifecycleRuntimeStarting, kMomoLifecycleReasonHotRestart, 2);
-  EXPECT_EQ(log, (std::vector<std::string>{
-                     "a:starting#1/0", "b:starting#1/0", "c:starting#1/0",  // 注册顺序
-                     "c:stopped#1/1", "b:stopped#1/1",                      // 逆序;a 已被 b 注销
-                     "c:starting#2/1"}));
-  log.clear();
-  host_->DetachAll();
-  host_->NotifyLifecycle(kMomoLifecycleRuntimeStopped, kMomoLifecycleReasonShutdown, 2);
-  EXPECT_TRUE(log.empty()) << "no callbacks after on_detach";
-  g_lifecycle_log = nullptr;
-}
-
 // 回调线程规则: 宿主只在扩展注册回调的线程上调用它。
 TEST_F(ExtensionHostTest, CallbacksOnlyRunOnRegisteringThread) {
   CreateHost();

@@ -1,7 +1,7 @@
 #include "engine/runtime/wrappable.h"
 
 #include "base/logging.h"
-#include "engine/runtime/js_runtime_impl.h"
+#include "engine/runtime/js_runtime.h"
 
 namespace momo::engine::runtime {
 
@@ -18,7 +18,7 @@ void Wrappable::Wrap(v8::Isolate* isolate, v8::Local<v8::Object> object) {
   object->SetAlignedPointerInInternalField(0, this, kWrappableTag);
   wrapper_.Reset(isolate, object);
   wrapper_.SetWeak(this, &Wrappable::OnWeak, v8::WeakCallbackType::kParameter);
-  runtime_ = JsRuntimeImpl::From(isolate);
+  runtime_ = JsRuntime::From(isolate);
   runtime_->TrackWrappable(this);
 }
 

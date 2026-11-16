@@ -33,7 +33,7 @@ class WindowManager final : public Object,
  public:
   class Observer {
    public:
-    // 最后一个窗口已关闭(不含热重启与关闭全部窗口时的中间状态)。在关闭之后的安全点回调;期间又打开了窗口
+    // 最后一个窗口已关闭(不含退出流程里关闭全部窗口的中间状态)。在关闭之后的安全点回调;期间又打开了窗口
     // 则不回调。
     virtual void OnAllWindowsClosed() = 0;
 
@@ -57,10 +57,10 @@ class WindowManager final : public Object,
   // 销毁全部窗口(须先 DetachEngine)。
   void DestroyAll();
 
+  // 不询问, 关闭全部窗口(不报告 OnAllWindowsClosed)。
+  void CloseAll();
   // 退出流程: 逐个询问窗口(closeRequested), 允许的关闭。done(all_closed) 在全部回复后于 platform 线程回调。
   void RequestCloseAll(MoveOnlyFunction<void(bool all_closed)> done);
-  // 热重启(实验性): 关闭旧 JS 打开的窗口;keep_startup_window 时保证启动窗口存在(之前被关闭则重新打开)。
-  void ResetForHotRestart(bool keep_startup_window);
 
   size_t count() const { return windows_.size(); }
   bool empty() const { return windows_.empty(); }
@@ -83,7 +83,7 @@ class WindowManager final : public Object,
   Status Open(engine::platform::ViewId view_id, const WindowOptions& options);
   // 帧时钟跟随的窗口: id 最小者(视图 0 优先);没有窗口时为主显示器。
   void UpdateVsyncWindow();
-  // report_all_closed: 关闭最后一个窗口时通知 Observer(热重启时不通知)。
+  // report_all_closed: 关闭最后一个窗口时通知 Observer(退出流程里不通知)。
   void Close(engine::platform::ViewId view_id, bool report_all_closed);
 
   // WindowController::Client

@@ -65,24 +65,25 @@ StatusOr<std::unique_ptr<RenderBackend>> CreateRenderBackend(platform::RenderSur
 | `SoftwareBackend` | 双端 | SkSurface raster + 平台位图呈现(Win: StretchDIBits;Mac: layer contents),远程桌面/无 GPU 回退。**M1 已实现**:`graphics::RasterizeLayerTree` 画进 `platform::SoftwarePixels`(BGRA 预乘),Mac `MacSoftwareSurface`:raster 线程直接画进 IOSurface(≤3 个缓冲, 零拷贝, sRGB 标记由 WindowServer 做色彩匹配), 主线程把它设为 layer.contents;**主线程最多挂起一帧**(新帧覆盖待显示槽, 槽从空变满才投递), 缓冲全忙时丢帧——保证 raster 快于主线程时主队列与内存有界、输入不被饿死 |
 
 后端选择在 Rasterizer 初始化时探测,失败逐级降回软件。**M2 已实现**: `MetalBackend`(`engine/graphics/gpu/metal_rasterizer.mm`,
-CAMetalLayer drawable 包装为 render target)与回退链(GPU 后端创建失败 → `RenderSurface::FallBackToSoftware()` → 软件后端);
+CAMetalLayer drawable 包装为 render target)与回退链(GPU 后端创建失败 → `RenderSurface::FallBackToSoftware()` → 软件后端;回退在 embedder 只实现一次: `FallbackSurface` 组合 GPU surface 与软件 surface, 两个平台的 GPU surface 不认识软件 surface);
 `Direct3DBackend`(`engine/graphics/gpu/d3d_rasterizer.cc`, 后台缓冲包装为 render target;每帧 `flush(kPresent)` 后等待 GPU 完成,
-让 Skia 释放对后台缓冲的引用, surface 才能随时 `ResizeBuffers`)。surface 运行中自行改变种类时(Windows 设备丢失后
-`WinD3DSurface` 回退软件), Rasterizer 在下一帧发现 `surface.kind()` 与后端不一致并重建后端;重建 GPU 设备未实现。io 线程可建共享 context 做纹理预上传(M5+ 优化项,首期图片在 raster 线程惰性上传)。
+让 Skia 释放对后台缓冲的引用, surface 才能随时 `ResizeBuffers`)。surface 运行中自行改变种类时(Windows 设备丢失:
+`WinD3DSurface::device_lost()` → `FallbackSurface` 回退软件), Rasterizer 在下一帧发现 `surface.kind()` 与后端不一致并换用软件后端;重建 GPU 设备未实现。
+**GPU 上下文全应用一份**: MTLDevice/命令队列与 D3D12 设备/队列是应用级对象(`MacMetalDevice` / `WinD3DDevice`, 平台集成创建一次, 交给每个窗口的 surface);Rasterizer 按 `surface.gpu_context()` 给出的设备共享后端, 所以全部窗口共用一个 GrDirectContext(一份着色器/字形/纹理缓存), 最后一个使用它的视图解绑时在 raster 线程释放。io 线程可建共享 context 做纹理预上传(M5+ 优化项,首期图片在 raster 线程惰性上传)。
 
 ## 5. 帧调度与同步
 
 - `Animator`(ui 线程):`scheduleFrame()` → 向 VsyncSource 请求回调 → vsync 到来时调 JS `onBeginFrame/onDrawFrame` → 收到 LayerTree 后入渲染队列。
 - **背压**:渲染队列深度 1 + 正在绘制 1;若 raster 落后,Animator 跳过 vsync 不再驱动 JS(丢 build 不丢最新画面),与 Flutter pipeline depth 策略一致。
 - **resize**:platform 线程收到尺寸变化 → metrics 投递 ui 线程触发新帧;raster 线程在 AcquireFrame 时以 surface 当前尺寸为准。
-  **拖拽缩放(live resize)同步**(macOS,`MacMetalSurface::WaitForFrame`,同 Flutter `FlutterResizeSynchronizer`):窗口尺寸的变化
+  **拖拽缩放(live resize)同步**(`PresentQueue::WaitForFrame`, `embedder/common/present_queue.h`, 两个平台、四种 surface 共用;同 Flutter `FlutterResizeSynchronizer`)。`PresentQueue` 是每个窗口一个的"raster 线程产出的帧与 platform 线程的同步点": 要在 platform 线程完成的呈现入队(`Post`), 在 raster 线程完成的呈现只登记(`NotePresented`);窗口在尺寸变化的系统回调里把新尺寸交给引擎后调用 `WaitForFrame`, 就地等到这个尺寸的帧呈现(有上限, 超时则暂时拉伸旧内容)。以 macOS Metal 为例:窗口尺寸的变化
   在主线程的 CATransaction 里提交,而 raster 线程异步 present 的帧与之不同步——窗口服务器拿到新尺寸时内容仍是旧帧(被
   `contentsGravity` 拉伸),直到松手。因此 live resize 期间全部帧改经**主线程呈现队列**(`presentsWithTransaction`);内容视图每次
   `setFrameSize:` 后先把新尺寸交给引擎,再在主线程等待一帧该尺寸的帧(连同之前排队的帧按序)在当前事务里呈现——新尺寸与新内容、
   平台视图几何同一事务生效。等待期间以 `EventLoop::RunDueTasksNested` 执行平台线程任务(vsync 请求与回调要经过主线程,否则死锁);
   上限 100 ms(宿主的实现细节, 不对应用暴露;同 Flutter 的 resize synchronizer),
-  应用更慢时退化为暂时拉伸,不让窗口拖动卡住。macOS 软件 surface 尚未同步。Windows(`WinWindow::SynchronizeLiveResize`):
-  系统缩放循环里的 `WM_SIZE` 先通知新尺寸, 再等待 D3D 交换链(或软件 surface)呈现一帧该尺寸的帧, 同样上限 100 ms。
+  应用更慢时退化为暂时拉伸,不让窗口拖动卡住。软件 surface 的帧同样经 `PresentQueue` 在主线程呈现, 所以同步对软件呈现也有效。Windows(`WinWindow::SynchronizeLiveResize`):
+  系统缩放循环里的 `WM_SIZE` 先通知新尺寸, 再经同一个 `PresentQueue::WaitForFrame` 等 D3D 交换链(在 raster 线程 Present 后登记)或软件 surface(入队, 本线程画到窗口)呈现一帧该尺寸的帧, 上限相同。
 - 首帧特殊路径:`Rasterizer` 支持 `DrawLastLayerTree` 以便窗口显示前预热 shader/上下文。
 
 ## 6. 文本与图片在管线中的位置
@@ -166,7 +167,6 @@ PlatformView widget            Composition::Build(LayerTree)             MomoPla
     新的按下结束旧序列。
   - 限制:可命中区域按包围盒记录(圆形按钮的四角也算);框架侧的手势识别器不与原生视图竞争(落在网页上的事件 momo 看不到)。
 - **生命周期**:视图由 JS 经 `momo/platform_views`(create/dispose/focus)请求,Shell 在 platform 线程调用扩展工厂
-  (`PlatformViewRegistry`);热重启与关闭时引擎销毁全部视图(先移出窗口再交给扩展释放,早于扩展 `on_detach`)。
-  JS 侧视图 id 带每个运行时随机的高位标签,避免热重启前的在途消息误伤新视图。
+  (`PlatformViewRegistry`);引擎关闭时销毁全部视图(JS 运行时已销毁;先移出窗口再交给扩展释放,早于扩展 `on_detach`)。
 - **限制**:只支持平移与正向缩放(旋转/斜切按包围盒近似并告警);圆角只支持与可见区域贴合的一层;
   软件渲染 surface 不支持平台视图;Windows embedder 未实现(契约已就绪, 需要子 HWND + 覆盖层合成)。

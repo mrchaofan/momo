@@ -21,8 +21,9 @@ BITMAPINFO MakeBitmapInfo(int width, int height) {
 
 }  // namespace
 
-WinSoftwareSurface::WinSoftwareSurface(HWND hwnd, uint32_t background_argb)
-    : hwnd_(hwnd), background_argb_(background_argb) {}
+WinSoftwareSurface::WinSoftwareSurface(HWND hwnd, uint32_t background_argb,
+                                       std::shared_ptr<PresentQueue> presents)
+    : hwnd_(hwnd), background_argb_(background_argb), presents_(std::move(presents)) {}
 
 WinSoftwareSurface::~WinSoftwareSurface() = default;
 
@@ -47,7 +48,7 @@ StatusOr<platform::SurfaceFrame> WinSoftwareSurface::AcquireFrame(Size physical_
   frame.kind = platform::SurfaceKind::kSoftware;
   frame.software = {buffer.pixels.data(), static_cast<size_t>(width) * 4, width, height};
   frame.size = physical_size;
-  frame.present = [this, index] { return Present(index); };
+  frame.present = [this, index, physical_size] { return Present(index, physical_size); };
   return frame;
 }
 
@@ -67,21 +68,12 @@ int WinSoftwareSurface::PickBuffer() const {
   return -1;
 }
 
-bool WinSoftwareSurface::Present(int index) {
-  bool post = false;
+bool WinSoftwareSurface::Present(int index, Size size) {
   {
     MutexLock lock(mutex_);
     pending_ = index;  // 主线程还没来得及显示的旧帧: 直接被覆盖(丢弃)
-    if (!message_posted_) {
-      message_posted_ = true;
-      post = true;
-    }
   }
-  if (post && !::PostMessageW(hwnd_, kPresentMessage, 0, 0)) {
-    MOMO_LOG(ERROR) << "PostMessageW(present) failed: " << ::GetLastError();
-    MutexLock lock(mutex_);
-    message_posted_ = false;  // 下一帧再试
-  }
+  presents_->Post(size, [this] { DisplayPending(); });
   return true;
 }
 
@@ -89,9 +81,8 @@ void WinSoftwareSurface::DisplayPending() {
   int displayed = -1;
   {
     MutexLock lock(mutex_);
-    message_posted_ = false;
     if (pending_ < 0) {
-      return;
+      return;  // 已被更早入队的呈现取走(槽里总是最新的一帧)
     }
     displayed_ = pending_;
     pending_ = -1;
@@ -105,37 +96,6 @@ void WinSoftwareSurface::DisplayPending() {
   ::ReleaseDC(hwnd_, dc);
   // 整个客户区已是最新帧: 取消尚未处理的 WM_PAINT(避免重复绘制)。
   ::ValidateRect(hwnd_, nullptr);
-}
-
-bool WinSoftwareSurface::has_presented() const {
-  MutexLock lock(mutex_);
-  return displayed_ >= 0;
-}
-
-bool WinSoftwareSurface::WaitForFrame(Size physical_size, TimeDelta timeout,
-                                      const std::function<bool()>& pump) {
-  const int width = static_cast<int>(physical_size.width);
-  const int height = static_cast<int>(physical_size.height);
-  const TimePoint deadline = Clock::now() + timeout;
-  while (true) {
-    bool ready = false;
-    {
-      MutexLock lock(mutex_);
-      // 待显示缓冲的尺寸由 raster 在 present 之前写好, 经 mutex_ 发布。
-      ready = pending_ >= 0 && buffers_[pending_].width == width && buffers_[pending_].height == height;
-    }
-    if (ready) {
-      DisplayPending();
-      return true;
-    }
-    if (Clock::now() >= deadline) {
-      return false;
-    }
-    if (!pump()) {
-      return false;  // 本对象已随窗口销毁
-    }
-    ::Sleep(1);  // 拖拽缩放期间窗口把系统定时器精度调到 1 ms(timeBeginPeriod)
-  }
 }
 
 void WinSoftwareSurface::Paint(HDC dc) {

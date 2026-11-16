@@ -124,50 +124,6 @@ TEST_F(HubTest, MissingHandlerOrDroppedReplyAnswersNull) {
   EXPECT_TRUE(was_null);
 }
 
-// JS → native 的消息带着发出时的 JS 运行时代数: 送达前运行时已销毁(热重启、关闭)则不再送达 handler,
-// 发送方得到空回复;下一个运行时的消息照常送达。
-TEST_F(HubTest, MessagesFromADestroyedJsRuntimeAreNotDelivered) {
-  std::vector<MessageBytes> received;
-  hub_->SetNativeHandler("ext", loop_.task_runner(), [&](MessageBytes m, MessageReply reply) {
-    received.push_back(m);
-    reply.Send(std::move(m));
-  });
-  std::vector<std::optional<MessageBytes>> replies;
-  const auto record = [&](std::optional<MessageBytes> r) { replies.push_back(std::move(r)); };
-
-  hub_->SetJsGeneration(1);  // 运行时 #1
-  hub_->SendToNative("ext", {1}, loop_.task_runner(), record);
-  loop_.RunUntilIdle();
-  hub_->SendToNative("ext", {2}, loop_.task_runner(), record);  // 发出后、送达前…
-  hub_->SetJsGeneration(0);                                      // …运行时 #1 销毁
-  hub_->SetJsGeneration(2);                                      // 运行时 #2
-  hub_->SendToNative("ext", {3}, loop_.task_runner(), record);
-  loop_.RunUntilIdle();
-
-  EXPECT_EQ(received, (std::vector<MessageBytes>{{1}, {3}})) << "the in-flight message of runtime #1 is dropped";
-  ASSERT_EQ(replies.size(), 3u);
-  EXPECT_TRUE(replies[0].has_value());
-  EXPECT_FALSE(replies[1].has_value()) << "the dropped message is answered with null";
-  EXPECT_TRUE(replies[2].has_value());
-}
-
-// native → JS 同理: 发给上一代运行时的消息不会送到下一代的端点(端点本身不决定代数)。
-TEST_F(HubTest, MessagesToAPreviousJsRuntimeAreNotDelivered) {
-  int calls = 0;
-  const auto endpoint = [&](const std::string&, MessageBytes, MessageReply) { calls++; };
-  hub_->SetJsGeneration(1);
-  hub_->SetJsEndpoint(loop_.task_runner(), endpoint);
-  hub_->SendToJs("c", {1});
-  hub_->SetJsEndpoint(nullptr, nullptr);
-  hub_->SetJsGeneration(2);
-  hub_->SetJsEndpoint(loop_.task_runner(), endpoint);
-  loop_.RunUntilIdle();
-  EXPECT_EQ(calls, 0) << "the message was addressed to runtime #1";
-  hub_->SendToJs("c", {2});
-  loop_.RunUntilIdle();
-  EXPECT_EQ(calls, 1);
-}
-
 TEST_F(HubTest, JsEndpointRemovedAfterPostIsNotCalled) {
   int calls = 0;
   hub_->SetJsEndpoint(loop_.task_runner(),

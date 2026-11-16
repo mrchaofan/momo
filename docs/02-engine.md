@@ -40,10 +40,10 @@ common, platform → base
 | `TaskRunners`(common) | — | 四个 `TaskRunner`(platform/ui/raster/io)的集合,见 docs/08 |
 | `ThreadHost` | 宿主线程 | 创建/join ui、raster、io 三个具名线程并产出 TaskRunners;由宿主(embedder/测试)持有,见 docs/08 §2 |
 | `Animator` | ui | 帧调度:请求 VSync → 驱动 AppDriver 出帧;一帧收集各视图的 LayerTree 成一个 `FrameItem` 入 Pipeline;背压;由 Engine 持有 |
-| `Rasterizer` | raster | 接收 FrameItem → 按 `LayerTree::view_id` 画到对应视图的 surface(`RenderBackend::Draw`)→ present;每个视图一份后端与最近一帧 |
-| `Engine`(内部类) | ui | ui 线程侧的根:持有各视图的 ViewportMetrics/焦点、Animator 与 `ui::AppDriver`(JS 驱动或占位驱动, 由 ui 模块的构建配置决定, 见 `engine/ui/app_driver.h`);`StartRuntime(generation)` / `StopRuntime()` 创建与销毁 JS 运行时, 没有运行时的时候不出帧 |
+| `Rasterizer` | raster | 接收 FrameItem → 按 `LayerTree::view_id` 画到对应视图的 surface(`RenderBackend::Draw`)→ present;每个视图一份最近一帧, 后端按 GPU 设备共享(同一设备上的全部视图共用一个后端 = 整个应用一份 GrDirectContext) |
+| `Engine`(内部类) | ui | ui 线程侧的根:持有各视图的 ViewportMetrics/焦点、Animator 与 `ui::AppDriver`(JS 驱动或占位驱动, 由 ui 模块的构建配置决定, 见 `engine/ui/app_driver.h`);`StartRuntime()` 创建 JS 运行时并执行 bundle(只一次), 运行时随 Engine 析构而销毁;没有运行时的时候不出帧 |
 
-启动分两阶段。`Shell::Create()`:在 platform 线程构造 → 向 raster 线程投递 Rasterizer 初始化 → 加载 manifest 声明的扩展 → 向 ui 线程投递 Engine 的构造(Animator 用定时器 vsync, **没有 JS 运行时**)→ 不等待, 立即返回 embedder。宿主随后在 `hub()` 上注册通道处理器、`extensions().AddExtension` 添加进程内扩展、`AttachView` 绑定已有窗口, 再调用 `Shell::Run(done)`:向扩展派发 RuntimeStarting → ui 线程 `Engine::StartRuntime`(建 AppDriver/V8 并执行 bundle, 再把已有视图的状态交给它)→ 结果经 `done` 回到 platform 线程。platform 线程从不等待 bundle 执行。hot restart(`RequestHotRestart`)= 停止运行时(`Engine::StopRuntime` → 销毁平台视图 → RuntimeStopped, 同步)+ 同一条启动链路;`Shutdown` 的第一步也是这次停止。"第几代运行时"只有 Shell 的一个计数, 扩展事件、消息通道的代际(`MessageChannelHub::SetJsGeneration`)与 Promise token 都取自它。帧时钟是应用级的:宿主以 `SetVsyncSource(source)` 给出唯一的 VsyncSource(Shell 在 platform 线程持有, ui 侧 Animator 改用 `PlatformVsyncWaiter`;没有则用定时器), 与视图的绑定无关。`AttachView(view_id, delegate, surface)` 由 Shell 在 platform 线程持有窗口 delegate;`DetachView(view_id)` 由 raster 同步解绑 surface;`Shutdown` 释放 VsyncSource。
+启动分两阶段。`Shell::Create()`:在 platform 线程构造 → 向 raster 线程投递 Rasterizer 初始化 → 加载 manifest 声明的扩展 → 向 ui 线程投递 Engine 的构造(Animator 用定时器 vsync, **没有 JS 运行时**)→ 不等待, 立即返回 embedder。宿主随后在 `hub()` 上注册通道处理器、`extensions().AddExtension` 添加进程内扩展、`AttachView` 绑定已有窗口, 再调用 `Shell::Run(done)`(只能一次):ui 线程 `Engine::StartRuntime`(建 AppDriver/V8 并执行 bundle, 再把已有视图的状态交给它)→ 结果经 `done` 回到 platform 线程;bundle 失败时引擎没有运行时、不出帧, 是否退出由宿主决定。platform 线程从不等待 bundle 执行。JS 运行时在进程里只有这一个, 没有热重启(docs/04 §8)。`Shutdown` 的顺序(JS 环境最先):ui 线程销毁 JS 运行时, 再是 Engine 其余部分(同步汇合: 此前投递给 JS 的事件都先执行完;JS 不返回时就等着, 不强行终止它的执行)→ 销毁全部平台视图 → 扩展 `on_detach` → raster 释放 GPU 资源。宿主在消息循环结束之后才调用它(docs/01 §4)。帧时钟是应用级的:宿主以 `SetVsyncSource(source)` 给出唯一的 VsyncSource(Shell 在 platform 线程持有, ui 侧 Animator 改用 `PlatformVsyncWaiter`;没有则用定时器), 与视图的绑定无关。`AttachView(view_id, delegate, surface)` 由 Shell 在 platform 线程持有窗口 delegate;`DetachView(view_id)` 由 raster 同步解绑 surface;`Shutdown` 释放 VsyncSource。
 
 ### 多视图(多窗口)
 
@@ -53,15 +53,14 @@ common, platform → base
 - **按视图**:surface 与 GPU 后端、ViewportMetrics、焦点、指针/键盘事件、合成状态。
 - **引擎不管窗口**:窗口的创建与关闭、标题、光标、位置、标题栏都属于宿主(embedder 的 `momo/window` 通道, docs/03 §5)。宿主建好窗口后以自己分配的 id `AttachView`(JS 收到 `onViewsChanged`), 关闭时 `DetachView`。引擎的接口(`Shell::Delegate`、`ui::WindowClient`)里只有视图本身的事。
 - **帧路径**:一次 `onDrawFrame` 中各视图各自 `view.render(scene)`(每视图每帧至多一次),Animator 把它们打包成一个 `FrameItem`,raster 按 view_id 分别光栅化与呈现。
-- **输入法**:由宿主的 `momo/textinput` 交给当前获得焦点的窗口。热重启时宿主关闭视图 0 之外的窗口(视图 0 已关闭则重新打开)。
+- **输入法**:由宿主的 `momo/textinput` 交给当前获得焦点的窗口。
 - 扩展 `get_window_handle(view_id)` 对所有视图有效。
 
 ## 3. runtime/ — V8 集成(详见 docs/04)
 
 | 组件 | 职责 |
 |---|---|
-| `JsRuntime`(`js_runtime.h`) | 公共头,不含 V8 类型:创建/销毁运行时、执行主模块、排空 microtask |
-| `JsRuntimeImpl`(`js_runtime_impl.h`) | v8::Isolate + 主 Context;ESM 模块解析(`ResolveModule`);`RegisterNativeModule(specifier, factory)` 注册 `momo:*` / `ext:*` synthetic module;JS 异常转 `Status`;V8 code cache |
+| `JsRuntime`(`js_runtime.h`) | 一个 Node 环境(v8::Isolate + 主 Context + uv 循环):创建/销毁、执行主模块、排空 microtask;`RegisterNativeModule(specifier, factory)` 注册 `momo:*` / `ext:*` 原生模块;JS 异常转 `Status`;编译缓存;等待调试器。头文件含 V8 类型, 只被 runtime 与 ui 的实现文件包含 |
 | `Wrappable` + `ClassBuilder<T>` | 把 C++ 对象暴露为 JS 类(类型校验不依赖 RTTI,GC 弱回调释放) |
 | `js_args.h` | 绑定函数的参数解码(`ArgNumber`、`ArgWrapped<T>`…) |
 | `NodeBindings` | libuv 循环接到 ui 线程(poll 线程 + `uv_sem`,对照 Electron);`--dev` 时 Node 的 inspector 供 Chrome DevTools 连接 |

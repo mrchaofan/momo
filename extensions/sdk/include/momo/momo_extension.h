@@ -9,7 +9,6 @@
 // 状态: v1 定稿(M5)。由 extensions/examples 下的 hello(函数/Promise/通道)与 texture(纹理注入/
 // 帧回调)验证;hello 以纯 C 编译, 验证 ABI 不依赖 C++。
 // v1 追加(M6): 平台视图工厂(platform_view_register_factory / platform_view_get), 由 webview 示例验证。
-// v1 追加: 生命周期事件(lifecycle_add_listener / lifecycle_remove_listener), 由 webview 示例验证。
 // 之后只能在 MomoHostApi / MomoCallApi 末尾追加字段(扩展用 struct_size 判断宿主是否提供)。
 
 #ifndef MOMO_EXTENSION_H_
@@ -117,7 +116,7 @@ typedef struct MomoTextureDesc {
 //   embedder 额外持有引用(macOS 为 strong 引用), 直到 dispose。
 //   macOS 惯用法: return (void*)CFBridgingRetain(view);  dispose 中 CFBridgingRelease(native_view)。
 // dispose: 宿主已把视图移出窗口;扩展在此释放它。每个成功的 create 恰好对应一次 dispose
-//   (JS 销毁、热重启、引擎关闭时;on_detach 之前一定已全部 dispose)。
+//   (JS 销毁它、或引擎关闭时;on_detach 之前一定已全部 dispose)。
 typedef void* (*MomoPlatformViewCreateFn)(void* user_data, int64_t view_id, const uint8_t* params,
                                           size_t params_len);
 typedef void (*MomoPlatformViewDisposeFn)(void* user_data, int64_t view_id, void* native_view);
@@ -128,56 +127,6 @@ typedef struct MomoPlatformViewFactory {
   MomoPlatformViewDisposeFn dispose;
   void* user_data;
 } MomoPlatformViewFactory;
-
-// ---------- 生命周期事件(宿主 → 扩展) ----------
-//
-// on_attach / on_detach 界定扩展自身的存续;这里的事件告诉扩展宿主内部发生了什么。最重要的一类是 JS 运行时
-// 的更替: 一个进程里 JS 运行时可以先后有多个(热重启时销毁旧的、新建一个), 而扩展只 attach 一次。
-// 扩展里凡是"属于某个 JS 运行时"的状态(JS 传来的句柄、按 id 登记的对象、等待 JS 应答的请求)都应当在
-// kMomoLifecycleRuntimeStopped 时清掉, 否则会泄漏, 或被下一个运行时里恰好相同的 id 误用。
-//
-// 送达方式: 全部在 platform 线程同步送达。JS 运行时的启动与停止只有一条链路(应用启动、热重启、引擎
-// 关闭都走它), 顺序是确定的:
-//   停止: 1) 运行时销毁(ui 线程;宿主等它完成);
-//         2) 它创建的平台视图全部 dispose;
-//         3) kMomoLifecycleRuntimeStopped(按监听器注册的逆序)。
-//   启动: 4) kMomoLifecycleRuntimeStarting(按注册顺序);
-//         5) 新运行时创建、执行 bundle(ui 线程, 异步: 宿主不等它完成)。
-//   热重启 = 停止 + 启动;引擎关闭 = 停止, 随后是 on_detach。
-// 因此 1) 之后、5) 之前没有 JS 运行时: 平台视图的 dispose 与监听器执行期间没有任何 JS 在运行, 也不会有
-// JS 函数或帧回调与之并发(没有运行时的时候宿主不出帧);新运行时发来的消息一定晚于 Starting。通道消息带有
-// 代际标识: 旧运行时在销毁前已发出、尚在途中的消息不会再送达 handler, Stopped 之后收到的通道消息一定来自
-// 新运行时;发给旧运行时的消息也不会送到新运行时。
-// ui 线程在此期间并不停住: 扩展自己经 post_task 投递到 ui 线程的任务仍可能与监听器并发执行, 需要的话
-// 由扩展自行同步。监听器在 platform 线程上执行, 不要做耗时的事(耗时的清理请投递到自己的线程)。
-//
-// 兼容性: 事件与原因的取值只增不改。扩展必须忽略不认识的 event(直接返回);MomoLifecycleInfo 只在末尾
-// 追加字段, 读取新字段前先比较 struct_size。
-
-typedef enum MomoLifecycleEvent {
-  // 一个新的 JS 运行时即将创建并执行 bundle。reason: Launch(首次)或 HotRestart。
-  kMomoLifecycleRuntimeStarting = 1,
-  // JS 运行时已销毁。reason: HotRestart(随后会有 Starting)或 Shutdown(随后是 on_detach)。
-  kMomoLifecycleRuntimeStopped = 2,
-} MomoLifecycleEvent;
-
-typedef enum MomoLifecycleReason {
-  kMomoLifecycleReasonLaunch = 0,      // 应用启动
-  kMomoLifecycleReasonHotRestart = 1,  // 热重启(实验性, --experimental-hot-restart)
-  kMomoLifecycleReasonShutdown = 2,    // 引擎关闭
-} MomoLifecycleReason;
-
-typedef struct MomoLifecycleInfo {
-  size_t struct_size;
-  uint32_t event;   // MomoLifecycleEvent;不认识的值必须忽略
-  uint32_t reason;  // MomoLifecycleReason;不认识的值按"未知原因"处理
-  // 事件所指 JS 运行时的代数: 首个为 1, 每新建一个加 1。Starting 给出即将创建的那一代, Stopped 给出
-  // 刚销毁的那一代。扩展可以用它给"属于某个运行时"的状态打标记。
-  uint64_t runtime_generation;
-} MomoLifecycleInfo;
-
-// 仅在回调期间有效(需要保留必须拷贝)。
-typedef void (*MomoLifecycleFn)(void* user_data, const MomoLifecycleInfo* info);
 
 // ---------- 宿主 API 函数表 ----------
 
@@ -245,14 +194,6 @@ typedef struct MomoHostApi {
                                                const MomoPlatformViewFactory* factory);
   // 取已创建视图的原生指针(扩展在自己的通道 handler 里按 id 找到视图)。未知 id 返回 kMomoErrNotFound。
   MomoStatus (*platform_view_get)(MomoEngineRef, int64_t view_id, void** out_native_view);
-
-  // -- 生命周期事件(注册/注销任意线程;回调总在 platform 线程, 见上文"生命周期事件") --
-  // 一个扩展可以注册多个监听器(各子系统各管各的)。注册时已经发生过的事件不会补发: 在 on_attach 里注册
-  // 可以收到全部事件(首个运行时的 Starting 晚于 on_attach)。on_detach 之后不再回调。
-  MomoStatus (*lifecycle_add_listener)(MomoEngineRef, MomoLifecycleFn fn, void* user_data,
-                                       uint64_t* out_listener_id);
-  // 在监听器回调内注销(包括注销自己)是允许的: 本轮尚未回调到的被注销者不会再被回调。
-  MomoStatus (*lifecycle_remove_listener)(MomoEngineRef, uint64_t listener_id);
 } MomoHostApi;
 
 // ---------- 扩展描述与入口 ----------
@@ -261,11 +202,13 @@ typedef struct MomoExtension {
   size_t struct_size;
   const char* id;  // 反域名风格, 如 "acme.sqlite", 与 manifest 一致
   void* user_data;
-  // on_attach: platform 线程调用。host 与 engine 在 on_detach 前保持有效。
+  // 扩展的一生: on_attach → (JS 运行时创建、执行 bundle、运行) → on_detach。一个进程里只有一个 JS 运行时,
+  // 它晚于 on_attach 创建、早于 on_detach 销毁, 所以"属于 JS 运行时"的状态与扩展自身同寿, 在 on_detach 清理。
+  // on_attach: platform 线程调用, 此时还没有 JS 运行时。host 与 engine 在 on_detach 前保持有效。
   void (*on_attach)(void* user_data, const MomoHostApi* host, MomoEngineRef engine);
-  // on_detach: 引擎关闭时调用(platform 线程, JS 运行时已销毁)。必须停止自己的线程/定时任务,
-  // 之后宿主忽略该扩展的一切 API 调用(返回 kMomoErrNotFound)。动态库不会被卸载(与 Flutter 插件一致),
-  // 因此已投递但尚未执行的 post_task 回调仍然安全。
+  // on_detach: 引擎关闭时调用(platform 线程)。此前 JS 运行时已销毁(不再有 JS 函数、帧回调), 它创建的平台
+  // 视图已全部 dispose。必须停止自己的线程/定时任务, 之后宿主忽略该扩展的一切 API 调用(返回
+  // kMomoErrNotFound)。动态库不会被卸载(与 Flutter 插件一致), 因此已投递但尚未执行的 post_task 回调仍然安全。
   void (*on_detach)(void* user_data);
 } MomoExtension;
 

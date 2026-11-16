@@ -4,6 +4,8 @@
 #import <IOSurface/IOSurface.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <utility>
+
 #include "base/lock.h"
 
 namespace momo::embedder::macos {
@@ -47,7 +49,6 @@ struct MacSoftwareSurface::PresentState {
   Mutex lock;
   IOSurfaceRef pending = nullptr;    // 待主线程显示(持有引用)
   IOSurfaceRef displayed = nullptr;  // 当前 layer.contents(持有引用)
-  bool dispatch_scheduled = false;
   NSView* __weak view = nil;
 
   // 主线程: 取出最新的待显示帧并设为 layer contents。
@@ -57,10 +58,9 @@ struct MacSoftwareSurface::PresentState {
       MutexLock scope(state->lock);
       surface = state->pending;
       state->pending = nullptr;
-      state->dispatch_scheduled = false;
     }
     if (surface == nullptr) {
-      return;
+      return;  // 已被更早入队的呈现取走(槽里总是最新的一帧)
     }
     NSView* view = state->view;
     if (view != nil) {
@@ -77,7 +77,8 @@ struct MacSoftwareSurface::PresentState {
   }
 };
 
-MacSoftwareSurface::MacSoftwareSurface(NSView* view) : state_(std::make_shared<PresentState>()) {
+MacSoftwareSurface::MacSoftwareSurface(NSView* view, std::shared_ptr<PresentQueue> presents)
+    : presents_(std::move(presents)), state_(std::make_shared<PresentState>()) {
   state_->view = view;
 }
 
@@ -105,7 +106,7 @@ StatusOr<platform::SurfaceFrame> MacSoftwareSurface::AcquireFrame(Size physical_
   frame.software = {IOSurfaceGetBaseAddress(target), IOSurfaceGetBytesPerRow(target), width,
                     height};
   frame.size = physical_size;
-  frame.present = [this, target] { return Present(target); };
+  frame.present = [this, target, physical_size] { return Present(target, physical_size); };
   return frame;
 }
 
@@ -142,9 +143,8 @@ IOSurfaceRef MacSoftwareSurface::PickBuffer(int width, int height) {
   return nullptr;
 }
 
-bool MacSoftwareSurface::Present(IOSurfaceRef surface) {
+bool MacSoftwareSurface::Present(IOSurfaceRef surface, Size size) {
   IOSurfaceUnlock(surface, 0, nullptr);
-  bool schedule = false;
   {
     MutexLock scope(state_->lock);
     if (state_->pending != nullptr) {
@@ -152,15 +152,8 @@ bool MacSoftwareSurface::Present(IOSurfaceRef surface) {
     }
     CFRetain(surface);
     state_->pending = surface;
-    schedule = !state_->dispatch_scheduled;
-    state_->dispatch_scheduled = true;
   }
-  if (schedule) {
-    std::shared_ptr<PresentState> state = state_;
-    dispatch_async(dispatch_get_main_queue(), ^{
-      PresentState::DisplayPending(state);
-    });
-  }
+  presents_->Post(size, [state = state_] { PresentState::DisplayPending(state); });
   return true;
 }
 

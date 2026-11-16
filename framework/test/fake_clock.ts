@@ -48,5 +48,8 @@ export class FakeClock implements TimerHost {
   }
 }
 
+/** 生产环境的定时器来源(宿主定时器): 假时钟安装前的缺省值, 留给验证真实路径的测试。 */
+export const hostTimerHost: TimerHost = SchedulerBinding.instance.timerHost;
+
 export const fakeClock = new FakeClock();
 SchedulerBinding.instance.timerHost = fakeClock;

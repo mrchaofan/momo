@@ -24,34 +24,29 @@ void SafeRelease(T*& object) {
   }
 }
 
-uint64_t PackSize(int width, int height) {
-  return (static_cast<uint64_t>(static_cast<uint32_t>(width)) << 32) | static_cast<uint32_t>(height);
-}
-
 std::string HrString(HRESULT hr) {
   char buffer[16];
   std::snprintf(buffer, sizeof(buffer), "0x%08lX", static_cast<unsigned long>(hr));
   return buffer;
 }
 
-}  // namespace
-
-StatusOr<std::unique_ptr<WinD3DSurface>> WinD3DSurface::Create(HWND hwnd, uint32_t background_argb) {
-  std::unique_ptr<WinD3DSurface> surface(new WinD3DSurface(hwnd, background_argb));
-  MOMO_RETURN_IF_ERROR(surface->Initialize());
-  return StatusOr<std::unique_ptr<WinD3DSurface>>(std::move(surface));
+bool IsDeviceLost(HRESULT hr) {
+  return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG ||
+         hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 }
 
-WinD3DSurface::WinD3DSurface(HWND hwnd, uint32_t background_argb)
-    : hwnd_(hwnd), software_surface_(hwnd, background_argb) {}
+}  // namespace
 
-Status WinD3DSurface::Initialize() {
+// ---------------------------------------------------------------------------
+// WinD3DDevice
+
+StatusOr<std::shared_ptr<const WinD3DDevice>> WinD3DDevice::Create() {
   IDXGIFactory4* factory = nullptr;
   if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) {
     return UnavailableError("CreateDXGIFactory2 failed");
   }
-  // 第一个支持 D3D12(特性级别 11_0)的硬件适配器。软件适配器(WARP)不如直接用软件 surface。
-  for (UINT i = 0; device_ == nullptr; ++i) {
+  std::shared_ptr<WinD3DDevice> shared(new WinD3DDevice());
+  for (UINT i = 0; shared->device_ == nullptr; ++i) {
     IDXGIAdapter1* adapter = nullptr;
     if (factory->EnumAdapters1(i, &adapter) == DXGI_ERROR_NOT_FOUND) {
       break;
@@ -59,22 +54,49 @@ Status WinD3DSurface::Initialize() {
     DXGI_ADAPTER_DESC1 desc{};
     adapter->GetDesc1(&desc);
     if ((desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0) {
-      ::D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
+      ::D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&shared->device_));
     }
     adapter->Release();
   }
-  if (device_ == nullptr) {
-    factory->Release();
+  factory->Release();
+  if (shared->device_ == nullptr) {
     return UnavailableError("No hardware adapter supports Direct3D 12");
   }
   D3D12_COMMAND_QUEUE_DESC queue_desc{};
   queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-  HRESULT hr = device_->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue_));
+  const HRESULT hr = shared->device_->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&shared->queue_));
   if (FAILED(hr)) {
-    factory->Release();
     return UnavailableError("CreateCommandQueue failed: " + HrString(hr));
   }
-  hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
+  return std::shared_ptr<const WinD3DDevice>(std::move(shared));
+}
+
+WinD3DDevice::~WinD3DDevice() {
+  SafeRelease(queue_);
+  SafeRelease(device_);
+}
+
+// ---------------------------------------------------------------------------
+// WinD3DSurface
+
+StatusOr<std::unique_ptr<WinD3DSurface>> WinD3DSurface::Create(HWND hwnd,
+                                                               std::shared_ptr<const WinD3DDevice> device,
+                                                               std::shared_ptr<PresentQueue> presents) {
+  std::unique_ptr<WinD3DSurface> surface(new WinD3DSurface(hwnd, std::move(device), std::move(presents)));
+  MOMO_RETURN_IF_ERROR(surface->Initialize());
+  return StatusOr<std::unique_ptr<WinD3DSurface>>(std::move(surface));
+}
+
+WinD3DSurface::WinD3DSurface(HWND hwnd, std::shared_ptr<const WinD3DDevice> device,
+                             std::shared_ptr<PresentQueue> presents)
+    : hwnd_(hwnd), device_(std::move(device)), presents_(std::move(presents)) {}
+
+Status WinD3DSurface::Initialize() {
+  IDXGIFactory4* factory = nullptr;
+  if (FAILED(::CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)))) {
+    return UnavailableError("CreateDXGIFactory2 failed");
+  }
+  HRESULT hr = device_->device()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
   fence_event_ = ::CreateEventW(nullptr, FALSE, FALSE, nullptr);
   if (FAILED(hr) || fence_event_ == nullptr) {
     factory->Release();
@@ -94,7 +116,7 @@ Status WinD3DSurface::Initialize() {
   desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
   desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
   IDXGISwapChain1* swap_chain1 = nullptr;
-  hr = factory->CreateSwapChainForHwnd(queue_, hwnd_, &desc, nullptr, nullptr, &swap_chain1);
+  hr = factory->CreateSwapChainForHwnd(device_->queue(), hwnd_, &desc, nullptr, nullptr, &swap_chain1);
   if (SUCCEEDED(hr)) {
     // 全屏由应用决定, 不响应 Alt+Enter。
     factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
@@ -116,45 +138,36 @@ Status WinD3DSurface::Initialize() {
 }
 
 WinD3DSurface::~WinD3DSurface() {
-  // raster 已解绑(Shell::DetachView 先于窗口销毁): 本线程独占全部资源。设备丢失后不等待(fence 不再推进)。
-  if (queue_ != nullptr && fence_ != nullptr && device_->GetDeviceRemovedReason() == S_OK) {
+  // raster 已解绑(Shell::DetachView 先于窗口销毁): 本线程独占交换链。设备丢失后不等待(fence 不再推进)。
+  if (swap_chain_ != nullptr && !device_lost()) {
     WaitForQueueIdle();
   }
   ReleaseBuffers();
   SafeRelease(swap_chain_);
   SafeRelease(fence_);
-  SafeRelease(queue_);
-  SafeRelease(device_);
   if (fence_event_ != nullptr) {
     ::CloseHandle(fence_event_);
   }
 }
 
-platform::SurfaceKind WinD3DSurface::kind() const {
-  return software_active() ? platform::SurfaceKind::kSoftware : platform::SurfaceKind::kDirect3D;
-}
-
 platform::GpuContextInfo WinD3DSurface::gpu_context() const {
-  if (software_active()) {
-    return {};
-  }
-  return {device_, queue_};
+  return {device_->device(), device_->queue()};
 }
 
-bool WinD3DSurface::FallBackToSoftware() {
-  MOMO_LOG(WARNING) << "Direct3D surface falling back to software rendering";
-  software_.store(true, std::memory_order_release);
-  WaitForQueueIdle();
+bool WinD3DSurface::device_lost() const {
+  return lost_ || device_->device()->GetDeviceRemovedReason() != S_OK;
+}
+
+void WinD3DSurface::Deactivate() {
+  if (!device_lost()) {
+    WaitForQueueIdle();  // 丢失的设备上 fence 不会再推进: 不等待
+  }
   ReleaseBuffers();
-  SafeRelease(swap_chain_);  // 之后窗口内容回到 GDI(WinSoftwareSurface)
+  SafeRelease(swap_chain_);  // 之后窗口内容回到 GDI(软件 surface)
   ::InvalidateRect(hwnd_, nullptr, FALSE);
-  return true;
 }
 
 StatusOr<platform::SurfaceFrame> WinD3DSurface::AcquireFrame(Size physical_size) {
-  if (software_active()) {
-    return software_surface_.AcquireFrame(physical_size);
-  }
   const int width = static_cast<int>(physical_size.width);
   const int height = static_cast<int>(physical_size.height);
   if (width <= 0 || height <= 0) {
@@ -162,9 +175,6 @@ StatusOr<platform::SurfaceFrame> WinD3DSurface::AcquireFrame(Size physical_size)
   }
   if (swap_chain_ == nullptr) {
     return FailedPreconditionError("swap chain released");
-  }
-  if (CheckDeviceLost(device_->GetDeviceRemovedReason())) {
-    return software_surface_.AcquireFrame(physical_size);
   }
   MOMO_RETURN_IF_ERROR(ResizeIfNeeded(width, height));
   const UINT index = swap_chain_->GetCurrentBackBufferIndex();
@@ -175,7 +185,7 @@ StatusOr<platform::SurfaceFrame> WinD3DSurface::AcquireFrame(Size physical_size)
   frame.kind = platform::SurfaceKind::kDirect3D;
   frame.gpu_target = buffers_[index];
   frame.size = {static_cast<double>(width), static_cast<double>(height)};
-  frame.present = [this, width, height] { return Present(width, height); };
+  frame.present = [this, size = frame.size] { return Present(size); };
   return frame;
 }
 
@@ -190,7 +200,7 @@ Status WinD3DSurface::ResizeIfNeeded(int width, int height) {
                                                 DXGI_FORMAT_UNKNOWN, 0);
   if (FAILED(hr)) {
     buffer_width_ = buffer_height_ = 0;
-    CheckDeviceLost(hr);
+    NoteIfDeviceLost(hr);
     return InternalError("IDXGISwapChain::ResizeBuffers failed: " + HrString(hr));
   }
   for (UINT i = 0; i < kBufferCount; ++i) {
@@ -212,11 +222,11 @@ void WinD3DSurface::ReleaseBuffers() {
 }
 
 void WinD3DSurface::WaitForQueueIdle() {
-  if (queue_ == nullptr || fence_ == nullptr || fence_event_ == nullptr) {
+  if (fence_ == nullptr || fence_event_ == nullptr) {
     return;
   }
   const uint64_t value = ++fence_value_;
-  if (FAILED(queue_->Signal(fence_, value))) {
+  if (FAILED(device_->queue()->Signal(fence_, value))) {
     return;
   }
   if (fence_->GetCompletedValue() < value && SUCCEEDED(fence_->SetEventOnCompletion(value, fence_event_))) {
@@ -224,61 +234,26 @@ void WinD3DSurface::WaitForQueueIdle() {
   }
 }
 
-bool WinD3DSurface::Present(int width, int height) {
+bool WinD3DSurface::Present(Size size) {
   if (swap_chain_ == nullptr) {
     return false;
   }
   const HRESULT hr = swap_chain_->Present(1, 0);
   if (FAILED(hr)) {
     MOMO_LOG(ERROR) << "IDXGISwapChain::Present failed: " << HrString(hr);
-    CheckDeviceLost(hr);
+    NoteIfDeviceLost(hr);
     return false;
   }
-  presented_size_.store(PackSize(width, height), std::memory_order_release);
+  presents_->NotePresented(size);
   return true;
 }
 
-bool WinD3DSurface::CheckDeviceLost(HRESULT hr) {
-  if (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET && hr != DXGI_ERROR_DEVICE_HUNG &&
-      hr != DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
+bool WinD3DSurface::NoteIfDeviceLost(HRESULT hr) {
+  if (!IsDeviceLost(hr)) {
     return false;
   }
-  MOMO_LOG(ERROR) << "Direct3D device lost (" << HrString(hr) << "); switching to software rendering";
-  // 设备已不可用: 不等待队列(丢失的设备上的 fence 不会再推进), 直接释放交换链。
-  software_.store(true, std::memory_order_release);
-  ReleaseBuffers();
-  SafeRelease(swap_chain_);
-  ::InvalidateRect(hwnd_, nullptr, FALSE);
-  return true;
-}
-
-void WinD3DSurface::Paint(HDC dc) {
-  if (software_active() || !has_presented()) {
-    software_surface_.Paint(dc);  // 软件帧, 或首帧之前的闪屏底色
-  }
-}
-
-bool WinD3DSurface::has_presented() const {
-  return software_active() ? software_surface_.has_presented()
-                           : presented_size_.load(std::memory_order_acquire) != 0;
-}
-
-bool WinD3DSurface::WaitForFrame(Size physical_size, TimeDelta timeout, const std::function<bool()>& pump) {
-  if (software_active()) {
-    return software_surface_.WaitForFrame(physical_size, timeout, pump);
-  }
-  const uint64_t target = PackSize(static_cast<int>(physical_size.width), static_cast<int>(physical_size.height));
-  const TimePoint deadline = Clock::now() + timeout;
-  while (presented_size_.load(std::memory_order_acquire) != target) {
-    if (Clock::now() >= deadline) {
-      return false;
-    }
-    // vsync 回调等平台线程任务: 引擎出下一帧要经过它们。
-    if (!pump()) {
-      return false;  // 本对象已随窗口销毁
-    }
-    ::Sleep(1);  // 拖拽缩放期间窗口把系统定时器精度调到 1 ms(timeBeginPeriod)
-  }
+  MOMO_LOG(ERROR) << "Direct3D device lost (" << HrString(hr) << ").";
+  lost_ = true;  // 下一次取帧时 FallbackSurface 回退软件
   return true;
 }
 

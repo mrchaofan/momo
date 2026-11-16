@@ -12,7 +12,7 @@
 #include "base/logging.h"
 #include "engine/extension/extension_host.h"
 #include "engine/runtime/js_args.h"
-#include "engine/runtime/js_runtime_impl.h"
+#include "engine/runtime/js_runtime.h"
 #include "engine/runtime/js_tags.h"
 #include "engine/ui/app_driver.h"
 #include "engine/ui/ui_classes.h"

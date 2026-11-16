@@ -1,0 +1,19 @@
+{
+  "name": "@momo/cli",
+  "version": "0.4.0",
+  "description": "Momo command line: bundle an app, assemble a distributable app from a Momo runtime, scaffold and verify native extensions.",
+  "type": "module",
+  "bin": {
+    "momo": "./momo.mjs"
+  },
+  "files": [
+    "momo.mjs",
+    "bundle_options.mjs"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2"
+  }
+}

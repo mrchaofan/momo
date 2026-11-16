@@ -60,14 +60,6 @@ struct ExtensionHost::Core {
   std::map<int64_t, TextureSource> texture_sources;
   PromiseSink promise_sink;                  // ui 线程使用
   std::function<void()> request_frame;       // ui 线程使用
-  // 生命周期监听器: id 递增, 即注册顺序。
-  struct LifecycleListener {
-    MomoLifecycleFn fn;
-    void* user_data;
-    std::string extension_id;
-  };
-  std::map<uint64_t, LifecycleListener> lifecycle_listeners;
-  uint64_t next_lifecycle_listener = 1;
   struct Attached {
     std::string id;
     MomoExtension extension;
@@ -450,29 +442,6 @@ MomoStatus PlatformViewGet(MomoEngineRef engine, int64_t view_id, void** out) {
   *out = core->env.platform_views->Get(view_id);
   return *out != nullptr ? kMomoOk : kMomoErrNotFound;
 }
-MomoStatus LifecycleAddListener(MomoEngineRef engine, MomoLifecycleFn fn, void* user_data,
-                                uint64_t* out_id) {
-  Core* core = Live(engine);
-  if (core == nullptr) return kMomoErrNotFound;
-  if (fn == nullptr || out_id == nullptr) return kMomoErrInvalidArgs;
-  MutexLock lock(core->mutex);
-  *out_id = core->next_lifecycle_listener++;
-  core->lifecycle_listeners[*out_id] = {fn, user_data, engine->id};
-  return kMomoOk;
-}
-MomoStatus LifecycleRemoveListener(MomoEngineRef engine, uint64_t id) {
-  Core* core = Live(engine);
-  if (core == nullptr) return kMomoErrNotFound;
-  MutexLock lock(core->mutex);
-  auto it = core->lifecycle_listeners.find(id);
-  // 只能注销自己注册的监听器。
-  if (it == core->lifecycle_listeners.end() || it->second.extension_id != engine->id) {
-    return kMomoErrNotFound;
-  }
-  core->lifecycle_listeners.erase(it);
-  return kMomoOk;
-}
-
 // ---- 动态库加载 ----
 
 struct LoadedLibrary {
@@ -564,8 +533,6 @@ ExtensionHost::ExtensionHost(Environment env) : core_(std::make_shared<Core>(std
   api.log = &Log;
   api.platform_view_register_factory = &PlatformViewRegisterFactory;
   api.platform_view_get = &PlatformViewGet;
-  api.lifecycle_add_listener = &LifecycleAddListener;
-  api.lifecycle_remove_listener = &LifecycleRemoveListener;
 }
 
 ExtensionHost::~ExtensionHost() {
@@ -676,12 +643,6 @@ void ExtensionHost::DetachAll() {
       core_->env.platform_views->DisposeViewsOf(it->id);
       core_->env.platform_views->UnregisterFactoriesOf(it->id);
     }
-    {
-      // on_detach 之后不再回调该扩展。
-      MutexLock lock(core_->mutex);
-      std::erase_if(core_->lifecycle_listeners,
-                    [&](const auto& entry) { return entry.second.extension_id == it->id; });
-    }
     if (it->extension.on_detach != nullptr) {
       it->extension.on_detach(it->extension.user_data);
     }
@@ -707,39 +668,6 @@ void ExtensionHost::DetachAll() {
   replies.clear();  // 未应答的消息回复 null
   if (pool) {
     pool->Shutdown();  // 排空已投递的扩展任务后 join
-  }
-}
-
-void ExtensionHost::NotifyLifecycle(MomoLifecycleEvent event, MomoLifecycleReason reason,
-                                    uint64_t runtime_generation) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MomoLifecycleInfo info{};
-  info.struct_size = sizeof(MomoLifecycleInfo);
-  info.event = static_cast<uint32_t>(event);
-  info.reason = static_cast<uint32_t>(reason);
-  info.runtime_generation = runtime_generation;
-  std::vector<uint64_t> ids;
-  {
-    MutexLock lock(core_->mutex);
-    if (!core_->alive) {
-      return;
-    }
-    for (const auto& [id, listener] : core_->lifecycle_listeners) ids.push_back(id);
-  }
-  // 建立类事件按注册顺序, 拆除类事件逆序(后注册的子系统先拆)。
-  if (event == kMomoLifecycleRuntimeStopped) {
-    std::reverse(ids.begin(), ids.end());
-  }
-  for (uint64_t id : ids) {
-    Core::LifecycleListener listener;
-    {
-      // 逐个重新查找: 监听器可以在回调里注销别的监听器(或自己)。回调本身不持锁。
-      MutexLock lock(core_->mutex);
-      auto it = core_->lifecycle_listeners.find(id);
-      if (it == core_->lifecycle_listeners.end()) continue;
-      listener = it->second;
-    }
-    listener.fn(listener.user_data, &info);
   }
 }
 

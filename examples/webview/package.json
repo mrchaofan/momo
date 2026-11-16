@@ -9,7 +9,7 @@
     "@momo-examples/ext-webview": "file:../../extensions/examples/webview-extension"
   },
   "scripts": {
-    "bundle": "node ../../tools/momo-cli/momo.mjs bundle .",
-    "build": "node ../../tools/momo-cli/momo.mjs build ."
+    "bundle": "node ../../framework/packages/cli/momo.mjs bundle . --native-dir=../../out/debug/extensions",
+    "build": "node ../../framework/packages/cli/momo.mjs build . --native-dir=../../out/debug/extensions"
   }
 }

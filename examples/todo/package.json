@@ -7,7 +7,7 @@
     "@momo/framework": "file:../../framework/packages/momo"
   },
   "scripts": {
-    "bundle": "node ../../tools/momo-cli/momo.mjs bundle .",
-    "build": "node ../../tools/momo-cli/momo.mjs build ."
+    "bundle": "node ../../framework/packages/cli/momo.mjs bundle .",
+    "build": "node ../../framework/packages/cli/momo.mjs build ."
   }
 }

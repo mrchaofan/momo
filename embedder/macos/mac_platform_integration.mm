@@ -3,9 +3,12 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreVideo/CoreVideo.h>
 
+#include "base/logging.h"
 #include "embedder/common/engine_platform.h"
+#include "embedder/common/fallback_surface.h"
 #include "embedder/macos/mac_mouse_events.h"
 #include "embedder/macos/mac_native_loop.h"
+#include "embedder/macos/mac_surface_metal.h"
 #include "embedder/macos/mac_vsync_displaylink.h"
 #include "embedder/macos/mac_window.h"
 
@@ -72,6 +75,13 @@ class MacPlatformIntegration final : public PlatformIntegration {
   MacPlatformIntegration() {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    if (SoftwareRenderingForced()) {
+      MOMO_LOG(INFO) << "MOMO_SOFTWARE_RENDERING set: windows use the software surface.";
+    } else if (auto device = MacMetalDevice::Create(); device.ok()) {
+      metal_device_ = std::move(device).value();
+    } else {
+      MOMO_LOG(WARNING) << "Metal unavailable (" << device.status() << "); windows use the software surface.";
+    }
   }
 
   StatusOr<std::unique_ptr<PlatformWindow>> CreateWindow(const WindowOptions& options,
@@ -79,7 +89,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
     if (delegate == nullptr) {
       return InvalidArgumentError("CreateWindow requires a delegate");
     }
-    return std::unique_ptr<PlatformWindow>(std::make_unique<MacWindow>(options, delegate, mouse_input_));
+    return std::unique_ptr<PlatformWindow>(std::make_unique<MacWindow>(options, delegate, mouse_input_, metal_device_));
   }
 
   StatusOr<ObjectPtr<platform::VsyncSource>> CreateVsyncSource() override {
@@ -125,6 +135,8 @@ class MacPlatformIntegration final : public PlatformIntegration {
   MacApp app_;
   // 进程内唯一的指针输入(PointerDispatcher), 注入每个窗口;窗口先于本对象销毁。
   MacMouseInput mouse_input_;
+  // 应用级的 Metal 设备与命令队列: 全部窗口共用(引擎因此只建一个 GPU 后端)。为空 = 软件呈现。
+  std::shared_ptr<const MacMetalDevice> metal_device_;
   // 应用的帧时钟来源(由 Shell 持有;已释放时为空)。
   WeakPtr<MacVsyncDisplayLink> vsync_;
 };

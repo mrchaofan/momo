@@ -38,15 +38,10 @@ constexpr DWORD kDwmUseImmersiveDarkModeLegacy = 19;
 constexpr UINT kToUnicodeNoStateChange = 0x4;
 
 // 拖拽缩放时等待新尺寸帧的上限: 应用在此之内出帧则缩放无拉伸, 否则暂时拉伸旧内容(拖动保持跟手)。
-constexpr TimeDelta kLiveResizeFrameWait = std::chrono::milliseconds(100);
+// 呈现队列的唤醒消息: 有帧等着在本线程呈现(WndProc 收到后执行 PresentQueue::Drain)。
+constexpr UINT kPresentMessage = WM_APP + 0x40;
 
 LONG Round(double value) { return static_cast<LONG>(std::lround(value)); }
-
-bool SoftwareRenderingForced() {
-  wchar_t value[2]{};
-  const DWORD length = ::GetEnvironmentVariableW(L"MOMO_SOFTWARE_RENDERING", value, 2);
-  return length > 1 || (length == 1 && value[0] != L'0');
-}
 
 uint32_t CurrentModifiers() {
   uint32_t modifiers = platform::kModifierNone;
@@ -179,7 +174,7 @@ LPARAM PointToLParam(POINT p) {
 StatusOr<std::unique_ptr<WinWindow>> WinWindow::Create(const WindowOptions& options, WindowDelegate* delegate,
                                                        const Context& context) {
   std::unique_ptr<WinWindow> window(new WinWindow(options, delegate, context));
-  MOMO_RETURN_IF_ERROR(window->Initialize(options));
+  MOMO_RETURN_IF_ERROR(window->Initialize(options, context.d3d_device));
   return StatusOr<std::unique_ptr<WinWindow>>(std::move(window));
 }
 
@@ -269,7 +264,7 @@ SIZE WinWindow::WindowSizeForClient(double logical_width, double logical_height,
   return {rect.right - rect.left, rect.bottom - rect.top};
 }
 
-Status WinWindow::Initialize(const WindowOptions& options) {
+Status WinWindow::Initialize(const WindowOptions& options, std::shared_ptr<const WinD3DDevice> d3d_device) {
   HINSTANCE instance = ::GetModuleHandleW(nullptr);
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof(wc);
@@ -314,7 +309,7 @@ Status WinWindow::Initialize(const WindowOptions& options) {
   }
   dpi_ = ::GetDpiForWindow(hwnd_);
 
-  CreateSurface(options.background_argb);
+  CreateSurface(options.background_argb, std::move(d3d_device));
   text_input_ = std::make_unique<WinTextInput>(hwnd_, delegate_);
   cursor_ = ::LoadCursorW(nullptr, IDC_ARROW);
   UpdateDarkMode();
@@ -322,21 +317,25 @@ Status WinWindow::Initialize(const WindowOptions& options) {
   return Status::Ok();
 }
 
-void WinWindow::CreateSurface(uint32_t background_argb) {
-  if (SoftwareRenderingForced()) {
-    MOMO_LOG(INFO) << "MOMO_SOFTWARE_RENDERING set: using the software surface.";
-  } else {
-    StatusOr<std::unique_ptr<WinD3DSurface>> d3d = WinD3DSurface::Create(hwnd_, background_argb);
+void WinWindow::CreateSurface(uint32_t background_argb, std::shared_ptr<const WinD3DDevice> d3d_device) {
+  // 呈现队列: 平常由窗口消息唤醒本线程执行;拖拽缩放时在 SynchronizeLiveResize 里就地等待。
+  // 窗口销毁后消息随 HWND 一起丢弃。
+  presents_ = PresentQueue::Create([hwnd = hwnd_](std::shared_ptr<PresentQueue>) {
+    ::PostMessageW(hwnd, kPresentMessage, 0, 0);
+  });
+  // Surface: 有 D3D 设备且交换链建得出来时为 D3D + 软件回退, 否则只有 GDI 软件 surface。
+  auto software = std::make_unique<WinSoftwareSurface>(hwnd_, background_argb, presents_);
+  software_surface_ = software.get();
+  if (d3d_device != nullptr) {
+    StatusOr<std::unique_ptr<WinD3DSurface>> d3d = WinD3DSurface::Create(hwnd_, std::move(d3d_device), presents_);
     if (d3d.ok()) {
-      d3d_surface_ = d3d->get();
-      software_surface_ = &d3d_surface_->software();
-      surface_ = std::move(d3d).value();
+      auto fallback = std::make_unique<FallbackSurface>(std::move(d3d).value(), std::move(software));
+      fallback_surface_ = fallback.get();
+      surface_ = std::move(fallback);
       return;
     }
     MOMO_LOG(WARNING) << "Direct3D surface unavailable (" << d3d.status() << "); using the software surface.";
   }
-  auto software = std::make_unique<WinSoftwareSurface>(hwnd_, background_argb);
-  software_surface_ = software.get();
   surface_ = std::move(software);
 }
 
@@ -451,8 +450,7 @@ void WinWindow::NotifyMetricsChanged() {
 
 void WinWindow::SynchronizeLiveResize() {
   // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖;还没出过帧时等待只会超时。
-  const bool presented = d3d_surface_ != nullptr ? d3d_surface_->has_presented() : software_surface_->has_presented();
-  if (resize_waiting_ || !presented) {
+  if (resize_waiting_ || !presents_->has_presented()) {
     NotifyMetricsChanged();
     return;
   }
@@ -469,9 +467,7 @@ void WinWindow::SynchronizeLiveResize() {
     }
     return !alive.expired();
   };
-  const bool got_frame = d3d_surface_ != nullptr
-                             ? d3d_surface_->WaitForFrame(physical_size(), kLiveResizeFrameWait, pump)
-                             : software_surface_->WaitForFrame(physical_size(), kLiveResizeFrameWait, pump);
+  const bool got_frame = presents_->WaitForFrame(physical_size(), kLiveResizeFrameWait, pump);
   if (alive.expired()) {
     return;  // 等待期间窗口被关闭(有序关闭等): 不再访问本对象
   }
@@ -1109,18 +1105,20 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       PAINTSTRUCT paint{};
       HDC dc = ::BeginPaint(hwnd_, &paint);
       if (dc != nullptr) {
-        if (d3d_surface_ != nullptr) {
-          d3d_surface_->Paint(dc);
-        } else if (software_surface_ != nullptr) {
+        // 交换链在呈现时由 DWM 合成, 不需要 GDI;软件呈现(含 D3D 回退之后)以及交换链的首帧之前(闪屏底色)
+        // 由软件 surface 画。
+        const bool swap_chain_shown = fallback_surface_ != nullptr && !fallback_surface_->software_active() &&
+                                      presents_->has_presented();
+        if (!swap_chain_shown && software_surface_ != nullptr) {
           software_surface_->Paint(dc);
         }
         ::EndPaint(hwnd_, &paint);
       }
       return 0;
     }
-    case WinSoftwareSurface::kPresentMessage:
-      if (software_surface_ != nullptr) {
-        software_surface_->DisplayPending();
+    case kPresentMessage:
+      if (presents_ != nullptr) {
+        presents_->Drain();
       }
       return 0;
 

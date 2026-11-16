@@ -7,7 +7,7 @@
 //                   .Property("color", &Paint::GetColor, &Paint::SetColor)
 //                   .Method("copy", &Paint::Copy)
 //                   .Export(context, exports);  // 以类名挂到模块导出上(内含 Build)
-//   Build() 把类模板登记到 JsRuntimeImpl, 供 NewWrapper<T> 使用。
+//   Build() 把类模板登记到 JsRuntime, 供 NewWrapper<T> 使用。
 //
 // ctor 为空表示 JS 侧不可 new(只能由原生代码经 NewWrapper 创建, 如 Canvas、Picture)。
 
@@ -15,7 +15,7 @@
 #include <string>
 
 #include "engine/runtime/js_args.h"
-#include "engine/runtime/js_runtime_impl.h"
+#include "engine/runtime/js_runtime.h"
 #include "engine/runtime/js_tags.h"
 #include "engine/runtime/wrappable.h"
 #include "v8.h"
@@ -56,7 +56,7 @@ class ClassBuilder {
   }
 
   v8::Local<v8::FunctionTemplate> Build() {
-    JsRuntimeImpl::From(isolate_)->SetClassTemplate(&T::kTypeInfo, tmpl_);
+    JsRuntime::From(isolate_)->SetClassTemplate(&T::kTypeInfo, tmpl_);
     return tmpl_;
   }
 
@@ -116,7 +116,7 @@ class ClassBuilder {
 // 由原生代码创建 T 的 JS 包装对象(不经 JS 构造函数)。T 的类模板须已 Build。
 template <typename T>
 v8::Local<v8::Object> NewWrapper(v8::Isolate* isolate, std::unique_ptr<T> object) {
-  JsRuntimeImpl* runtime = JsRuntimeImpl::From(isolate);
+  JsRuntime* runtime = JsRuntime::From(isolate);
   v8::Local<v8::FunctionTemplate> tmpl = runtime->GetClassTemplate(&T::kTypeInfo);
   v8::Local<v8::Object> wrapper =
       tmpl->InstanceTemplate()->NewInstance(runtime->context()).ToLocalChecked();

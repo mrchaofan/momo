@@ -12,11 +12,18 @@
 // 职责: 持有 PlatformIntegration、OS 主线程的 EventLoop(经 base::NativeMessagePump 跑原生消息循环)、
 //       ui/raster/io 线程、引擎 Shell、窗口注册表(WindowManager);注册宿主通道(momo/app、momo/window、
 //       平台服务);退出状态机;按 docs/01 §4 严格有序关闭。
-// 退出:
-//   Quit()  —— Cmd+Q、菜单退出、JS app.quit():  beforeQuit → 逐个询问窗口 closeRequested → willQuit →
-//              有序关闭;任一步被 JS 取消即中止(同 Electron app.quit)。
-//   Exit(c) —— JS app.exit(c)、process.exit(c): 不询问, 有序关闭, 退出码 c。
+// 退出(同 Electron 的 app.quit / app.exit;没有"直接终止"的入口):
+//   Quit()  —— Cmd+Q、菜单退出、JS app.quit():  beforeQuit → 逐个询问窗口 closeRequested 并关闭 → willQuit →
+//              Shutdown;任一步被 JS 取消即中止。启动期间(bundle 还在执行)同样走这条流程: 询问排在 bundle
+//              之后, JS 没有处理器时视为允许。
+//   Exit(c) —— JS app.exit(c)、process.exit(c)、启动失败: 不询问, 关闭全部窗口 → Shutdown, 退出码 c。
+//   Shutdown(内部): 进入 Terminating(JS 收到这一状态, 相当于 Electron 的 'quit' 事件), 请求消息循环结束。
+//              这里不销毁任何东西: JS 照常运行到循环结束。
 //   最后一个窗口关闭不退出: 只发 momo/app windowAllClosed, 由 JS 决定。
+// 销毁(TearDown): 消息循环结束之后(Run 返回前)按依赖逐级进行, JS 环境最先(docs/01 §4):
+//   JS 运行时 → 引擎其余部分(平台视图、扩展 on_detach、GPU 资源)→ 宿主通道 → 窗口 → 线程 join。
+//   销毁要与 ui 线程汇合。JS 不返回(等待调试器连接、脚本死循环)时退出就停在这里等它——不强行终止 JS,
+//   也不强杀进程。
 // 线程约定: momo::Object, 归属 platform 线程(OS 主线程);除 state() 外所有方法仅在该线程调用。
 
 #include <memory>
@@ -42,12 +49,12 @@ class Application final : public Object, private WindowManager::Observer, privat
  public:
   enum class State { kNotRunning, kLaunching, kRunning, kSuspended, kTerminating };
 
-  // 关闭步骤, 与 docs/01 §4 一一对应。
+  // 关闭步骤, 按发生顺序, 与 docs/01 §4 一一对应。
   enum class ShutdownStep {
-    kEngineShutdown,   // 1+2) ui: 停帧/卸扩展/销毁 JsRuntime;raster: 释放 GPU 资源
+    kMessageLoopQuit,  // 0) 请求 platform EventLoop 结束(排空任务、清理 DeleteLater 对象后退出原生循环)
+    kEngineShutdown,   // 1+2) ui: 销毁 JsRuntime, 再停帧/卸扩展;raster: 释放 GPU 资源
     kWindowDestroyed,  // 3) 销毁 RenderSurface 与 PlatformWindow
     kThreadsJoined,    // 4) join ui/raster/io
-    kMessageLoopQuit,  //    请求 platform EventLoop 结束(排空任务、清理 DeleteLater 对象后退出原生循环)
   };
 
   // 可选观察者(日志、测试)。在 platform 线程回调。
@@ -68,36 +75,27 @@ class Application final : public Object, private WindowManager::Observer, privat
     // 给出;V8 code cache 放在它的 v8/ 下。为空 = 不缓存。
     std::filesystem::path cache_dir;
     Observer* observer = nullptr;  // 非拥有, 必须比 Application 活得久
-    // 退出流程中每次询问 JS 后若在此时间内无回复(ui 线程卡死), 强制退出进程(无法有序关闭: 关闭需要
-    // 与 ui 线程同步汇合)。<= 0 关闭超时机制。
-    TimeDelta close_timeout = std::chrono::seconds(5);
-    // 强制退出的实现(测试可替换);默认 std::_Exit。
-    std::function<void(int exit_code)> force_exit;
-    // 启用 hot restart(config.hot_restart, 实验性)时轮询 bundle 修改时间的间隔;<= 0 关闭。
-    TimeDelta hot_restart_poll = std::chrono::milliseconds(500);
   };
 
   // 启动时序第 3 步: 接管平台集成, 创建 TaskRunners(platform 绑定当前线程, ui/raster/io 各建线程)。
   static StatusOr<std::unique_ptr<Application>> Create(
       Options options, std::unique_ptr<PlatformIntegration> platform);
-  ~Application() override;  // 若尚未关闭则执行 Terminate()
+  ~Application() override;  // 尚未销毁则在这里完成(Shutdown + TearDown)
 
   // 启动时序第 4–5 步: 创建并显示启动窗口(config.startup_window)→ 创建引擎(Shell::Create, 不执行 JS)→
   // 注册宿主通道、绑定窗口 → 异步启动 JS 运行时(Shell::Run)。不等待 bundle 执行: 返回时状态仍是 Launching,
-  // 结果稍后在事件循环里到达(成功 → Running;bundle 加载/执行失败 → Terminate(1), Run() 返回 1)。
-  // 返回值只反映同步部分(窗口、资源解析、引擎创建)的错误;这类失败已完成有序清理, 状态为 Terminating。
+  // 结果稍后在事件循环里到达(成功 → Running;bundle 加载/执行失败 → Exit(1), Run() 返回 1)。
+  // 返回值只反映同步部分(窗口、资源解析、引擎创建)的错误;这类失败已完成有序销毁, 状态为 Terminating。
   Status Launch();
 
-  // 启动时序第 7 步: 运行 platform EventLoop(原生消息循环), 直到 Terminate 后排空。返回进程退出码。
-  // Launch 之后即可调用(不必等 JS 运行时就绪)。
+  // 启动时序第 7 步: 运行 platform EventLoop(原生消息循环)直到退出流程请求它结束, 然后逐级销毁(TearDown)。
+  // 返回进程退出码。Launch 之后即可调用(不必等 JS 运行时就绪)。
   int Run();
 
   // 请求退出(可被 JS 取消;重复请求合并)。
   void Quit() override;
-  // 不询问, 在下一个安全点有序关闭(可能在宿主通道处理器的调用栈里被调用)。
+  // 不询问: 关闭全部窗口, 以 exit_code 退出。幂等。
   void Exit(int exit_code) override;
-  // 立即有序关闭并退出消息循环。幂等。
-  void Terminate(int exit_code = 0);
 
   // ---- 平台入口的应用级事件 ----
   // 应用整体隐藏/显示(Mac applicationDidHide/Unhide): 隐藏即 Suspended。
@@ -130,16 +128,15 @@ class Application final : public Object, private WindowManager::Observer, privat
   Status LaunchEngine();
   // Shell::Run 的结果(platform 线程): 完成 Launching → Running, 或启动失败退出。
   void OnRuntimeStarted(Status status);
-  // hot restart(实验性): 定时检查 bundle 修改时间, 变化时关闭旧 JS 打开的窗口(按配置保证启动窗口存在)并 hot restart。
-  void PollBundleForChanges();
 
   // ---- 退出流程(Quit) ----
   void QuitCloseWindows();
   void QuitWillQuit();
   void AbortQuit(std::string_view reason);
-  // 每次询问 JS 开一轮看门狗: 超时未回复(ui 线程卡死)即强制退出。EndAsk 返回该回复是否仍有效。
-  uint64_t BeginAsk();
-  bool EndAsk(uint64_t serial);
+  // 退出流程的最后一步(Quit 与 Exit 汇合于此): 进入 Terminating, 请求消息循环结束。不销毁任何东西。幂等。
+  void Shutdown();
+  // 消息循环结束后逐级销毁, JS 环境最先(见文件头)。同步, 幂等。
+  void TearDown();
 
   // WindowManager::Observer
   void OnAllWindowsClosed() override;
@@ -155,11 +152,8 @@ class Application final : public Object, private WindowManager::Observer, privat
   int exit_code_ = 0;
   bool app_visible_ = true;
   bool active_ = false;
-  bool quitting_ = false;
-  uint64_t ask_serial_ = 0;
-  bool ask_pending_ = false;
-  std::filesystem::path watched_bundle_;
-  std::filesystem::file_time_type watched_bundle_mtime_;
+  bool quitting_ = false;   // Quit 流程进行中(在等 JS 的答复)
+  bool torn_down_ = false;
 
   // 成员声明顺序即逆序析构顺序: platform_ 最后析构(platform_loop_ 的 pump 引用其 native loop;
   // pump 析构不再触碰它, 且循环结束后不再投递)。
@@ -170,7 +164,7 @@ class Application final : public Object, private WindowManager::Observer, privat
   // 全部窗口。先于 shell_ 声明: 后于 Shell 析构(raster 停用 surface 之后才销毁窗口)。
   std::unique_ptr<WindowManager> window_manager_;
   std::unique_ptr<engine::Shell> shell_;
-  // 宿主通道: Shell 创建后、JS 运行时启动前注册, Shell 关闭前移除(先于 shell_ 析构)。
+  // 宿主通道: Shell 创建后、JS 运行时启动前注册;JS 运行时销毁(Shell 关闭)之后移除。
   std::unique_ptr<AppChannel> app_channel_;
   std::unique_ptr<WindowChannel> window_channel_;
   std::unique_ptr<PlatformChannels> platform_channels_;

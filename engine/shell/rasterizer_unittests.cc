@@ -117,10 +117,10 @@ TEST(RasterizerTest, SoftwareSurfaceUsesSoftwareBackend) {
   FakeSurface surface;
   Rasterizer rasterizer;
   rasterizer.Setup(&surface);
-  EXPECT_TRUE(rasterizer.has_backend());
-  EXPECT_EQ(rasterizer.backend_kind(), platform::SurfaceKind::kSoftware);
+  ASSERT_NE(rasterizer.backend(), nullptr);
+  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kSoftware);
   rasterizer.Teardown();
-  EXPECT_FALSE(rasterizer.has_backend());  // 后端(及其 GPU 资源)随 Teardown 释放
+  EXPECT_EQ(rasterizer.backend(), nullptr);  // 视图放手;最后一个使用者放手时后端(及其 GPU 资源)释放
 }
 
 TEST(RasterizerTest, GpuBackendFailureFallsBackToSoftware) {
@@ -132,7 +132,7 @@ TEST(RasterizerTest, GpuBackendFailureFallsBackToSoftware) {
 
   EXPECT_EQ(surface.fallback_calls, 1);
   EXPECT_EQ(surface.kind(), platform::SurfaceKind::kSoftware);
-  EXPECT_EQ(rasterizer.backend_kind(), platform::SurfaceKind::kSoftware);
+  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kSoftware);
 
   Enqueue(*pipeline, 12);
   rasterizer.Draw(*pipeline);
@@ -150,7 +150,7 @@ TEST(RasterizerTest, GpuBackendFailureWithoutFallbackDropsFrames) {
   rasterizer.Setup(&surface);
 
   EXPECT_EQ(surface.fallback_calls, 1);
-  EXPECT_FALSE(rasterizer.has_backend());
+  EXPECT_EQ(rasterizer.backend(), nullptr);
   Enqueue(*pipeline, 10);
   rasterizer.Draw(*pipeline);
   EXPECT_EQ(rasterizer.stats().frames_failed, 1u);
@@ -173,20 +173,41 @@ class FakeSwitchingSurface final : public platform::RenderSurface {
   bool switched = false;
 };
 
-TEST(RasterizerTest, RecreatesBackendWhenSurfaceChangesKind) {
+TEST(RasterizerTest, SwitchesBackendWhenSurfaceChangesKind) {
   momo::testing::ScopedTestEventLoop loop;
   auto pipeline = LayerTreePipeline::Create(2);
   FakeSwitchingSurface surface;
   Rasterizer rasterizer;
   rasterizer.Setup(&surface);
-  EXPECT_EQ(rasterizer.backend_kind(), platform::SurfaceKind::kNone);
+  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kNone);
 
   surface.switched = true;  // 设备丢失: surface 自己改为软件呈现
   Enqueue(*pipeline, 14);
   rasterizer.Draw(*pipeline);
-  EXPECT_EQ(rasterizer.backend_kind(), platform::SurfaceKind::kSoftware);
+  EXPECT_EQ(rasterizer.backend()->kind(), platform::SurfaceKind::kSoftware);
   EXPECT_EQ(rasterizer.stats().frames_presented, 1u);
   EXPECT_EQ(surface.software.last_width.load(), 14);  // 新的软件后端画进了 surface 的软件帧
+}
+
+// 后端按设备共享: 报告同一设备的视图共用一个后端(一份 GPU 上下文), 不同设备各用各的。
+TEST(RasterizerTest, ViewsOnTheSameDeviceShareOneBackend) {
+  momo::testing::ScopedTestEventLoop loop;
+  FakeSurface a, b;                // 软件 surface 没有设备: 同一个软件后端
+  FakeSwitchingSurface none;       // 另一种 surface: 另一个后端
+  Rasterizer rasterizer;
+  rasterizer.Setup(1, &a);
+  rasterizer.Setup(2, &b);
+  rasterizer.Setup(3, &none);
+  ASSERT_NE(rasterizer.backend(1), nullptr);
+  EXPECT_EQ(rasterizer.backend(1), rasterizer.backend(2));
+  EXPECT_NE(rasterizer.backend(1), rasterizer.backend(3));
+
+  // 一个视图解绑不影响仍在使用同一后端的视图。
+  auto pipeline = LayerTreePipeline::Create(2);
+  rasterizer.Teardown(1);
+  Enqueue(*pipeline, 10, 2);
+  rasterizer.Draw(*pipeline);
+  EXPECT_EQ(b.presented.load(), 1);
 }
 
 // ---- 平台视图合成路径(docs/05 §9)----

@@ -18,7 +18,6 @@
 #include "base/logging.h"
 #include "engine/runtime/js_args.h"
 #include "engine/runtime/js_runtime.h"
-#include "engine/runtime/js_runtime_impl.h"
 #include "engine/runtime/js_tags.h"
 #include "engine/ui/ui_bindings.h"
 #include "engine/ui/ui_classes.h"
@@ -29,7 +28,7 @@ namespace momo::engine::ui {
 using runtime::Args;
 using runtime::ArgNumber;
 using runtime::ArgWrapped;
-using runtime::JsRuntimeImpl;
+using runtime::JsRuntime;
 using runtime::ToUtf8;
 using runtime::V8String;
 
@@ -91,14 +90,13 @@ const char* KeyTypeName(platform::KeyEventType type) {
 // ---------------------------------------------------------------------------
 // UiBindings::Impl
 
-UiBindings::Impl::Impl(JsRuntimeImpl* runtime, WindowClient* client, const AppHost& host,
-                       const Settings& settings, uint64_t runtime_generation)
+UiBindings::Impl::Impl(JsRuntime* runtime, WindowClient* client, const AppHost& host,
+                       const Settings& settings)
     : runtime(runtime),
       client(client),
       host(host),
       settings(settings),
       assets(settings.assets_dir),
-      next_request_((runtime_generation << 48) | 1),
       weak_this_(this) {
   runtime->isolate()->SetData(kIsolateSlotUi, this);
 }
@@ -247,7 +245,7 @@ void UiBindings::Impl::InstallExports(v8::Isolate* isolate, v8::Local<v8::Contex
     w->Set(context, V8String(isolate, handler), v8::Null(isolate)).Check();
   }
   window.Reset(isolate, w);
-  // 引擎里已存在的视图(宿主在运行时启动前绑定的: 启动窗口即视图 0;热重启后还有其他视图)。
+  // 引擎里已存在的视图(宿主在运行时启动前绑定的, 如启动窗口即视图 0)。
   for (ViewId id : client->views()) {
     AddViewObject(isolate, context, id);
   }
@@ -324,11 +322,10 @@ v8::MaybeLocal<v8::Value> UiBindings::Impl::CallViewHandler(ViewId id, const cha
 // UiBindings
 
 std::unique_ptr<UiBindings> UiBindings::Install(runtime::JsRuntime& js, WindowClient& client,
-                                                const AppHost& host, const Settings& settings,
-                                                uint64_t runtime_generation) {
-  auto impl = std::make_unique<Impl>(&js.impl(), &client, host, settings, runtime_generation);
+                                                const AppHost& host, const Settings& settings) {
+  auto impl = std::make_unique<Impl>(&js, &client, host, settings);
   Impl* raw = impl.get();
-  js.impl().RegisterNativeModule(
+  js.RegisterNativeModule(
       "momo:ui", [raw](v8::Isolate* isolate, v8::Local<v8::Context> context,
                        v8::Local<v8::Object> exports) {
         InstallPaintingClasses(isolate, context, exports);
@@ -341,7 +338,7 @@ std::unique_ptr<UiBindings> UiBindings::Install(runtime::JsRuntime& js, WindowCl
         raw->InstallExports(isolate, context, exports);
       });
   InstallExtensionModules(*raw);
-  js.impl().RegisterNativeModule(
+  js.RegisterNativeModule(
       "momo:services", [](v8::Isolate* isolate, v8::Local<v8::Context> context,
                           v8::Local<v8::Object> exports) {
         InstallServicesModule(isolate, context, exports);

@@ -337,26 +337,8 @@ class WebViewExtension final : public momo::ext::Extension {
                            });
   }
 
-  // JS 运行时销毁(热重启、关闭): 清掉属于它的状态。视图此时已由宿主全部 dispose。
-  void OnLifecycle(const MomoLifecycleInfo& info) override {
-    if (info.event != kMomoLifecycleRuntimeStopped) return;
-    @autoreleasepool {
-      NSUInteger sessions = 0;
-      for (NSString* key in stores_) sessions += [key hasPrefix:@"ephemeral:"] ? 1 : 0;
-      Log(kMomoLogInfo, [NSString stringWithFormat:@"JS runtime #%llu stopped: released %lu ephemeral "
-                                                   @"session(s), cancelled %lu protocol request(s)",
-                                                   info.runtime_generation, (unsigned long)sessions,
-                                                   (unsigned long)pending_.count]);
-      ResetRuntimeState();
-    }
-  }
-
+  // JS 运行时已销毁, 视图已由宿主全部 dispose: 释放剩下的状态。
   void OnDetach() override {
-    ResetRuntimeState();  // 宿主不提供生命周期事件(旧版本)时的兜底
-    host_ = nullptr;
-  }
-
-  void ResetRuntimeState() {
     // 视图: 宿主保证此前已全部 dispose;这里只做兜底。
     for (auto& [id, entry] : entries_) {
       [entry teardown];
@@ -367,11 +349,8 @@ class WebViewExtension final : public momo::ext::Extension {
       FailTask(pending_[request_id], NSURLErrorCancelled);
     }
     [pending_ removeAllObjects];
-    // 无痕会话属于创建它的 JS 运行时(下一个运行时会从头编号): 没来得及 dispose 的随运行时一起释放。
-    // 持久会话的数据在磁盘上, 留着复用。
-    for (NSString* key in stores_.allKeys) {
-      if ([key hasPrefix:@"ephemeral:"]) [stores_ removeObjectForKey:key];
-    }
+    [stores_ removeAllObjects];
+    host_ = nullptr;
   }
 
   void SendEvent(NSDictionary* event) {

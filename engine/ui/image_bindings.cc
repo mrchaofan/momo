@@ -1,6 +1,6 @@
 // momo:ui 图片: Image、Codec、decodeImage、instantiateCodec、imageFromPixels、loadAsset(M3)。
 // 解码与资源读取在 io 线程进行(docs/08 §1), 结果经 Promise 回到 ui 线程;运行时在此期间被销毁
-// (hot restart/关闭)时结果被丢弃。
+// (引擎关闭)时结果被丢弃。
 
 #include <cstring>
 #include <utility>

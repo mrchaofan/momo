@@ -17,7 +17,7 @@
 //
 // 与 Electron 的差异: Electron 给 libuv 打了 uv_loop_interrupt 补丁——ui 线程上的 JS 新增定时器/IO 时
 // 打断 poll 线程, 使其按新的超时重新等待。momo 使用上游 libuv, 改为在每次从 momo 进入 JS 之后
-// (JsRuntimeImpl::DrainMicrotasks)调用 WakeupEmbedThread(), 效果相同(uv_async_send 自带合并)。
+// (JsRuntime::DrainMicrotasks)调用 WakeupEmbedThread(), 效果相同(uv_async_send 自带合并)。
 //
 // 线程约定: 除 WakeupEmbedThread 外只在 ui 线程调用;析构须在 ui 线程, 且早于 uv 循环关闭。
 

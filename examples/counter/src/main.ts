@@ -1,5 +1,5 @@
 // examples/counter — View 版计数器(docs/11 M4 验收):文字 + 按钮 + 点击计数。
-// 构建: node tools/momo-cli/momo.mjs bundle examples/counter  (→ examples/counter/dist/bundle.js)
+// 构建: node framework/packages/cli/momo.mjs bundle examples/counter  (→ examples/counter/dist/bundle.js)
 import {
   AppBar, Center, Column, EdgeInsets, ElevatedButton, FloatingActionButton, Intent, CallbackAction, LogicalKeyboardKey,
   MaterialApp, Padding, Row, Scaffold, SingleActivator, SizedBox, State, StatefulView, Shortcuts, Actions, Text, TextButton,

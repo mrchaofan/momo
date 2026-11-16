@@ -23,8 +23,8 @@
 //    MOMO_SOFTWARE_RENDERING=1 时直接用 GDI 软件 surface(WinSoftwareSurface)。拖拽缩放时在 WM_SIZE 里等一帧
 //    新尺寸的内容(SynchronizeLiveResize, 同 macOS)。
 //  - 不支持(对 JS 回复 unimplemented): 平台视图、非激活窗口(non_activating 按普通窗口处理)。
-// 重入: 拖拽缩放时的等帧(执行平台线程任务)与系统拖动(系统模态循环)期间可能执行任意任务, 包括有序关闭
-// (Application::Terminate 同步销毁全部窗口)。这两处在重入返回后先检查 alive_, 窗口已销毁就不再访问本对象。
+// 重入: 拖拽缩放时的等帧(执行平台线程任务)与系统拖动(系统模态循环)期间可能执行任意任务, 包括退出
+// (Application::Exit 同步关闭全部窗口)。这两处在重入返回后先检查 alive_, 窗口已销毁就不再访问本对象。
 // 线程约定: platform(主)线程;surface() 由 raster 线程使用(render_surface.h)。
 
 #include <memory>
@@ -32,8 +32,10 @@
 
 #include "base/status.h"
 #include "embedder/common/engine_platform.h"
+#include "embedder/common/fallback_surface.h"
 #include "embedder/common/platform_window.h"
 #include "embedder/common/pointer_dispatcher.h"
+#include "embedder/common/present_queue.h"
 #include "embedder/windows/win_frame.h"
 #include "embedder/windows/win_mouse_events.h"
 #include "embedder/windows/win_util.h"
@@ -42,7 +44,7 @@ namespace momo::embedder::windows {
 
 class WinApp;
 class WinCaptionButtons;
-class WinD3DSurface;
+class WinD3DDevice;
 class WinDisplays;
 class WinSoftwareSurface;
 class WinTextInput;
@@ -54,6 +56,8 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
     WinMouseInput& mouse;
     WinDisplays& displays;
     WinApp& app;
+    // 应用级的 Direct3D 设备(全部窗口共用);为空则窗口用软件 surface。
+    std::shared_ptr<const WinD3DDevice> d3d_device;
   };
 
   static StatusOr<std::unique_ptr<WinWindow>> Create(const WindowOptions& options, WindowDelegate* delegate,
@@ -110,8 +114,8 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam);
   LRESULT HandleMessage(UINT message, WPARAM wparam, LPARAM lparam);
 
-  Status Initialize(const WindowOptions& options);
-  void CreateSurface(uint32_t background_argb);
+  Status Initialize(const WindowOptions& options, std::shared_ptr<const WinD3DDevice> d3d_device);
+  void CreateSurface(uint32_t background_argb, std::shared_ptr<const WinD3DDevice> d3d_device);
   // 下面四个"可能变了"的通知都把当前值原样报给 delegate(可以重复;创建过程中不上报): 去重在 WindowController。
   void NotifyMetricsChanged();
   void NotifyFrameChanged();
@@ -168,9 +172,12 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   // (不是去重缓存)。
   std::optional<Rect> restored_controls_;
 
+  // raster 线程产出的帧与本线程的同步点(呈现、拖拽缩放同步);surface 共享它。
+  std::shared_ptr<PresentQueue> presents_;
+  // D3D + 软件回退(FallbackSurface), 或没有 D3D 设备时单独的软件 surface。
   std::unique_ptr<platform::RenderSurface> surface_;
-  WinD3DSurface* d3d_surface_ = nullptr;      // 指向 surface_(若为 D3D)
-  WinSoftwareSurface* software_surface_ = nullptr;  // 当前的软件呈现端(独立的或 D3D 内部回退用的)
+  FallbackSurface* fallback_surface_ = nullptr;     // surface_(若为 D3D + 软件;非拥有)
+  WinSoftwareSurface* software_surface_ = nullptr;  // surface_ 里的软件 surface(非拥有;WM_PAINT 用)
   std::unique_ptr<WinTextInput> text_input_;
   std::unique_ptr<WinCaptionButtons> caption_buttons_;
   WinFrameHit caption_hover_ = WinFrameHit::kClient;

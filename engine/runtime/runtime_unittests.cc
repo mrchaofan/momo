@@ -9,7 +9,6 @@
 #include "base/testing/scoped_test_event_loop.h"
 #include "engine/runtime/js_args.h"
 #include "engine/runtime/js_runtime.h"
-#include "engine/runtime/js_runtime_impl.h"
 #include "gtest/gtest.h"
 
 namespace momo::engine::runtime {
@@ -73,7 +72,7 @@ TEST_F(JsRuntimeTest, ExceptionsBecomeStatusWithStack) {
 }
 
 TEST_F(JsRuntimeTest, ModuleImportsNativeModule) {
-  runtime_->impl().RegisterNativeModule(
+  runtime_->RegisterNativeModule(
       "momo:test", [](v8::Isolate* isolate, v8::Local<v8::Context> context,
                       v8::Local<v8::Object> exports) {
         exports->Set(context, V8String(isolate, "answer"), v8::Number::New(isolate, 42)).Check();
@@ -147,7 +146,7 @@ TEST_F(JsRuntimeTest, ForegroundTasksRunOnTheUiThreadThroughUv) {
        "  Promise.resolve().then(() => cleaned.push('micro'));\n"
        "});\n"
        "(() => { registry.register({}, 'held'); })();");
-  runtime_->impl().isolate()->LowMemoryNotification();  // 完整 GC: 回收对象并投递清理任务
+  runtime_->isolate()->LowMemoryNotification();  // 完整 GC: 回收对象并投递清理任务
   EXPECT_EQ(Eval("cleaned.join(',')"), "") << "cleanup must not run synchronously inside GC";
   EXPECT_TRUE(RunUntil([&] { return Eval("cleaned.join(',')") == "held,micro"; }))
       << Eval("cleaned.join(',')");
@@ -207,16 +206,15 @@ TEST_F(JsRuntimeTest, CallsDrainNextTicksAndMicrotasksBeforeReturning) {
        "  process.nextTick(() => order.push('tick'));\n"
        "  order.push('call');\n"
        "}; 0");
-  JsRuntimeImpl& impl = runtime_->impl();
-  v8::HandleScope handle_scope(impl.isolate());
-  v8::Local<v8::Context> context = impl.context();
+  v8::HandleScope handle_scope(runtime_->isolate());
+  v8::Local<v8::Context> context = runtime_->context();
   v8::Context::Scope context_scope(context);
   v8::Local<v8::Value> f =
-      context->Global()->Get(context, v8::String::NewFromUtf8Literal(impl.isolate(), "f")).ToLocalChecked();
-  ASSERT_TRUE(impl.Call(f.As<v8::Function>(), v8::Undefined(impl.isolate()), 0, nullptr, "f").ok());
+      context->Global()->Get(context, v8::String::NewFromUtf8Literal(runtime_->isolate(), "f")).ToLocalChecked();
+  ASSERT_TRUE(runtime_->Call(f.As<v8::Function>(), v8::Undefined(runtime_->isolate()), 0, nullptr, "f").ok());
   v8::Local<v8::Value> order =
-      context->Global()->Get(context, v8::String::NewFromUtf8Literal(impl.isolate(), "order")).ToLocalChecked();
-  v8::String::Utf8Value text(impl.isolate(), order);
+      context->Global()->Get(context, v8::String::NewFromUtf8Literal(runtime_->isolate(), "order")).ToLocalChecked();
+  v8::String::Utf8Value text(runtime_->isolate(), order);
   EXPECT_STREQ(*text, "call,tick,promise");
 }
 
@@ -328,7 +326,7 @@ TEST(JsRuntimeCodeCacheTest, CompileCacheIsWritten) {
   std::filesystem::remove_all(dir);
 }
 
-// 反复创建/销毁运行时(hot restart): 每次都是全新的 Node 环境, poll 线程与 uv 循环干净退出。
+// 反复创建/销毁运行时(测试进程里常见): 每次都是全新的 Node 环境, poll 线程与 uv 循环干净退出。
 TEST(JsRuntimeLifecycleTest, RepeatedCreateAndDestroy) {
   momo::testing::ScopedTestEventLoop loop;
   for (int i = 0; i < 3; ++i) {

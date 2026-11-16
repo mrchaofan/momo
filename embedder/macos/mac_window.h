@@ -20,6 +20,7 @@
 #include "embedder/common/engine_platform.h"
 #include "embedder/common/platform_window.h"
 #include "embedder/common/pointer_dispatcher.h"
+#include "embedder/common/present_queue.h"
 
 @class NSEvent;
 @class NSHashTable<ObjectType>;
@@ -36,13 +37,16 @@ typedef void (^MomoSuperSendEvent)(NSEvent* event);
 namespace momo::embedder::macos {
 
 class MacMetalSurface;
+struct MacMetalDevice;
 class MacMouseInput;
 class MacTextInput;
 
 class MacWindow final : public PlatformWindow, public PointerWindow {
  public:
   // mouse 必须比窗口活得久(MacPlatformIntegration 持有)。
-  MacWindow(const WindowOptions& options, WindowDelegate* delegate, MacMouseInput& mouse);
+  // metal_device: 应用级的 Metal 设备(全部窗口共用);为空则用软件 surface。
+  MacWindow(const WindowOptions& options, WindowDelegate* delegate, MacMouseInput& mouse,
+            std::shared_ptr<const MacMetalDevice> metal_device);
   ~MacWindow() override;
 
   // PlatformWindow
@@ -95,7 +99,7 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   // ---- 供内容视图与窗口观察者调用 ----
   WindowDelegate* delegate() const { return delegate_; }
   MacTextInput& mac_text_input() { return *text_input_; }
-  MacMetalSurface* metal_surface() const { return metal_surface_; }  // 软件 surface 时为空
+  MacMetalSurface* metal_surface() const { return metal_surface_; }  // 没有 Metal 设备时为空
   MomoPlatformViews* platform_views() const { return platform_views_; }
   // 指针此刻归本窗口的谁(PointerDispatcher::PointerOwner)。
   std::optional<int64_t> PointerOwner() const;
@@ -109,8 +113,7 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   // 隐藏标题栏时把红绿灯垂直居中到应用标题栏高度内(尺寸变化、退出全屏后重新布局)。
   void LayoutTrafficLights();
   // 拖拽缩放中视图尺寸刚变化(platform 线程): 通知引擎新尺寸, 并等待一帧该尺寸的内容与新窗口尺寸同一事务提交
-  // (同 Flutter FlutterResizeSynchronizer)。等待有上限(kLiveResizeFrameWait), 超时则暂时拉伸旧内容。
-  // 这是宿主的实现细节, 不对应用暴露。
+  // (PresentQueue::WaitForFrame)。这是宿主的实现细节, 不对应用暴露。
   void SynchronizeLiveResize();
 
  private:
@@ -134,8 +137,11 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   bool system_tracking_ = false;  // 当前按下序列交给了 AppKit(红绿灯等窗口控件), 直到抬起
   int64_t routed_platform_view_ = 0;  // 正在经 AppKit 投递给的平台视图(0 = 无;kNoPlatformView = 不许落到平台视图)
   TitleBarOptions title_bar_;
+  // raster 线程产出的帧与本线程的同步点(呈现、拖拽缩放同步);surface 共享它。
+  std::shared_ptr<PresentQueue> presents_;
+  // Metal + 软件回退(FallbackSurface), 或没有 Metal 设备时单独的软件 surface。
   std::unique_ptr<platform::RenderSurface> surface_;
-  MacMetalSurface* metal_surface_ = nullptr;  // 指向 surface_(若为 Metal)
+  MacMetalSurface* metal_surface_ = nullptr;  // surface_ 里的 Metal surface(非拥有)
   std::unique_ptr<MacTextInput> text_input_;
   bool resize_waiting_ = false;
   // 缩放行为(momo/window setResizable / setResizeBorder;resizable 由 WindowOptions 初始化)。

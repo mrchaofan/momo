@@ -68,7 +68,6 @@ if(MOMO_HAVE_V8)
   add_library(momo_engine_runtime STATIC
     runtime/js_args.cc
     runtime/js_runtime.cc
-    runtime/js_runtime_impl.cc
     runtime/node_bindings.cc
     $<IF:$<BOOL:${WIN32}>,runtime/node_bindings_win.cc,runtime/node_bindings_posix.cc>
     runtime/node_bootstrap.cc

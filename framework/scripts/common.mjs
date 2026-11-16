@@ -1,6 +1,9 @@
-// 共享 esbuild 配置:momo:* 保持为外部 ESM 导入, @momo/framework 解析到源码。
+// 框架测试打包用的 esbuild 配置。打包方式本身(基础选项、momo:* 外部导入)与 `momo bundle` 是同一份
+// (packages/cli/bundle_options.mjs);这里只加测试需要的: @momo/framework 解析到源码、momo:* 的 mock。
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+
+export { baseOptions, momoExternal } from "../packages/cli/bundle_options.mjs";
 
 export const frameworkRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const srcRoot = path.join(frameworkRoot, "packages/momo/src");
@@ -16,14 +19,6 @@ export const momoFrameworkAlias = {
   },
 };
 
-/** 引擎原生模块:保留为 `import ... from "momo:ui"`。 */
-export const momoExternal = {
-  name: "momo-external",
-  setup(build) {
-    build.onResolve({ filter: /^(momo|ext):/ }, (args) => ({ path: args.path, external: true }));
-  },
-};
-
 /** 测试用:momo:ui / momo:services → test/mock。 */
 export const momoMock = {
   name: "momo-mock",
@@ -32,15 +27,4 @@ export const momoMock = {
       path: path.join(frameworkRoot, "test/mock", args.path === "momo:ui" ? "momo_ui.ts" : "momo_services.ts"),
     }));
   },
-};
-
-export const baseOptions = {
-  bundle: true,
-  format: "esm",
-  platform: "neutral",
-  target: "es2022",
-  sourcemap: "inline",
-  logLevel: "warning",
-  legalComments: "none",
-  mainFields: ["module", "main"],
 };
