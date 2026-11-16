@@ -306,8 +306,10 @@ v8::MaybeLocal<v8::Value> UiBindings::Impl::CallViewHandler(ViewId id, const cha
 // ---------------------------------------------------------------------------
 // UiBindings
 
-std::unique_ptr<UiBindings> UiBindings::Install(runtime::JsRuntime& js, WindowClient& client,
-                                                const AppHost& host, const Settings& settings) {
+std::unique_ptr<UiBindings> UiBindings::Install(std::unique_ptr<runtime::JsRuntime> runtime,
+                                                WindowClient& client, const AppHost& host,
+                                                const Settings& settings) {
+  runtime::JsRuntime& js = *runtime;
   auto impl = std::make_unique<Impl>(&js, &client, host, settings);
   Impl* raw = impl.get();
   js.RegisterNativeModule(
@@ -327,10 +329,11 @@ std::unique_ptr<UiBindings> UiBindings::Install(runtime::JsRuntime& js, WindowCl
                           v8::Local<v8::Object> exports) {
         InstallServicesModule(isolate, context, exports);
       });
-  return std::unique_ptr<UiBindings>(new UiBindings(std::move(impl)));
+  return std::unique_ptr<UiBindings>(new UiBindings(std::move(runtime), std::move(impl)));
 }
 
-UiBindings::UiBindings(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+UiBindings::UiBindings(std::unique_ptr<runtime::JsRuntime> runtime, std::unique_ptr<Impl> impl)
+    : runtime_(std::move(runtime)), impl_(std::move(impl)) {}
 
 UiBindings::~UiBindings() = default;
 
@@ -338,51 +341,51 @@ bool UiBindings::is_imported() const { return !impl_->window.IsEmpty(); }
 
 size_t UiBindings::detached_view_count_for_testing() const { return impl_->detached_view_count(); }
 
+namespace {
+
+// 事件入口的作用域: 之后可以创建句柄并调用 JS。回调经 JsRuntime::Call 调用, 收尾(排空 microtask、唤醒 uv
+// poll 线程)由它负责。
+struct Entered {
+  explicit Entered(runtime::JsRuntime& runtime)
+      : isolate(runtime.isolate()), handles(isolate), context(runtime.context()), scope(context) {}
+  v8::Isolate* const isolate;
+  v8::HandleScope handles;
+  v8::Local<v8::Context> context;
+  v8::Context::Scope scope;
+};
+
+}  // namespace
+
+// 应用没有导入 momo:ui 时, 以下入口都是空操作(没有可调用的回调, 也就不出帧)。
+
 void UiBindings::BeginFrame(TimePoint frame_time) {
   if (!is_imported()) {
     return;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Context::Scope context_scope(impl_->runtime->context());
+  Entered js(*runtime_);
+  v8::Local<v8::Object> dispatcher = impl_->window.Get(js.isolate);
   const double ms =
       std::chrono::duration<double, std::milli>(frame_time.time_since_epoch()).count();
-  v8::Local<v8::Value> argv[] = {v8::Number::New(isolate, ms)};
-  impl_->CallHandler(impl_->window.Get(isolate), "onBeginFrame", 1, argv);
-  impl_->runtime->DrainMicrotasks();
+  v8::Local<v8::Value> argv[] = {v8::Number::New(js.isolate, ms)};
+  impl_->CallHandler(dispatcher, "onBeginFrame", 1, argv);
+  impl_->CallHandler(dispatcher, "onDrawFrame", 0, nullptr);
 }
 
-void UiBindings::DrawFrame() {
+void UiBindings::OnMetricsChanged(ViewId view) {
   if (!is_imported()) {
     return;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Context::Scope context_scope(impl_->runtime->context());
-  impl_->CallHandler(impl_->window.Get(isolate), "onDrawFrame", 0, nullptr);
-  impl_->runtime->DrainMicrotasks();
-}
-
-void UiBindings::MetricsChanged(ViewId view) {
-  if (!is_imported()) {
-    return;
-  }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
-  impl_->SyncMetrics(isolate, context, view);
+  Entered js(*runtime_);
+  impl_->SyncMetrics(js.isolate, js.context, view);
   impl_->CallViewHandler(view, "onMetricsChanged", 0, nullptr);
-  impl_->runtime->DrainMicrotasks();
 }
 
-void UiBindings::PointerPacket(ViewId view, const platform::PointerDataPacket& packet) {
+void UiBindings::OnPointerPacket(ViewId view, const platform::PointerDataPacket& packet) {
   if (!is_imported() || packet.empty()) {
     return;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Context::Scope context_scope(impl_->runtime->context());
+  Entered js(*runtime_);
+  v8::Isolate* isolate = js.isolate;
   const size_t needed = packet.size() * kPointerStride;
   // 复用缓冲(docs/04 §6: 事件对象使用预分配的 TypedArray 视图), 容量不足时按 2 倍增长。
   if (impl_->pointer_buffer.IsEmpty() || impl_->pointer_capacity < needed) {
@@ -416,17 +419,15 @@ void UiBindings::PointerPacket(ViewId view, const platform::PointerDataPacket& p
   }
   v8::Local<v8::Value> argv[] = {data, v8::Integer::New(isolate, static_cast<int>(packet.size()))};
   impl_->CallViewHandler(view, "onPointerPacket", 2, argv);
-  impl_->runtime->DrainMicrotasks();
 }
 
-bool UiBindings::KeyData(ViewId view, const platform::KeyData& data) {
+bool UiBindings::OnKeyData(ViewId view, const platform::KeyData& data) {
   if (!is_imported()) {
     return false;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
+  Entered js(*runtime_);
+  v8::Isolate* isolate = js.isolate;
+  v8::Local<v8::Context> context = js.context;
   v8::Local<v8::Object> o = v8::Object::New(isolate);
   auto set = [&](const char* k, v8::Local<v8::Value> v) {
     o->Set(context, V8String(isolate, k), v).Check();
@@ -439,54 +440,43 @@ bool UiBindings::KeyData(ViewId view, const platform::KeyData& data) {
   set("modifiers", v8::Number::New(isolate, data.modifiers));
   v8::Local<v8::Value> argv[] = {o};
   v8::Local<v8::Value> result;
-  const bool handled =
-      impl_->CallViewHandler(view, "onKeyData", 1, argv).ToLocal(&result) && result->IsTrue();
-  impl_->runtime->DrainMicrotasks();
-  return handled;
+  return impl_->CallViewHandler(view, "onKeyData", 1, argv).ToLocal(&result) && result->IsTrue();
 }
 
-void UiBindings::VisibilityChanged(ViewId view, bool visible) {
+void UiBindings::OnVisibilityChanged(ViewId view, bool visible) {
   if (!is_imported()) {
     return;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
-  impl_->SyncVisible(isolate, context, view);
-  v8::Local<v8::Value> argv[] = {v8::Boolean::New(isolate, visible)};
+  Entered js(*runtime_);
+  impl_->SyncVisible(js.isolate, js.context, view);
+  v8::Local<v8::Value> argv[] = {v8::Boolean::New(js.isolate, visible)};
   impl_->CallViewHandler(view, "onVisibilityChanged", 1, argv);
-  impl_->runtime->DrainMicrotasks();
 }
 
-void UiBindings::ViewAdded(ViewId view) {
+void UiBindings::OnViewAdded(ViewId view) {
   if (!is_imported()) {
     return;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
+  Entered js(*runtime_);
+  v8::Isolate* isolate = js.isolate;
+  v8::Local<v8::Context> context = js.context;
   impl_->AddViewObject(isolate, context, view);
   impl_->CallHandler(impl_->window.Get(isolate), "onViewportsChanged", 0, nullptr);
-  impl_->runtime->DrainMicrotasks();
 }
 
-void UiBindings::ViewRemoved(ViewId view) {
+void UiBindings::OnViewRemoved(ViewId view) {
   ViewBinding* binding = impl_->FindView(view);
   if (!is_imported() || binding == nullptr || binding->removed) {
     return;
   }
-  v8::Isolate* isolate = impl_->runtime->isolate();
-  v8::HandleScope scope(isolate);
-  v8::Local<v8::Context> context = impl_->runtime->context();
-  v8::Context::Scope context_scope(context);
+  Entered js(*runtime_);
+  v8::Isolate* isolate = js.isolate;
+  v8::Local<v8::Context> context = js.context;
   // JS 可能仍持有对象或其方法: 之后的 render/title 等调用为空操作;引擎只弱持有, 不可达时回收。
   impl_->views_map.Get(isolate)->Delete(context, v8::Number::New(isolate, static_cast<double>(view)))
       .Check();
   impl_->DetachView(isolate, context, view);
   impl_->CallHandler(impl_->window.Get(isolate), "onViewportsChanged", 0, nullptr);
-  impl_->runtime->DrainMicrotasks();
 }
 
 }  // namespace momo::engine::ui

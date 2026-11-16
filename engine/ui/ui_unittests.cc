@@ -40,17 +40,17 @@ class UiBindingsTest : public ::testing::Test {
   void SetUp() override {
     auto runtime = runtime::JsRuntime::Create({});
     ASSERT_TRUE(runtime.ok()) << runtime.status();
-    runtime_ = std::move(runtime).value();
+    runtime_ = runtime->get();
     host_.io_runner = loop_.task_runner();  // 测试中 io 与 ui 同线程, 由 RunUntilIdle 驱动
     host_.hub = hub_;
     host_.textures = textures_;
     Settings settings;
     settings.assets_dir = std::string(MOMO_SOURCE_DIR) + "/engine/graphics/testdata";
-    bindings_ = UiBindings::Install(*runtime_, client_, host_, settings);
+    bindings_ = UiBindings::Install(std::move(runtime).value(), client_, host_, settings);
   }
   void TearDown() override {
+    runtime_ = nullptr;
     bindings_.reset();
-    runtime_.reset();
   }
 
   Status Run(const std::string& source) { return runtime_->RunModuleSource(source, "app.js"); }
@@ -70,7 +70,7 @@ class UiBindingsTest : public ::testing::Test {
       std::make_shared<graphics::TextureRegistry>();
   AppHost host_;
   FakeWindowClient client_;
-  std::unique_ptr<runtime::JsRuntime> runtime_;
+  runtime::JsRuntime* runtime_ = nullptr;  // 归 bindings_ 所有
   std::unique_ptr<UiBindings> bindings_;
 };
 
@@ -78,7 +78,6 @@ TEST_F(UiBindingsTest, NotImportedMeansNoCallbacks) {
   ASSERT_TRUE(Run("globalThis.x = 1;").ok());
   EXPECT_FALSE(bindings_->is_imported());
   bindings_->BeginFrame(Clock::now());
-  bindings_->DrawFrame();
   EXPECT_TRUE(client_.rendered.empty());
 }
 
@@ -104,7 +103,6 @@ TEST_F(UiBindingsTest, FrameCallbacksRenderScene) {
   EXPECT_EQ(client_.scheduled, 1);
 
   bindings_->BeginFrame(Clock::now());
-  bindings_->DrawFrame();
   EXPECT_EQ(Eval("calls.join(',')"), "number,draw");
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::LayerTree& tree = *client_.rendered[0];
@@ -134,7 +132,7 @@ TEST_F(UiBindingsTest, PathEditsAfterDrawDoNotAffectRecording) {
       viewports.get(0).render(builder.build());
     };
   )JS").ok());
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::OwnedPixelBuffer pixels(100, 100);
   ASSERT_TRUE(graphics::RasterizeLayerTree(*client_.rendered[0], pixels.view(), 0xFFFFFFFF).ok());
@@ -189,7 +187,7 @@ TEST_F(UiBindingsTest, JsAcceptanceSceneMatchesGolden) {
       viewports.get(0).render(builder.build());
     };
   )JS").ok());
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::OwnedPixelBuffer pixels(400, 270);
   ASSERT_TRUE(graphics::RasterizeLayerTree(*client_.rendered[0], pixels.view()).ok());
@@ -247,7 +245,7 @@ TEST_F(UiBindingsTest, MetricsReachTheView) {
       << "window management is not part of momo:ui";
 
   client_.current = {{800, 600}, 2.0};
-  bindings_->MetricsChanged(platform::kImplicitViewId);
+  bindings_->OnMetricsChanged(platform::kImplicitViewId);
   EXPECT_EQ(Eval("metricsCalls"), "1");
   EXPECT_EQ(Eval("view.physicalSize.width + '@' + view.devicePixelRatio"), "800@2");
 }
@@ -288,7 +286,7 @@ TEST_F(UiBindingsTest, PointerPacketsCarrySequenceIdsAndGestures) {
   packet[0].gesture_kind = platform::PointerGestureKind::kPressure;
   packet[0].gesture_value = 0.5;
   packet[0].gesture_stage = 2;
-  bindings_->PointerPacket(platform::kImplicitViewId, packet);
+  bindings_->OnPointerPacket(platform::kImplicitViewId, packet);
   EXPECT_EQ(Eval("log.join(' ')"), "17:9007199254740991:2:6:0.5:2");
 }
 
@@ -315,15 +313,15 @@ TEST_F(UiBindingsTest, PointerAndKeyEventsReachJs) {
   packet[1].phase = platform::PointerPhase::kUp;
   packet[1].physical_x = 11;
   packet[1].physical_y = 21;
-  bindings_->PointerPacket(platform::kImplicitViewId, packet);
+  bindings_->OnPointerPacket(platform::kImplicitViewId, packet);
 
   platform::KeyData key;
   key.physical_key = 0x00070004;
   key.character = "a";
   key.modifiers = platform::kModifierShift;
-  EXPECT_TRUE(bindings_->KeyData(platform::kImplicitViewId, key));
+  EXPECT_TRUE(bindings_->OnKeyData(platform::kImplicitViewId, key));
   key.character = "b";
-  EXPECT_FALSE(bindings_->KeyData(platform::kImplicitViewId, key));
+  EXPECT_FALSE(bindings_->OnKeyData(platform::kImplicitViewId, key));
 
   EXPECT_EQ(Eval("log.join(' ')"), "p1@10,20b1 p3@11,21b0 k:down:70004:a:1 k:down:70004:b:1");
 }
@@ -403,7 +401,7 @@ TEST_F(UiBindingsTest, ParagraphLaysOutMixedScriptsAndDraws) {
   EXPECT_EQ(Eval("endPos"), Eval("'Hello 世界 Momo 😀'.length"));
   EXPECT_EQ(Eval("word"), "0-5");
   EXPECT_EQ(Eval("p.getLineMetrics()[0].endIndex > 10"), "true");
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::OwnedPixelBuffer pixels(400, 270);
   ASSERT_TRUE(graphics::RasterizeLayerTree(*client_.rendered[0], pixels.view()).ok());
@@ -455,7 +453,7 @@ TEST_F(UiBindingsTest, ImagesDecodeOnIoAndDraw) {
   EXPECT_NE(Eval("escape").find("escapes"), std::string::npos);
   EXPECT_EQ(Eval("bad"), "rejected");
   EXPECT_EQ(Eval("codecInfo"), "1:400");
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::OwnedPixelBuffer pixels(400, 270);
   ASSERT_TRUE(graphics::RasterizeLayerTree(*client_.rendered[0], pixels.view()).ok());
@@ -479,9 +477,9 @@ TEST_F(UiBindingsTest, AddPlatformViewMarksTheLayerTree) {
     };
   )JS").ok());
   Eval("platformDispatcher.onDrawFrame = () => draw(true)");
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   Eval("platformDispatcher.onDrawFrame = () => draw(false)");
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 2u);
   EXPECT_TRUE(client_.rendered[0]->has_platform_views());
   EXPECT_FALSE(client_.rendered[1]->has_platform_views()) << "builder flag resets after build()";
@@ -510,7 +508,7 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
   EXPECT_EQ(Eval("String(viewports.get(0) !== platformDispatcher && viewports.size === 1)"), "true");
 
   client_.view_ids = {0, 5};
-  bindings_->ViewAdded(5);
+  bindings_->OnViewAdded(5);
   Eval("globalThis.created = viewports.get(5)");
   EXPECT_EQ(Eval("String(created.id)"), "5");
   EXPECT_EQ(Eval("String(viewports.size)"), "2");
@@ -519,7 +517,7 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
 
   // 一帧里每个视图各提交一棵树, 带各自的 view id 与尺寸。
   Eval("platformDispatcher.onDrawFrame = () => draw()");
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 2u);
   EXPECT_EQ(client_.rendered[0]->view_id(), 0);
   EXPECT_EQ(client_.rendered[1]->view_id(), 5);
@@ -527,13 +525,13 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
 
   // 按视图的事件只到达该视图的处理器。
   Eval("globalThis.got = []; created.onVisibilityChanged = (v) => got.push('5:' + v); viewports.get(0).onVisibilityChanged = (v) => got.push('0:' + v)");
-  bindings_->VisibilityChanged(5, false);
+  bindings_->OnVisibilityChanged(5, false);
   EXPECT_EQ(Eval("got.join()"), "5:false");
 
   // 视图 0 与其他视图一样可以被移除。
   client_.view_ids = {};
-  bindings_->ViewRemoved(5);
-  bindings_->ViewRemoved(0);
+  bindings_->OnViewRemoved(5);
+  bindings_->OnViewRemoved(0);
   EXPECT_EQ(Eval("String(viewports.size)"), "0");
   EXPECT_EQ(Eval("String(changes)"), "3");
   // 已移除视图的 render 为空操作。
@@ -555,7 +553,7 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
   std::vector<ViewId> ids;
   for (ViewId id = 10; id < 15; ++id) {
     client_.view_ids.push_back(id);
-    bindings_->ViewAdded(id);
+    bindings_->OnViewAdded(id);
     ids.push_back(id);
   }
   EXPECT_EQ(Eval("String(viewports.size)"), "6");
@@ -563,7 +561,7 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
   Eval("globalThis.oldRender = viewports.get(10).render; globalThis.keep = viewports.get(11);"
        "keep.onVisibilityChanged = () => {}; 'ok'");
   client_.view_ids = {platform::kImplicitViewId};
-  for (ViewId id : ids) bindings_->ViewRemoved(id);
+  for (ViewId id : ids) bindings_->OnViewRemoved(id);
   EXPECT_EQ(Eval("String(viewports.size)"), "1");
   EXPECT_EQ(Eval("String(keep.onVisibilityChanged)"), "null") << "handlers are cleared on removal";
   isolate->LowMemoryNotification();
@@ -577,7 +575,7 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
     globalThis.keep.render(new SceneBuilder().build());
   )JS").ok());
   EXPECT_TRUE(client_.rendered.empty());
-  bindings_->VisibilityChanged(11, false);  // 已移除视图: 忽略
+  bindings_->OnVisibilityChanged(11, false);  // 已移除视图: 忽略
 
   Eval("globalThis.oldRender = null; globalThis.keep = null; 'ok'");
   isolate->LowMemoryNotification();
@@ -609,7 +607,7 @@ TEST_F(UiBindingsTest, TexturesAndNewLayersComposite) {
   )JS").ok());
   const std::string id = std::to_string(texture->id());
   Eval("platformDispatcher.onDrawFrame = () => draw(" + id + ")");
-  bindings_->DrawFrame();
+  bindings_->BeginFrame(Clock::now());
   ASSERT_EQ(client_.rendered.size(), 1u);
   graphics::OwnedPixelBuffer pixels(400, 270);
   ASSERT_TRUE(graphics::RasterizeLayerTree(*client_.rendered[0], pixels.view(), 0xFFFFFFFF).ok());

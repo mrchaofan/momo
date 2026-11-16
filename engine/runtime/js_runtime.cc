@@ -226,6 +226,15 @@ StatusOr<v8::Local<v8::Value>> JsRuntime::Call(v8::Local<v8::Function> fn,
                                                v8::Local<v8::Value> receiver, int argc,
                                                v8::Local<v8::Value> argv[], std::string_view what) {
   v8::EscapableHandleScope scope(isolate_);
+  // 最外层的调用返回后(nextTick 与 microtask 已排空): 刚执行的 JS 可能新增了定时器/IO, 让 poll 线程按新状态
+  // 重新等待。由这里统一负责, 调用方不需要做任何收尾。
+  struct Outermost {
+    JsRuntime& runtime;
+    explicit Outermost(JsRuntime& r) : runtime(r) { ++runtime.call_depth_; }
+    ~Outermost() {
+      if (--runtime.call_depth_ == 0) runtime.bindings_->WakeupEmbedThread();
+    }
+  } outermost(*this);
   // 与 node::MakeCallback 相同: 在 CallbackScope 里调用(异步上下文正确), 最外层的 scope 关闭时按 Node 语义
   // 排空 process.nextTick 与 microtask——从 momo 进入 JS 的每次调用都是一次完整的"宏任务"。
   // 调用本身已在 libuv 的顺序里: 入口都是 ui 线程上的任务, 与 uv 回调同属一个循环, 不另经 uv 排队。
