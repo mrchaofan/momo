@@ -101,7 +101,7 @@ my-app/
 
 框架不在应用里：它由运行时提供，应用写 `import … from "momo:framework"` 就能用，框架的版本就是运行时的版本。内置扩展也一样（目前只有 macOS 上的 `momo:webview`）。所以应用的文件里只有你自己的代码，不需要为了框架安装任何 npm 包。
 
-`package.json`（`momo.name` 是打包后的 `.app` 名称）：
+`package.json`（`momo.id` 是应用标识，打包时必填；`momo.name` 是打包后的 `.app` 名称）：
 
 ```json
 {
@@ -109,7 +109,7 @@ my-app/
   "private": true,
   "type": "module",
   "main": "dist/main.js",
-  "momo": { "name": "MyApp" },
+  "momo": { "id": "com.example.myapp", "name": "MyApp" },
   "scripts": {
     "build": "esbuild src/main.ts --bundle --format=esm --platform=neutral '--external:momo:*' --sourcemap=inline --outfile=dist/main.js"
   }

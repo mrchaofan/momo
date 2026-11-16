@@ -4,6 +4,7 @@
   "type": "module",
   "main": "dist/main.js",
   "momo": {
+    "id": "dev.momo.examples.browser",
     "name": "MomoBrowser",
     "icon": "icon/AppIcon.icns"
   },

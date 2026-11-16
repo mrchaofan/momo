@@ -153,6 +153,7 @@ jobs:
           cat > package.json <<EOF
           {
             "name": "cli-smoke", "private": true, "type": "module", "main": "main.js",
+            "momo": { "id": "dev.momo.cli-smoke" },
             "devDependencies": { "@momo/cli": "file:$GITHUB_WORKSPACE/out/dist/momo-cli-v$MOMO_VERSION.tgz" }
           }
           EOF
