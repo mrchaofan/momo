@@ -14,3 +14,4 @@ import "./material_test";
 import "./binding_test";
 import "./platform_view_test";
 import "./view_test";
+import "./host_contract_test";

@@ -27,6 +27,7 @@
 // 线程约定: momo::Object, 归属 platform 线程(OS 主线程);除 state() 外所有方法仅在该线程调用。
 
 #include <memory>
+#include <functional>
 #include <string_view>
 
 #include "base/event_loop.h"
@@ -80,6 +81,9 @@ class Application final : public Object,
     // 给出;V8 code cache 放在它的 v8/ 下。为空 = 不缓存。
     std::filesystem::path cache_dir;
     Observer* observer = nullptr;  // 非拥有, 必须比 Application 活得久
+    // 引擎已创建、JS 运行时尚未启动时调用(platform 线程, Launch 之内): 入口在这里往 shell.hub() 注册自己的
+    // 通道(如测试运行器的 momo/test), 它们在 bundle 执行之前就位。可空。
+    std::function<void(engine::Shell&)> on_engine_created;
   };
 
   // 启动时序第 3 步: 接管平台集成, 创建 TaskRunners(platform 绑定当前线程, ui/raster/io 各建线程)。

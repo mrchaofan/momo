@@ -207,6 +207,9 @@ Status Application::CreateEngine() {
   WindowManager::Observer& observer = *this;
   window_manager_ = std::make_unique<WindowManager>(*platform_, options_.config.window, observer, *shell_,
                                                     *text_input_channel_);
+  if (options_.on_engine_created) {
+    options_.on_engine_created(*shell_);
+  }
   return Status::Ok();
 }
 

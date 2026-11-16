@@ -1,6 +1,7 @@
 #pragma once
 
-// 测试用 PlatformIntegration: 无任何 OS API。原生消息循环由 base 的 MockNativeLoop 模拟。
+// 测试用 PlatformIntegration: 无任何 OS API, 记录调用供单测检查。原生消息循环是 base 的 MockNativeLoop
+// (QueueNativeLoop 加调用计数)。真正运行应用的无窗口平台是 embedder/headless/headless_platform.h。
 
 #include <condition_variable>
 #include <cstdint>

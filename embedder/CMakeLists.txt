@@ -223,9 +223,10 @@ elseif(WIN32)
   momo_install_v8_runtime(runtime)
 endif()
 
-# ---- momo_headless: 无窗口运行一个应用(headless 测试运行器的引擎侧, docs/09 §5)----
+# ---- momo_headless: 无窗口运行一个应用(headless 测试运行器, docs/09 §5)。与其他平台入口一样跑在
+# Application 上(common), 平台实现是 headless/headless_platform.h ----
 add_executable(momo_headless headless/headless_main.cc)
-target_link_libraries(momo_headless PRIVATE momo::engine)
+target_link_libraries(momo_headless PRIVATE momo_embedder_common)
 momo_target_use_v8_runtime(momo_headless)
 # 发布产物(docs/09 §6): 可执行文件与 libnode 同目录。
 if(APPLE)
@@ -257,7 +258,12 @@ if(MOMO_BUILD_TESTS)
       add_test(NAME FrameworkTests.NodeMock COMMAND ${MOMO_NODE} out/test/node_main.mjs WORKING_DIRECTORY ${_fw})
       add_test(NAME FrameworkTests.EngineHeadless
                COMMAND momo_headless ${_fw}/test/engine/headless_main.js --manual-frames --timeout=120)
-      set_tests_properties(FrameworkTests.NodeMock FrameworkTests.EngineHeadless
+      # 示例应用的端到端用例(mock 宿主): 与 `npm test` 跑的是同一组。
+      add_test(NAME FrameworkTests.ExampleCounter COMMAND ${MOMO_NODE} out/test/example_counter.mjs WORKING_DIRECTORY ${_fw})
+      add_test(NAME FrameworkTests.ExampleTodo COMMAND ${MOMO_NODE} out/test/example_todo.mjs WORKING_DIRECTORY ${_fw})
+      add_test(NAME FrameworkTests.ExampleBrowser COMMAND ${MOMO_NODE} out/test/example_browser.mjs WORKING_DIRECTORY ${_fw})
+      set_tests_properties(FrameworkTests.NodeMock FrameworkTests.EngineHeadless FrameworkTests.ExampleCounter
+                           FrameworkTests.ExampleTodo FrameworkTests.ExampleBrowser
                            PROPERTIES FIXTURES_REQUIRED framework_bundle)
     endif()
   endif()
