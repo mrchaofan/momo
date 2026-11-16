@@ -1,87 +1,33 @@
-// momo_headless: 无窗口地运行一个应用(docs/09 §5 的 headless 测试运行器 / tools/momo-test 的引擎侧)。
+// momo_headless: 无窗口地运行一个应用(docs/09 §5 的 headless 测试运行器)。
 //
 //   momo_headless <app> [--width=800 --height=600 --dpr=1] [--timeout=30] [--screenshot=<out.png>]
 //                 [--manual-frames]
 // <app>: 应用路径, 目录(含 package.json)或一个 JS 文件(engine/common/app_layout.h)。
-// --manual-frames: window.scheduleFrame() 不触发 vsync(框架测试自行调用 onBeginFrame/onDrawFrame
-// 并用假时钟驱动, 引擎再自行出帧会让时间倒退)。
+// --manual-frames: scheduleFrame() 不触发 vsync(框架测试自行调用 onBeginFrame/onDrawFrame 并用假时钟驱动,
+// 引擎再自行出帧会让时间倒退)。
 //
-// 引擎照常运行(四线程、定时器 vsync、软件光栅进离屏缓冲), 只是没有平台窗口。应用通过
-// momo:services 的 momo/test 通道与运行器交互(StandardMethodCodec):
-//   log(text)                         打印一行到 stdout
+// 与 macOS / Windows 的入口一样, 它只做翻译: 把命令行变成 Application 的参数, 平台实现是 HeadlessPlatform
+// (headless_platform.h: 窗口是一块离屏缓冲)。启动与关闭、窗口注册表、宿主通道(momo/app、momo/window、
+// momo/textinput…)因此都是真实的那一套。另外注册运行器自己的通道 momo/test(StandardMethodCodec):
+//   log(text | [text])                打印到 stdout
 //   done({passed, failed})            结束;failed > 0 时进程退出码为 1
-//   screenshot(path?)                 把最近一帧写成 PNG(path 缺省用 --screenshot)
-// 超时(--timeout 秒)未收到 done 视为失败(退出码 2)。
+//   screenshot(path?)                 把启动窗口的最近一帧写成 PNG(path 缺省用 --screenshot)
+// 超时(--timeout 秒)未收到 done 视为失败(退出码 2)。应用加载失败、process.exit(code) 按 Application 的规则退出。
 
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
 
-#include "base/event_loop.h"
-#include "base/lock.h"
-#include "base/logging.h"
-#include "embedder/common/engine_platform.h"
-#include "engine/common/app_layout.h"
-#include "engine/common/standard_codec.h"
-#include "engine/graphics/software_rasterizer.h"
-#include "engine/shell/shell.h"
-#include "engine/shell/thread_host.h"
+#include "embedder/common/application.h"
+#include "embedder/common/host_channel.h"
+#include "embedder/headless/headless_platform.h"
 
 namespace momo::embedder {
 namespace {
-
-// 离屏软件 surface: raster 线程画进自有缓冲, 保留最近一帧供截图。
-class OffscreenSurface final : public platform::RenderSurface {
- public:
-  platform::SurfaceKind kind() const override { return platform::SurfaceKind::kSoftware; }
-  StatusOr<platform::SurfaceFrame> AcquireFrame(Size size) override {
-    const int w = static_cast<int>(size.width);
-    const int h = static_cast<int>(size.height);
-    if (w <= 0 || h <= 0) {
-      return InvalidArgumentError("empty frame");
-    }
-    MutexLock lock(mutex_);
-    if (!buffer_ || buffer_->width() != w || buffer_->height() != h) {
-      buffer_ = std::make_unique<engine::graphics::OwnedPixelBuffer>(w, h);
-    }
-    engine::graphics::PixelBuffer view = buffer_->view();
-    platform::SurfaceFrame frame;
-    frame.kind = platform::SurfaceKind::kSoftware;
-    frame.software = {view.pixels, view.row_bytes, view.width, view.height};
-    frame.size = size;
-    frame.present = [this] {
-      MutexLock l(mutex_);
-      frames_++;
-      return true;
-    };
-    return frame;
-  }
-  // 任意线程: 编码最近一帧(与 raster 写入互斥)。
-  StatusOr<std::vector<uint8_t>> EncodeLastFrame() {
-    MutexLock lock(mutex_);
-    if (!buffer_ || frames_ == 0) {
-      return FailedPreconditionError("no frame has been presented yet");
-    }
-    return engine::graphics::EncodePng(buffer_->view());
-  }
-
- private:
-  Mutex mutex_;
-  std::unique_ptr<engine::graphics::OwnedPixelBuffer> buffer_;
-  uint64_t frames_ = 0;
-};
-
-// 永不触发的 vsync(--manual-frames)。
-class ManualVsyncSource final : public platform::VsyncSource {
- public:
-  void RequestFrameCallback(Callback) override {}
-};
-
-// 无窗口: 窗口管理、剪贴板、输入法等宿主通道一律不注册(JS 调用会得到"无实现")。
-class HeadlessDelegate final : public engine::Shell::Delegate {};
 
 struct Options {
   std::filesystem::path app;
@@ -129,119 +75,96 @@ bool ParseArgs(int argc, char** argv, Options* o) {
   return true;
 }
 
+bool WritePng(const std::filesystem::path& path, headless::OffscreenSurface* surface) {
+  if (path.empty() || surface == nullptr) {
+    return false;
+  }
+  StatusOr<std::vector<uint8_t>> png = surface->EncodeLastFrame();
+  if (!png.ok()) {
+    return false;
+  }
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(png->data()), static_cast<std::streamsize>(png->size()));
+  return true;
+}
+
 int Run(const Options& options) {
-  const auto app = engine::LocateApp(options.app);
-  if (!app.ok()) {
-    std::fprintf(stderr, "momo_headless: %s\n", std::string(app.status().message()).c_str());
+  auto platform = std::make_unique<headless::HeadlessPlatform>(
+      headless::HeadlessPlatform::Config{options.dpr, options.manual_frames});
+  headless::HeadlessPlatform* host = platform.get();
+
+  Application::Options app_options;
+  app_options.config.app_path = options.app;
+  app_options.config.window.size = {options.width, options.height};
+  app_options.config.dev_mode = true;      // 不写 V8 code cache
+  app_options.config.inspector_port = -1;  // 不开调试端口
+  app_options.resources_dir = options.builtin.parent_path();  // 运行时自带的 JS 模块在它的 builtin/ 下
+
+  Application* app = nullptr;
+  std::unique_ptr<HostChannel> test_channel;
+  bool done = false;
+  // 结束运行: 先留下截图(窗口随后关闭), 再有序退出。
+  auto finish = [&](int exit_code) {
+    done = true;
+    WritePng(options.screenshot, host->first_surface().get());
+    app->Exit(exit_code);
+  };
+  // 引擎已创建、JS 尚未运行: 运行器的通道在这里就位。
+  app_options.on_engine_created = [&](engine::Shell& shell) {
+    using engine::EncodableValue;
+    test_channel = std::make_unique<HostChannel>(shell.hub(), app->task_runner(), "momo/test");
+    test_channel->Register("log", [](const EncodableValue& args) -> StatusOr<EncodableValue> {
+      if (const auto* lines = args.GetIf<engine::EncodableList>()) {
+        for (const EncodableValue& line : *lines) std::printf("%s\n", line.AsString().value_or("").c_str());
+      } else {
+        std::printf("%s\n", args.AsString().value_or("").c_str());
+      }
+      std::fflush(stdout);
+      return EncodableValue();
+    });
+    test_channel->Register("done", [&](const EncodableValue& args) -> StatusOr<EncodableValue> {
+      const EncodableValue* failed_value = args.Find("failed");
+      const EncodableValue* passed_value = args.Find("passed");
+      const int64_t failed = failed_value != nullptr ? failed_value->AsInt().value_or(1) : 1;
+      const int64_t passed = passed_value != nullptr ? passed_value->AsInt().value_or(0) : 0;
+      std::printf("momo_headless: %lld passed, %lld failed\n", static_cast<long long>(passed),
+                  static_cast<long long>(failed));
+      std::fflush(stdout);
+      finish(failed == 0 ? 0 : 1);
+      return EncodableValue();
+    });
+    test_channel->Register("screenshot", [&](const EncodableValue& args) -> StatusOr<EncodableValue> {
+      const std::filesystem::path path =
+          args.AsString() ? std::filesystem::path(*args.AsString()) : options.screenshot;
+      if (path.empty()) return InvalidArgumentError("screenshot: no path");
+      if (!WritePng(path, host->first_surface().get())) {
+        return FailedPreconditionError("screenshot: no frame has been presented yet");
+      }
+      return EncodableValue();
+    });
+  };
+
+  StatusOr<std::unique_ptr<Application>> created = Application::Create(std::move(app_options), std::move(platform));
+  if (!created.ok()) {
+    std::fprintf(stderr, "momo_headless: %s\n", std::string(created.status().message()).c_str());
     return 2;
   }
-  auto loop = EventLoop::Create();
-  loop->BindToCurrentThread();
-  int exit_code = 2;
-  {
-    engine::ThreadHost threads("momo.headless");
-    engine::TaskRunners runners = threads.MakeTaskRunners(loop->GetTaskRunner());
-    engine::Settings settings;
-    settings.bundle_path = app->entry;
-    settings.assets_dir = app->assets_dir;
-    settings.builtin_dir = options.builtin;
-    settings.dev_mode = true;
-    // process.exit(code): 退出码交给本进程, 结束消息循环后有序关闭。
-    auto on_exit = [&exit_code, loop](int code) {
-      exit_code = code;
-      loop->Terminate();
-    };
-    auto shell = engine::Shell::Create(runners, settings, on_exit);
-    if (!shell.ok()) {
-      std::fprintf(stderr, "momo_headless: %s\n", std::string(shell.status().message()).c_str());
-      loop->Terminate();
-      loop->RunUntilIdle();
-      return 2;
-    }
-    OffscreenSurface surface;
-    HeadlessDelegate delegate;
-    bool done = false;
-
-    (*shell)->hub()->SetNativeHandler(
-        "momo/test", loop->GetTaskRunner(),
-        [&](engine::MessageBytes message, engine::MessageReply reply) {
-          StatusOr<engine::MethodCall> call = engine::DecodeMethodCall(message);
-          if (!call.ok()) {
-            reply.Send(engine::EncodeErrorEnvelope("bad-call", call.status().message()));
-            return;
-          }
-          if (call->method == "log" && call->args.Is<engine::EncodableList>()) {
-            for (const auto& v : *call->args.GetIf<engine::EncodableList>()) {
-              std::printf("%s\n", v.AsString().value_or("").c_str());
-            }
-            std::fflush(stdout);
-          } else if (call->method == "log") {
-            std::printf("%s\n", call->args.AsString().value_or("").c_str());
-            std::fflush(stdout);
-          } else if (call->method == "done") {
-            const int64_t failed = call->args.Find("failed") ? call->args.Find("failed")->AsInt().value_or(1) : 1;
-            const int64_t passed = call->args.Find("passed") ? call->args.Find("passed")->AsInt().value_or(0) : 0;
-            std::printf("momo_headless: %lld passed, %lld failed\n", static_cast<long long>(passed),
-                        static_cast<long long>(failed));
-            exit_code = failed == 0 ? 0 : 1;
-            done = true;
-            loop->Terminate();
-          } else if (call->method == "screenshot") {
-            const std::filesystem::path path =
-                call->args.AsString() ? std::filesystem::path(*call->args.AsString())
-                                      : options.screenshot;
-            StatusOr<std::vector<uint8_t>> png = surface.EncodeLastFrame();
-            if (path.empty() || !png.ok()) {
-              reply.Send(engine::EncodeErrorEnvelope(
-                  "screenshot", path.empty() ? "no path" : png.status().message()));
-              return;
-            }
-            std::ofstream(path, std::ios::binary)
-                .write(reinterpret_cast<const char*>(png->data()),
-                       static_cast<std::streamsize>(png->size()));
-          } else {
-            reply.Send(engine::EncodeErrorEnvelope("unknown", call->method));
-            return;
-          }
-          reply.Send(engine::EncodeSuccessEnvelope(engine::EncodableValue()));
-        });
-
-    if (options.manual_frames) {
-      (*shell)->SetVsyncSource(MakeObject<ManualVsyncSource>());
-    }
-    (*shell)->AttachView(platform::kImplicitViewId, &delegate, &surface);
-    (*shell)->OnMetricsChanged(platform::kImplicitViewId, {{options.width * options.dpr, options.height * options.dpr}, options.dpr});
-    // 通道处理器与视图都已就位: 启动 JS 运行时(ui 线程执行 bundle)。加载/执行失败即结束(退出码 2)。
-    (*shell)->Run([&](Status status) {
-      if (!status.ok()) {
-        std::fprintf(stderr, "momo_headless: %s\n", std::string(status.message()).c_str());
-        done = true;
-        loop->Terminate();
-      }
-    });
-    loop->GetTaskRunner()->PostDelayedTask(
-        [&] {
-          if (!done) {
-            std::fprintf(stderr, "momo_headless: timed out after %.0fs without done()\n",
-                         options.timeout_s);
-            loop->Terminate();
-          }
-        },
-        std::chrono::milliseconds(static_cast<int64_t>(options.timeout_s * 1000)));
-    loop->Run();
-
-    if (!options.screenshot.empty()) {
-      if (StatusOr<std::vector<uint8_t>> png = surface.EncodeLastFrame(); png.ok()) {
-        std::ofstream(options.screenshot, std::ios::binary)
-            .write(reinterpret_cast<const char*>(png->data()),
-                   static_cast<std::streamsize>(png->size()));
-      }
-    }
-    (*shell)->DetachView(platform::kImplicitViewId);
-    (*shell)->Shutdown();
-    shell->reset();
-    threads.Join();
+  app = created->get();
+  if (Status status = app->Launch(); !status.ok()) {
+    std::fprintf(stderr, "momo_headless: %s\n", std::string(status.message()).c_str());
+    return 2;
   }
+  app->task_runner()->PostDelayedTask(
+      [&] {
+        if (!done && app->state() != Application::State::kTerminating) {
+          std::fprintf(stderr, "momo_headless: timed out after %.0fs without done()\n", options.timeout_s);
+          finish(2);
+        }
+      },
+      std::chrono::milliseconds(static_cast<int64_t>(options.timeout_s * 1000)));
+  const int exit_code = app->Run();
+  test_channel.reset();
+  created->reset();
   return exit_code;
 }
 

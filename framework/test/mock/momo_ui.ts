@@ -62,10 +62,7 @@ const control: MockControl = {
   },
   windowStates: new Map(),
   setWindowFocus(id, focused): void {
-    if (!viewMap.has(id) || focusedViews.has(id) === focused) return;
-    if (focused) focusedViews.add(id);
-    else focusedViews.delete(id);
-    notify("focusChanged", { view: id, focused });
+    setFocus(id, focused);
   },
   reopen(hasVisibleWindows: boolean): void {
     notifyApp("activate", { hasVisibleWindows });
@@ -107,6 +104,7 @@ const control: MockControl = {
     if (startup !== undefined) {
       startup.visible = true;
       control.windowStates.set(0, { ...kShown });
+      control.frames.set(0, { x: 0, y: 0, width: 800, height: 600 });
       return;
     }
     viewMap.set(0, makeView(0, 800, 600, 1));
@@ -717,6 +715,18 @@ function setFrame(view: number, frame: { x: number; y: number; width: number; he
   notify("frameChanged", { view, frame: [frame.x, frame.y, frame.width, frame.height] });
 }
 
+/** 窗口得到或失去系统焦点。同一时刻至多一个窗口持有焦点: 得到焦点时先让原来的窗口失去它(同真实宿主)。 */
+function setFocus(view: number, focused: boolean): void {
+  if (!viewMap.has(view) || focusedViews.has(view) === focused) return;
+  if (focused) {
+    for (const other of [...focusedViews]) setFocus(other, false);
+    focusedViews.add(view);
+  } else {
+    focusedViews.delete(view);
+  }
+  notify("focusChanged", { view, focused });
+}
+
 /** 窗口快照(create / getState 的回复)。 */
 function snapshotOf(view: number): Record<string, unknown> {
   const f = control.frames.get(view)!;
@@ -799,6 +809,7 @@ function handleWindowCall(call: MethodCall): unknown {
     if (a["nonActivating"] === true) control.panelViews.add(id);
     if (a["resizable"] === false) control.resizable.set(id, false);
     control.windowStates.set(id, { ...kShown, visible: a["show"] !== false });
+    if (a["show"] !== false) setFocus(id, true);  // 创建即显示的窗口成为 key window
     win.onViewportsChanged?.();  // 视图先加入(真实宿主: AddView 先于回复到达 ui 线程)
     return { ...snapshotOf(id), view: id };
   }
@@ -817,6 +828,7 @@ function handleWindowCall(call: MethodCall): unknown {
       return snapshotOf(view);
     case "show":
       setState(view, { visible: true, minimized: false });
+      setFocus(view, true);  // 显示的窗口成为 key window
       return null;
     case "hide":
       setState(view, { visible: false });
@@ -847,6 +859,7 @@ function handleWindowCall(call: MethodCall): unknown {
       return null;
     case "activate":
       control.activated.push(view);
+      setFocus(view, true);
       return null;
     case "setPosition": {
       const f = control.frames.get(view)!;

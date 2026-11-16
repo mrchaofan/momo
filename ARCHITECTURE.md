@@ -211,7 +211,7 @@ GCD 主队列由主 CFRunLoop 在 common modes 下服务，所以窗口拖拽缩
 |---|---|---|
 | `embedder/common/` | 平台无关的装配逻辑：`Application`（生命周期状态机、有序关闭）、`WindowController`（窗口 ⇄ Shell）、`AppConfig`（命令行：应用路径与窗口参数）；embedder 自己的平台抽象 `PlatformIntegration`、`PlatformWindow`、`WindowDelegate`、`DisplayInfo` | 能，用 `common/testing/mock_platform.h` |
 | `embedder/macos/` | Cocoa 实现与入口，见下表 | `momo_embedder_macos_unittests` |
-| `embedder/headless/` | `momo_headless`：无窗口宿主，离屏软件 surface；框架 TS 测试的引擎侧运行器 | — |
+| `embedder/headless/` | `momo_headless`：无窗口宿主。和 macOS / Windows 一样是一个 `PlatformIntegration`（`HeadlessPlatform`：窗口是一块离屏缓冲，原生循环是 `QueueNativeLoop`），跑在同一个 `Application` 上，所以框架测试在这里经过的是真实的启动/关闭流程与全部宿主通道 | 经它运行框架测试 |
 
 两组接口要分清：
 
@@ -1178,7 +1178,7 @@ CLI（`framework/packages/cli/momo.mjs`，npm 包 `@momo/cli`）只做打包：`
 
 - **C++ 单测**：`embedder/common` 用 mock `PlatformIntegration` 测启动/关闭顺序和状态机；engine 用 `shell/testing/shell_test_utils.h` 的测试替身测 Shell、Animator 背压、Rasterizer；`base` 测 EventLoop 结束语义和 DeleteLater。
 - **Golden 测试**：软件光栅结果与 `engine/graphics/testdata/*.png` 比对（每通道 ±2）。同一张验收画面分别由 C++ 和 JS（经 `momo:ui`）生成并比对，覆盖"JS 绑定 → 光栅"整条链路。`MOMO_UPDATE_GOLDENS=1` 重新生成。
-- **框架测试**：`framework/test/*_test.ts` 与宿主无关，既在 Node + mock `momo:ui` 下跑（`npm test`），也在 `momo_headless` 真实引擎下跑。
+- **框架测试**：`framework/test/*_test.ts` 与宿主无关，既在 Node + mock `momo:ui` 下跑（`npm test`），也在 `momo_headless` 真实引擎下跑。依赖 mock 观察能力的用例在真实引擎下跳过；`host_contract_test.ts` 只用框架的公开接口并等待宿主真正回复，同一组用例在两种宿主下都运行——它把 mock 宿主（协议的第二份实现）与真实的 `momo/window`、`momo/app` 绑在一起。
 
 设计文档：[docs/09-build-and-deps.md](docs/09-build-and-deps.md)。
 

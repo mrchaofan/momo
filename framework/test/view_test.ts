@@ -269,6 +269,9 @@ group("multi-window", () => {
     const mainNode = new FocusNode({ debugLabel: "main" });
     const windowNode = new FocusNode({ debugLabel: "window" });
     const win = await Widget.create({ width: 200, height: 100 });
+    // 新窗口显示时拿到系统焦点;用户切回主窗口。
+    mock.setWindowFocus(0, true);
+    await t.flushMicrotasks();
     const events: string[] = [];
     win.on("focus", () => events.push("focus"));
     win.on("blur", () => events.push("blur"));
@@ -469,6 +472,8 @@ group("multi-window", () => {
     const a = new FocusNode({ debugLabel: "a" });
     const b = new FocusNode({ debugLabel: "b" });
     const win = await Widget.create({ width: 200, height: 100 });
+    mock.setWindowFocus(0, true);  // 新窗口显示时拿到系统焦点;用户切回主窗口
+    await t.flushMicrotasks();
     const box = (node: FocusNode): View => new Focus({ focusNode: node, child: new SizedBox({ width: 20, height: 20 }) });
     await t.pumpView(withWindows(new SizedBox({}), [{ widget: win, child: new Column({ children: [box(a), box(b)] }) }]));
     await t.pump();
