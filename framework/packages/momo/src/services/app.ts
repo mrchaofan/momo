@@ -15,7 +15,6 @@ import { MethodChannel } from "./platform_channel";
 export type AppState = "launching" | "running" | "suspended" | "terminating";
 
 /** app 的可选能力(不支持的方法是空操作)。 */
-export type AppCapability = "hide" | "activate";
 
 export type AppEvents = {
   /** 退出流程开始(Cmd+Q、菜单退出、app.quit())。preventDefault() 取消退出。 */
@@ -96,15 +95,6 @@ export class App extends EventEmitter<AppEvents> {
   focus(options: { steal?: boolean } = {}): void {
     void this.#invoke("focus", { steal: options.steal ?? false });
   }
-  /** 向宿主查询能力与状态。宿主不支持时为 null。 */
-  async getCapabilities(): Promise<ReadonlySet<AppCapability> | null> {
-    const r = await this.#invoke<Record<string, unknown>>("getState");
-    if (r === null) return null;
-    if (isState(r["state"])) this.#setState(r["state"]);
-    this.#active = r["active"] === true;
-    return new Set(Array.isArray(r["capabilities"]) ? (r["capabilities"] as AppCapability[]) : []);
-  }
-
   /** 测试用: 清空状态与监听器。 */
   debugReset(): void {
     this.removeAllListeners();

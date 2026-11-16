@@ -211,13 +211,10 @@ TEST_F(WindowChannelTest, TitleBarReportsWindowControls) {
   EXPECT_EQ((*frame)[2], 300);
   host_.focused = view;
   EXPECT_TRUE(*Call("getState", {{"view", view}})->Find("focused")->GetIf<bool>());
-  const auto* caps = state->Find("capabilities")->GetIf<EncodableList>();
-  ASSERT_NE(caps, nullptr);
-  EXPECT_NE(std::find(caps->begin(), caps->end(), EncodableValue("hiddenTitleBar")), caps->end());
 }
 
-// 不支持的能力明确报错(而不是静默无效), 能力可查询。
-TEST_F(WindowChannelTest, UnsupportedCapabilitiesAreReported) {
+// 平台不支持的操作明确报错(而不是静默无效)。
+TEST_F(WindowChannelTest, UnsupportedOperationsAreReported) {
   const platform::ViewId bare = FakeHost::kBareView;
   EXPECT_EQ(Call("setAlwaysOnTop", {{"view", bare}, {"on", true}}).status().code(),
             StatusCode::kUnimplemented);
@@ -227,7 +224,6 @@ TEST_F(WindowChannelTest, UnsupportedCapabilitiesAreReported) {
             StatusCode::kUnimplemented);
   StatusOr<EncodableValue> state = Call("getState", {{"view", bare}});
   ASSERT_TRUE(state.ok());
-  EXPECT_TRUE(state->Find("capabilities")->GetIf<EncodableList>()->empty());
   EXPECT_TRUE(state->Find("frame")->IsNull());
   // 必需能力照常可用。
   EXPECT_TRUE(Call("setTitle", {{"view", bare}, {"title", "x"}}).ok());

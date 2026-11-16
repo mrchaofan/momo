@@ -1,7 +1,7 @@
 #pragma once
 
 // AppChannel: 宿主的应用通道 momo/app(docs/03 §2)。应用生命周期属于宿主(不经引擎);框架的 app 对象的方法与
-// 事件一一对应这里的协议。新增应用接口 = PlatformApp 加能力 + 这里 Register 一个方法 + 框架 app 加方法。
+// 事件一一对应这里的协议。新增应用接口 = PlatformApp 加方法 + 这里 Register 一个方法 + 框架 app 加方法。
 //
 // momo/app(StandardMethodCodec):
 //   JS → 宿主:
@@ -9,7 +9,6 @@
 //     exit {code?}              立即有序退出(不询问), 退出码 code(缺省 0)
 //     hide / show               隐藏 / 显示整个应用
 //     focus {steal?}            把应用带到前台
-//     getState → {state, active, capabilities: [string]}
 //   宿主 → JS:
 //     stateChanged {state}      "launching" | "running" | "suspended" | "terminating"(suspended = 应用被隐藏)
 //     activeChanged {active}    应用成为/不再是前台应用
@@ -39,10 +38,6 @@ class AppChannel final {
    public:
     virtual void Quit() = 0;
     virtual void Exit(int exit_code) = 0;
-    // JS 可见的生命周期状态名(launching / running / suspended / terminating)。
-    virtual std::string_view app_state_name() const = 0;
-    // 应用是否是前台应用。
-    virtual bool app_active() const = 0;
 
    protected:
     ~Host() = default;

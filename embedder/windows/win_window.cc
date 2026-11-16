@@ -372,13 +372,6 @@ void WinWindow::NotifyStateChanged() {
   delegate_->OnWindowStateChanged(state());
 }
 
-uint32_t WinWindow::capabilities() const {
-  // 平台视图与非激活窗口不支持(见头文件)。
-  return kCapabilityAlwaysOnTop | kCapabilityPosition | kCapabilityResizeOptions | kCapabilityHiddenTitleBar |
-         kCapabilityWindowDrag | kCapabilityMoveLoop | kCapabilityPointerCapture | kCapabilityVisibility |
-         kCapabilityMinMax;
-}
-
 Status WinWindow::Hide() {
   ::ShowWindow(hwnd_, SW_HIDE);
   NotifyStateChanged();
@@ -939,7 +932,7 @@ void WinWindow::SendToMomo(platform::PointerDataPacket packet, const PointerInpu
   delegate_->OnPointerPacket(std::move(packet));
 }
 
-// Windows 宿主没有平台视图(capabilities 不含 kCapabilityPlatformViews), 派发器不会选中它们。
+// Windows 宿主没有平台视图, 派发器不会选中它们。
 void WinWindow::SendToPlatformView(int64_t, const PointerInput&, platform::PointerPhase) {}
 void WinWindow::SetHoveredPlatformView(int64_t, const PointerInput&) {}
 

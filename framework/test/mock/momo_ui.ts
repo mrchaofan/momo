@@ -724,8 +724,6 @@ function snapshotOf(view: number): Record<string, unknown> {
   return {
     frame: [f.x, f.y, f.width, f.height], controls: controlsOf(view), focused: focusedViews.has(view),
     state: control.windowStates.get(view),
-    capabilities: ["alwaysOnTop", "position", "resizeOptions", "hiddenTitleBar", "windowDrag", "moveLoop", "pointerCapture",
-                   "platformViews", "nonActivating", "visibility", "minMax"],
   };
 }
 
@@ -922,8 +920,6 @@ function handleAppCall(call: MethodCall): unknown {
     case "show":
     case "focus":
       return null;
-    case "getState":
-      return { state: control.exitCode !== null ? "terminating" : "running", active: true, capabilities: ["hide", "activate"] };
     default:
       throw new PlatformException("unimplemented", `momo/app: unknown method ${call.method}`);
   }

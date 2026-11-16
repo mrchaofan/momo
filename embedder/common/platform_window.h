@@ -24,22 +24,6 @@
 
 namespace momo::embedder {
 
-// 窗口的可选能力(momo/window capabilities)。不支持的能力对应的方法返回 Unimplemented,
-// JS 可以先查询再决定界面(如不支持隐藏标题栏时保留系统标题栏)。
-enum WindowCapability : uint32_t {
-  kCapabilityAlwaysOnTop = 1u << 0,
-  kCapabilityPosition = 1u << 1,         // screen_frame / SetPosition
-  kCapabilityResizeOptions = 1u << 2,
-  kCapabilityHiddenTitleBar = 1u << 3,   // SetTitleBar(hidden) + 窗口控制按钮占用区域
-  kCapabilityWindowDrag = 1u << 4,       // StartWindowDrag
-  kCapabilityMoveLoop = 1u << 5,         // StartMoveLoop / EndMoveLoop
-  kCapabilityPointerCapture = 1u << 6,   // CapturePointer / ReleasePointerCapture
-  kCapabilityPlatformViews = 1u << 7,
-  kCapabilityNonActivating = 1u << 8,
-  kCapabilityVisibility = 1u << 9,       // Hide(Show 总是支持)
-  kCapabilityMinMax = 1u << 10,          // Minimize / Maximize / Restore
-};
-
 // 尺寸、状态、屏幕框、控制按钮这四类"可能变了"的回调, 平台窗口每次都上报当前的原始值(可以重复);
 // 去重只在接收方(WindowController)做一次。
 class WindowDelegate {
@@ -82,11 +66,11 @@ class PlatformWindow {
   // 当前状态(显示、最小化、最大化、全屏)。
   virtual WindowStateFlags state() const { return {}; }
 
-  // ---- 可选能力(WindowCapability;默认不支持, 返回 Unimplemented) ----
-  virtual uint32_t capabilities() const { return 0; }
-  // 隐藏窗口(不销毁;Show 重新显示)。kCapabilityVisibility。
+  // ---- 平台可以不支持的操作: 默认返回 Unimplemented, JS 的调用得到错误码 "unimplemented"(框架当空操作)。
+  //      不另设能力声明: 支持与否只有"调用是否成功"这一个事实 ----
+  // 隐藏窗口(不销毁;Show 重新显示)。
   virtual Status Hide() { return Unsupported("hide"); }
-  // 最小化 / 最大化 / 还原(从最小化或最大化恢复)。kCapabilityMinMax。
+  // 最小化 / 最大化 / 还原(从最小化或最大化恢复)。
   virtual Status Minimize() { return Unsupported("minimize"); }
   virtual Status Maximize() { return Unsupported("maximize"); }
   virtual Status Restore() { return Unsupported("restore"); }

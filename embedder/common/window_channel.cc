@@ -34,27 +34,6 @@ StatusOr<SystemCursor> CursorFromName(std::string_view name) {
   return InvalidArgumentError("unknown cursor '" + std::string(name) + "'");
 }
 
-EncodableList CapabilityNames(uint32_t caps) {
-  static constexpr std::pair<WindowCapability, const char*> kNames[] = {
-      {kCapabilityAlwaysOnTop, "alwaysOnTop"},
-      {kCapabilityPosition, "position"},
-      {kCapabilityResizeOptions, "resizeOptions"},
-      {kCapabilityHiddenTitleBar, "hiddenTitleBar"},
-      {kCapabilityWindowDrag, "windowDrag"},
-      {kCapabilityMoveLoop, "moveLoop"},
-      {kCapabilityPointerCapture, "pointerCapture"},
-      {kCapabilityPlatformViews, "platformViews"},
-      {kCapabilityNonActivating, "nonActivating"},
-      {kCapabilityVisibility, "visibility"},
-      {kCapabilityMinMax, "minMax"},
-  };
-  EncodableList out;
-  for (const auto& [bit, name] : kNames) {
-    if ((caps & bit) != 0) out.emplace_back(name);
-  }
-  return out;
-}
-
 WindowOptions ParseWindowOptions(const EncodableValue& a) {
   WindowOptions o;
   o.title = Str(a, "title");
@@ -110,13 +89,11 @@ EncodableValue WindowChannel::StateValue(const WindowStateFlags& s) {
 }
 
 EncodableMap WindowChannel::Snapshot(platform::ViewId view, PlatformWindow& w) {
-  const uint32_t caps = w.capabilities();
   EncodableMap snapshot;
-  snapshot.emplace_back("frame", (caps & kCapabilityPosition) != 0 ? RectValue(w.screen_frame())
-                                                                   : EncodableValue());
+  const Rect frame = w.screen_frame();  // 平台不报告屏幕框时为空矩形
+  snapshot.emplace_back("frame", frame.width > 0 && frame.height > 0 ? RectValue(frame) : EncodableValue());
   snapshot.emplace_back("controls", OptRectValue(w.window_controls_rect()));
   snapshot.emplace_back("focused", host_->IsWindowFocused(view));
-  snapshot.emplace_back("capabilities", CapabilityNames(caps));
   snapshot.emplace_back("state", StateValue(w.state()));
   return snapshot;
 }

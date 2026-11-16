@@ -13,15 +13,9 @@
 
 namespace momo::embedder {
 
-enum AppCapability : uint32_t {
-  kAppCapabilityHide = 1u << 0,      // Hide / Show(整个应用, 如 macOS Cmd+H)
-  kAppCapabilityActivate = 1u << 1,  // Activate: 把应用带到前台
-};
-
 class PlatformApp {
  public:
   virtual ~PlatformApp() = default;
-  virtual uint32_t capabilities() const { return 0; }
   // 隐藏/显示整个应用(全部窗口)。隐藏后宿主进入 Suspended。
   virtual Status Hide() { return Unsupported("hide"); }
   virtual Status Show() { return Unsupported("show"); }

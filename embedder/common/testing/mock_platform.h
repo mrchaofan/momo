@@ -88,12 +88,7 @@ class MockWindow final : public PlatformWindow {
   void* native_handle() const override { return nullptr; }
   void Activate() override { activations_++; }
 
-  // 可选能力: 全部支持(记录调用)。
-  uint32_t capabilities() const override {
-    return kCapabilityAlwaysOnTop | kCapabilityPosition | kCapabilityResizeOptions |
-           kCapabilityHiddenTitleBar | kCapabilityWindowDrag | kCapabilityMoveLoop |
-           kCapabilityPointerCapture | kCapabilityVisibility | kCapabilityMinMax;
-  }
+  // 可选操作: 全部支持(记录调用)。
   Status SetAlwaysOnTop(bool on) override {
     always_on_top_ = on;
     return Status::Ok();
@@ -181,7 +176,6 @@ class MockWindow final : public PlatformWindow {
 
 class MockApp final : public PlatformApp {
  public:
-  uint32_t capabilities() const override { return kAppCapabilityHide | kAppCapabilityActivate; }
   Status Hide() override {
     hidden = true;
     return Status::Ok();
