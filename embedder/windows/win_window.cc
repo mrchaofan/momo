@@ -69,11 +69,6 @@ uint32_t FirstCodePoint(const std::wstring& text) {
   return high;
 }
 
-// 控制字符(C0/C1)与 DEL 不是"可打印字符"。
-bool IsPrintable(uint32_t code_point) {
-  return code_point >= 0x20 && code_point != 0x7F && !(code_point >= 0x80 && code_point < 0xA0);
-}
-
 bool AllPrintable(const std::wstring& text) {
   if (text.empty()) {
     return false;
@@ -81,7 +76,7 @@ bool AllPrintable(const std::wstring& text) {
   for (wchar_t c : text) {
     const uint32_t unit = c;
     // 代理码元本身不是控制字符, 按可打印处理。
-    if (unit < 0x20 || unit == 0x7F || (unit >= 0x80 && unit < 0xA0)) {
+    if (!IsPrintableCodePoint(unit)) {
       return false;
     }
   }
@@ -101,23 +96,15 @@ std::wstring TranslateKey(UINT virtual_key, UINT scan_code, const BYTE* key_stat
   return std::wstring(buffer, count < 0 ? 1 : static_cast<size_t>(count));
 }
 
-// logical key: 规则同 macOS(LogicalKeyFor)。
+// logical key(规则见 common/key_codes.h): 这里只取当前键盘布局下不带修饰键时的字符(Shift+1 → "1"), 小写。
 uint64_t LogicalKeyFor(UINT virtual_key, uint16_t scan_code, bool extended, uint32_t usage, HKL layout) {
-  if (IsSpecialHidUsage(usage)) {
-    return SpecialLogicalKey(usage, scan_code, extended);
-  }
-  // 当前键盘布局下不带修饰键时的字符(Shift+1 → "1"), 小写。
   const BYTE empty_state[256] = {};
   bool dead_key = false;
   std::wstring base = TranslateKey(virtual_key, scan_code, empty_state, layout, &dead_key);
   if (!base.empty()) {
     ::CharLowerBuffW(base.data(), static_cast<DWORD>(base.size()));
   }
-  const uint32_t code_point = FirstCodePoint(base);
-  if (!IsPrintable(code_point)) {
-    return SpecialLogicalKey(usage, scan_code, extended);
-  }
-  return code_point;
+  return LogicalKey(usage, WinNativeKeyCode(scan_code, extended), FirstCodePoint(base));
 }
 
 LPCWSTR CursorResource(SystemCursor cursor) {

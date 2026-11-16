@@ -263,6 +263,7 @@ if(MOMO_BUILD_TESTS)
   add_executable(momo_embedder_unittests
     common/app_config_unittests.cc
     common/application_unittests.cc
+    common/key_codes_unittests.cc
     common/menu_channel_unittests.cc
     common/pointer_dispatcher_unittests.cc
     common/surface_unittests.cc
