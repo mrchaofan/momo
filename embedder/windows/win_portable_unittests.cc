@@ -36,21 +36,21 @@ TEST(WinKeyMappingTest, MapsToUsbHidUsages) {
   EXPECT_EQ(WinScanCodeToHidUsage(0x76, false), 0x73u);  // F24
   EXPECT_EQ(WinScanCodeToHidUsage(0x00, false), 0u);
   EXPECT_EQ(WinScanCodeToHidUsage(0x7F, true), 0u);
-  EXPECT_EQ(PhysicalKeyFromHidUsage(0x04), 0x00070004u);
-  EXPECT_EQ(PhysicalKeyFromHidUsage(0), 0u);
 }
 
-TEST(WinKeyMappingTest, ClassifiesSpecialKeys) {
-  EXPECT_TRUE(IsSpecialHidUsage(0x28));   // Enter
-  EXPECT_TRUE(IsSpecialHidUsage(0x29));   // Escape
-  EXPECT_TRUE(IsSpecialHidUsage(0xE1));   // ShiftLeft
-  EXPECT_TRUE(IsSpecialHidUsage(0x3A));   // F1
-  EXPECT_TRUE(IsSpecialHidUsage(0x52));   // ArrowUp
-  EXPECT_TRUE(IsSpecialHidUsage(0x58));   // NumpadEnter
-  EXPECT_FALSE(IsSpecialHidUsage(0x04));  // A
-  EXPECT_FALSE(IsSpecialHidUsage(0x2C));  // Space
-  EXPECT_FALSE(IsSpecialHidUsage(0x62));  // Numpad0
-  EXPECT_FALSE(IsSpecialHidUsage(0x67));  // NumpadEqual
+// 特殊键的规则是平台无关的(common/key_codes.h, 那里有它的测试): 这里核对 Windows 的扫描码表与它配得上。
+TEST(WinKeyMappingTest, ScanCodesOfSpecialKeysMapToSpecialUsages) {
+  auto special = [](uint16_t scan_code, bool extended) {
+    return IsSpecialHidUsage(WinScanCodeToHidUsage(scan_code, extended));
+  };
+  EXPECT_TRUE(special(0x1C, false));   // Enter
+  EXPECT_TRUE(special(0x1C, true));    // NumpadEnter
+  EXPECT_TRUE(special(0x48, true));    // ArrowUp
+  EXPECT_TRUE(special(0x5B, true));    // MetaLeft
+  EXPECT_TRUE(special(0x3B, false));   // F1
+  EXPECT_FALSE(special(0x48, false));  // Numpad8
+  EXPECT_EQ(WinNativeKeyCode(0x48, true), 0xE048u);
+  EXPECT_EQ(WinNativeKeyCode(0x48, false), 0x48u);
 }
 
 // ---- 鼠标消息翻译 ----

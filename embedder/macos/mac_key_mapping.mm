@@ -168,9 +168,9 @@ uint32_t FirstCodePoint(NSString* string) {
   return high;
 }
 
-// 控制字符与 AppKit 功能键私有区(NSUpArrowFunctionKey 等 0xF700–0xF8FF)不是"可打印字符"。
+// AppKit 用私有区码点(NSUpArrowFunctionKey 等 0xF700–0xF8FF)表示功能键: 它们不是字符。
 bool IsPrintable(uint32_t code_point) {
-  return code_point >= 0x20 && code_point != 0x7F && !(code_point >= 0xF700 && code_point <= 0xF8FF);
+  return IsPrintableCodePoint(code_point) && !(code_point >= 0xF700 && code_point <= 0xF8FF);
 }
 
 bool AllPrintable(NSString* string) {
@@ -182,26 +182,14 @@ bool AllPrintable(NSString* string) {
   return string.length > 0;
 }
 
-uint64_t SpecialLogicalKey(uint16_t key_code, uint32_t usage) {
-  // 无 HID usage 的键: 仍给出唯一值(放在 usage 空间之外)。
-  return kSpecialKeyBase + (usage != 0 ? usage : (0x10000u + key_code));
-}
-
 uint64_t LogicalKeyFor(NSEvent* event, uint32_t usage) {
-  const uint16_t key_code = event.keyCode;
-  if (IsSpecialKeyCode(key_code)) {
-    return SpecialLogicalKey(key_code, usage);
-  }
   // 当前键盘布局下不带修饰键时的字符(Shift+1 → "1", Option+e → "e"), 小写。
   NSString* base = [event charactersByApplyingModifiers:0];
   if (base.length == 0) {
     base = event.charactersIgnoringModifiers;  // 死键等
   }
   const uint32_t code_point = FirstCodePoint(base.lowercaseString);
-  if (!IsPrintable(code_point)) {
-    return SpecialLogicalKey(key_code, usage);
-  }
-  return code_point;
+  return LogicalKey(usage, event.keyCode, IsPrintable(code_point) ? code_point : 0);
 }
 
 }  // namespace
@@ -222,27 +210,6 @@ uint32_t MacKeyCodeToHidUsage(uint16_t key_code) {
     }
   }
   return 0;
-}
-
-bool IsSpecialKeyCode(uint16_t key_code) {
-  switch (key_code) {
-    case 0x24:  // Return
-    case 0x30:  // Tab
-    case 0x33:  // Backspace
-    case 0x35:  // Escape
-    case 0x4C:  // KeypadEnter
-    case 0x47:  // KeypadClear
-      return true;
-    default:
-      break;
-  }
-  if (key_code >= 0x36 && key_code <= 0x3F) {
-    return true;  // 修饰键 + Fn
-  }
-  const uint32_t usage = MacKeyCodeToHidUsage(key_code);
-  // F1..F12、Insert..ArrowUp(0x3A..0x52)、F13..F24 / 菜单 / 音量(0x68..0x81)、Lang(0x90..)。
-  return (usage >= 0x3A && usage <= 0x52) || (usage >= 0x65 && usage <= 0x81 && usage != 0x67) ||
-         (usage >= 0x90 && usage <= 0x91);
 }
 
 uint64_t DeviceModifierMaskForKeyCode(uint16_t key_code) {
@@ -286,7 +253,7 @@ std::vector<KeyData> KeyDataFromFlagsChanged(NSEvent* event) {
   KeyData data;
   data.timestamp_us = TimestampUs(event);
   data.physical_key = PhysicalKeyFromHidUsage(usage);
-  data.logical_key = SpecialLogicalKey(key_code, usage);
+  data.logical_key = SpecialLogicalKey(usage, key_code);
   data.modifiers = ToModifiers(event.modifierFlags);
   // 注意: flagsChanged 事件不能访问 characters(会抛 ObjC 异常)。
   if (key_code == 0x39) {

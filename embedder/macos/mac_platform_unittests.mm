@@ -69,21 +69,27 @@ TEST(MacKeyMappingTest, MapsToUsbHidUsages) {
   EXPECT_EQ(MacKeyCodeToHidUsage(0x52), 0x62u);  // Numpad0
   EXPECT_EQ(MacKeyCodeToHidUsage(0x3F), 0u);     // Fn: 无 usage
   EXPECT_EQ(MacKeyCodeToHidUsage(0xFF), 0u);
-  EXPECT_EQ(PhysicalKeyFromHidUsage(0x04), 0x00070004u);
-  EXPECT_EQ(PhysicalKeyFromHidUsage(0), 0u);
 }
 
 TEST(MacKeyMappingTest, ClassifiesSpecialKeys) {
-  EXPECT_TRUE(IsSpecialKeyCode(0x24));   // Return
-  EXPECT_TRUE(IsSpecialKeyCode(0x35));   // Escape
-  EXPECT_TRUE(IsSpecialKeyCode(0x38));   // Shift
-  EXPECT_TRUE(IsSpecialKeyCode(0x7B));   // ArrowLeft
-  EXPECT_TRUE(IsSpecialKeyCode(0x7A));   // F1
-  EXPECT_TRUE(IsSpecialKeyCode(0x69));   // F13
-  EXPECT_FALSE(IsSpecialKeyCode(0x00));  // A
-  EXPECT_FALSE(IsSpecialKeyCode(0x31));  // Space(可打印)
-  EXPECT_FALSE(IsSpecialKeyCode(0x52));  // Numpad0
-  EXPECT_FALSE(IsSpecialKeyCode(0x51));  // NumpadEqual
+  // 特殊键的规则是平台无关的(common/key_codes.h), 以 HID usage 判定: 这里核对 macOS 的键码表与它配得上。
+  auto special = [](uint16_t key_code) { return IsSpecialHidUsage(MacKeyCodeToHidUsage(key_code)); };
+  EXPECT_TRUE(special(0x24));   // Return
+  EXPECT_TRUE(special(0x30));   // Tab
+  EXPECT_TRUE(special(0x33));   // Backspace
+  EXPECT_TRUE(special(0x35));   // Escape
+  EXPECT_TRUE(special(0x4C));   // KeypadEnter
+  EXPECT_TRUE(special(0x47));   // KeypadClear
+  for (uint16_t modifier = 0x36; modifier <= 0x3E; ++modifier) {
+    EXPECT_TRUE(special(modifier)) << "modifier keycode " << modifier;
+  }
+  EXPECT_TRUE(special(0x7B));   // ArrowLeft
+  EXPECT_TRUE(special(0x7A));   // F1
+  EXPECT_TRUE(special(0x69));   // F13
+  EXPECT_FALSE(special(0x00));  // A
+  EXPECT_FALSE(special(0x31));  // Space(可打印)
+  EXPECT_FALSE(special(0x52));  // Numpad0
+  EXPECT_FALSE(special(0x51));  // NumpadEqual
   EXPECT_EQ(DeviceModifierMaskForKeyCode(0x38), 0x2u);
   EXPECT_EQ(DeviceModifierMaskForKeyCode(0x00), 0u);
 }

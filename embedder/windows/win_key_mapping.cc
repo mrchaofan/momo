@@ -168,29 +168,4 @@ uint32_t WinScanCodeToHidUsage(uint16_t scan_code, bool extended) {
   return 0;
 }
 
-bool IsSpecialHidUsage(uint32_t usage) {
-  switch (usage) {
-    case 0x28:  // Enter
-    case 0x29:  // Escape
-    case 0x2A:  // Backspace
-    case 0x2B:  // Tab
-    case 0x39:  // CapsLock
-    case 0x53:  // NumLock(mac: KeypadClear)
-    case 0x58:  // NumpadEnter
-    case 0x88:  // KanaMode
-    case 0x8A:  // Convert
-    case 0x8B:  // NonConvert
-      return true;
-    default:
-      break;
-  }
-  if (usage >= 0xE0 && usage <= 0xE7) {
-    return true;  // 修饰键
-  }
-  // F1..F12、PrintScreen..ArrowUp(0x3A..0x52)、ContextMenu..F24..音量(0x65..0x81, 除 NumpadEqual)、
-  // Lang1..Lang5(0x90..0x94)。
-  return (usage >= 0x3A && usage <= 0x52) || (usage >= 0x65 && usage <= 0x81 && usage != 0x67) ||
-         (usage >= 0x90 && usage <= 0x94);
-}
-
 }  // namespace momo::embedder::windows
