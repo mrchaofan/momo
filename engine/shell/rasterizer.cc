@@ -32,9 +32,7 @@ platform::CompositionLayout MakeLayout(const graphics::Composition& composition)
     geometry.frame = view.device_frame();
     geometry.axis_aligned = view.axis_aligned();
     geometry.opacity = view.opacity;
-    for (const graphics::DeviceClip& clip : view.clips) {
-      geometry.clips.push_back({clip.rect, clip.radius});
-    }
+    geometry.clips = view.clips;
     geometry.occluders = composition.OccludersAbove(i);
     layout.views.push_back(std::move(geometry));
     layout.overlays.push_back(composition.slice_bounds(i + 1));
@@ -59,7 +57,7 @@ platform::RenderSurface* Rasterizer::surface(platform::ViewId view_id) const {
   return view != nullptr ? view->surface : nullptr;
 }
 
-const RenderBackend* Rasterizer::backend(platform::ViewId view_id) const {
+const graphics::RenderBackend* Rasterizer::backend(platform::ViewId view_id) const {
   const ViewState* view = Find(view_id);
   return view != nullptr ? view->backend.get() : nullptr;
 }
@@ -87,14 +85,14 @@ void Rasterizer::Setup(platform::ViewId view_id, platform::RenderSurface* surfac
   DrawLastLayerTree(view_id);
 }
 
-StatusOr<std::shared_ptr<RenderBackend>> Rasterizer::AcquireBackend(platform::RenderSurface& surface) {
+StatusOr<std::shared_ptr<graphics::RenderBackend>> Rasterizer::AcquireBackend(platform::RenderSurface& surface) {
   std::erase_if(backends_, [](const auto& entry) { return entry.second.expired(); });
   const platform::GpuContextInfo gpu = surface.gpu_context();
   const BackendKey key{surface.kind(), gpu.device, gpu.queue};
   if (auto it = backends_.find(key); it != backends_.end()) {
     return it->second.lock();
   }
-  MOMO_ASSIGN_OR_RETURN(std::shared_ptr<RenderBackend> backend, CreateRenderBackend(surface));
+  MOMO_ASSIGN_OR_RETURN(std::shared_ptr<graphics::RenderBackend> backend, graphics::CreateRenderBackend(surface));
   backends_[key] = backend;
   MOMO_LOG(INFO) << "Rasterizer: created the " << BackendName(backend->kind()) << " backend.";
   return backend;
@@ -103,7 +101,7 @@ StatusOr<std::shared_ptr<RenderBackend>> Rasterizer::AcquireBackend(platform::Re
 void Rasterizer::SelectBackend(ViewState& view) {
   platform::RenderSurface& surface = *view.surface;
   view.backend.reset();  // 先放手: 若它是最后一个使用者, 旧后端的 GPU 资源在这里(raster 线程)释放
-  StatusOr<std::shared_ptr<RenderBackend>> backend = AcquireBackend(surface);
+  StatusOr<std::shared_ptr<graphics::RenderBackend>> backend = AcquireBackend(surface);
   if (!backend.ok() && surface.kind() != platform::SurfaceKind::kSoftware &&
       surface.kind() != platform::SurfaceKind::kNone) {
     // GPU 后端不可用(无设备、驱动/上下文创建失败): 逐级降回软件(docs/05 §4)。

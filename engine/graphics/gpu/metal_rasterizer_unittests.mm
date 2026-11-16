@@ -73,7 +73,7 @@ TEST(MetalRasterizerTest, MatchesSoftwareRasterizer) {
 
     LayerTree tree = MakeScene(kSize);
     ASSERT_TRUE((*rasterizer)
-                    ->DrawToTexture(tree, (__bridge void*)texture, tree.frame_size(), 0xFFFFFFFF)
+                    ->DrawToTexture(tree, (__bridge void*)texture, 0xFFFFFFFF)
                     .ok());
     // Managed 纹理: 回读前同步到 CPU。
     id<MTLCommandBuffer> blit_buffer = [queue commandBuffer];

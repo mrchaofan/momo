@@ -10,16 +10,12 @@
 
 #include "base/status.h"
 #include "engine/graphics/layer_tree.h"
+#include "engine/platform/render_surface.h"
 
 namespace momo::engine::graphics {
 
-// 32bpp 预乘 alpha, 字节序 B,G,R,A(与 platform::SoftwarePixels 一致)。
-struct PixelBuffer {
-  void* pixels = nullptr;
-  size_t row_bytes = 0;
-  int width = 0;
-  int height = 0;
-};
+// 像素缓冲就是平台契约里的软件帧: 32bpp 预乘 alpha, 字节序 B,G,R,A。
+using PixelBuffer = platform::SoftwarePixels;
 
 // 先清为 clear_color(0xAARRGGBB, 默认全透明), 再 Preroll + Paint 整棵树。
 Status RasterizeLayerTree(LayerTree& tree, const PixelBuffer& target,

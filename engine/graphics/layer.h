@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "base/geometry.h"
+#include "engine/platform/platform_view.h"
 #include "base/matrix.h"
 #include "engine/graphics/display_list.h"
 
@@ -28,11 +29,8 @@ namespace momo::engine::graphics {
 
 struct PaintContext;  // graphics 内部(skia/paint_context.h)
 
-// 祖先裁剪(设备空间轴对齐矩形 + 圆角半径;含旋转/斜切时为包围盒近似)。
-struct DeviceClip {
-  Rect rect;
-  double radius = 0;
-};
+// 祖先裁剪(设备空间轴对齐矩形 + 圆角半径;含旋转/斜切时为包围盒近似): 平台契约里的同一个类型。
+using DeviceClip = platform::PlatformViewClip;
 
 // Preroll 收集到的一个平台视图(按绘制顺序)。
 struct EmbeddedView {

@@ -758,11 +758,13 @@ void Rasterizer::DrawToSurface(LayerTree& tree) {
 }
 ```
 
+后端接口 `graphics::RenderBackend`（`engine/graphics/render_backend.h`）由各光栅器直接实现；graphics 直接使用平台契约里的 `SurfaceFrame` / `SoftwarePixels`，没有镜像类型。
+
 | 后端 | 条件 | 实现 |
 |---|---|---|
-| `MetalBackend` | `SurfaceKind::kMetal` | `graphics::MetalRasterizer`：持有 Skia Ganesh `GrDirectContext`（建在 surface 报告的 `MTLDevice` + `MTLCommandQueue` 上；设备是应用级的，所以全部窗口共用这一个后端） |
-| `SoftwareBackend` | `SurfaceKind::kSoftware` | `graphics::RasterizeLayerTree` 直接画进 surface 给出的 BGRA 预乘缓冲 |
-| `NullBackend` | `SurfaceKind::kNone` | 只走 present（测试） |
+| `graphics::MetalRasterizer` | `SurfaceKind::kMetal` | 持有 Skia Ganesh `GrDirectContext`（建在 surface 报告的 `MTLDevice` + `MTLCommandQueue` 上；设备是应用级的，所以全部窗口共用这一个后端） |
+| 软件后端 | `SurfaceKind::kSoftware` | `graphics::RasterizeLayerTree` 直接画进 surface 给出的 BGRA 预乘缓冲 |
+| 空后端 | `SurfaceKind::kNone` | 只走 present（测试） |
 
 ```objc
 // 伪代码：MetalRasterizer::Draw（engine/graphics/gpu/metal_rasterizer.mm）

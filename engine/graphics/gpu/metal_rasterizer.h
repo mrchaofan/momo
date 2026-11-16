@@ -1,6 +1,7 @@
 #pragma once
 
-// MetalRasterizer: Ganesh(Skia GPU)Metal 后端的 graphics 侧实现(docs/05 §4 MetalBackend)。
+// MetalRasterizer: Metal 的 RenderBackend(docs/05 §4): Ganesh(Skia GPU), 每帧把 CAMetalDrawable 包装为
+// render target。
 // 公共头不含 Skia/ObjC 类型(docs/10 §1): Metal 对象以 void* 传入(id<MTLDevice> / id<MTLCommandQueue> /
 // id<CAMetalDrawable> / id<MTLTexture> 的 __bridge 指针, 非拥有)。
 //
@@ -16,29 +17,28 @@
 #include "base/status.h"
 #include "engine/graphics/composition.h"
 #include "engine/graphics/layer_tree.h"
+#include "engine/graphics/render_backend.h"
 
 namespace momo::engine::graphics {
 
-class MetalRasterizer {
+class MetalRasterizer final : public RenderBackend {
  public:
   // mtl_device: id<MTLDevice>;mtl_queue: id<MTLCommandQueue>(须属于该 device)。内部各自 retain。
   static StatusOr<std::unique_ptr<MetalRasterizer>> Create(void* mtl_device, void* mtl_queue);
-  ~MetalRasterizer();
+  ~MetalRasterizer() override;
 
-  // 把整棵树画进 drawable(id<CAMetalDrawable>)的纹理并提交命令缓冲(不 present)。
-  // size: 帧的物理像素尺寸(应与 drawable 纹理一致;以纹理实际尺寸为准)。
-  // clear_color: 0xAARRGGBB(默认全透明, 与软件后端一致)。
-  Status Draw(LayerTree& tree, void* drawable, Size size, uint32_t clear_color = 0x00000000);
-  // 同上, 目标为 id<MTLTexture>(BGRA8Unorm, 带 RenderTarget usage)。离屏/测试用。
-  Status DrawToTexture(LayerTree& tree, void* mtl_texture, Size size,
-                       uint32_t clear_color = 0x00000000);
-  // 平台视图合成(docs/05 §9): 把分片 slice 画进 drawable(id<CAMetalDrawable>)并提交(不 present)。
+  // RenderBackend。frame.gpu_target 是 id<CAMetalDrawable>: 画进它的纹理并提交命令缓冲(以纹理的实际尺寸为准)。
+  platform::SurfaceKind kind() const override { return platform::SurfaceKind::kMetal; }
+  Status Draw(LayerTree& tree, const platform::SurfaceFrame& frame) override;
   // drawable 像素 (0,0) 对应设备坐标 origin。
-  Status DrawSlice(const Composition& composition, size_t slice, void* drawable, Point origin,
-                   uint32_t clear_color = 0x00000000);
-  // 等待到目前为止提交的命令缓冲都已被 GPU 调度(之后可在其他线程 present drawable,
-  // CAMetalLayer.presentsWithTransaction 要求)。
-  void WaitUntilScheduled();
+  Status DrawSlice(const Composition& composition, size_t slice, const platform::SurfaceFrame& frame,
+                   Point origin) override;
+  // 呈现在 platform 线程进行(CAMetalLayer.presentsWithTransaction): 等到目前为止提交的命令缓冲都已被 GPU 调度。
+  void PrepareForExternalPresent() override;
+
+  // 把整棵树画进 id<MTLTexture>(BGRA8Unorm, 带 RenderTarget usage)并提交。离屏/测试用。
+  // clear_color: 0xAARRGGBB。
+  Status DrawToTexture(LayerTree& tree, void* mtl_texture, uint32_t clear_color = 0x00000000);
 
  private:
   struct Impl;
