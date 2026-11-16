@@ -1,6 +1,6 @@
 #pragma once
 
-// WinSoftwareSurface: 软件 surface(kind kSoftware;docs/05 §4 SoftwareBackend 的 Windows 呈现端)。
+// WinSoftwareSurface: 软件 surface(kind kSoftware;ARCHITECTURE.md §3.5: 软件后端的 Windows 呈现端)。
 // 仅被 embedder/windows 的 .cc 包含。
 // raster 线程直接画进本对象持有的内存缓冲(32bpp、预乘 alpha、B,G,R,A 字节序 = platform::SoftwarePixels;
 // 窗口不透明, GDI 以 BI_RGB 解释时忽略 alpha 字节)。present 把该缓冲标记为"待显示"并入队窗口的 PresentQueue;

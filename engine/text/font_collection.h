@@ -1,8 +1,8 @@
 #pragma once
 
 // FontCollection: 系统字体(平台字体管理器: Mac CoreText / Win DirectWrite)+ 应用内嵌字体 + 回退链
-// (docs/02 §6)。公共头不含 Skia 类型。
-// 线程约定: 归属 ui 线程(段落排版在 ui 线程同步进行, docs/05 §6);每个 JS 运行时一个实例。
+// (ARCHITECTURE.md §4.5)。公共头不含 Skia 类型。
+// 线程约定: 归属 ui 线程(段落排版在 ui 线程同步进行, ARCHITECTURE.md §4.5);每个 JS 运行时一个实例。
 
 #include <cstdint>
 #include <memory>

@@ -1,6 +1,6 @@
 #pragma once
 
-// Windows 键盘消息 → platform::KeyData(docs/03 §3;对应 macOS 的 KeyDataFromKeyEvent)。
+// Windows 键盘消息 → platform::KeyData(ARCHITECTURE.md §3.4;对应 macOS 的 KeyDataFromKeyEvent)。
 // 编码规则(physical_key / logical_key、特殊键)在 embedder/common/key_codes.h, 扫描码表在 win_key_mapping.h;
 // 这里是依赖 Win32 的部分: 从消息里取扫描码、向系统要当前布局下的字符。
 // 线程约定: platform(主)线程。

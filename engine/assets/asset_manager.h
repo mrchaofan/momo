@@ -1,6 +1,6 @@
 #pragma once
 
-// AssetManager: 应用资源(assets/ 目录)的统一读取入口(docs/02 §6)。根目录是应用的 assets/(engine/common/app_layout.h)
+// AssetManager: 应用资源(assets/ 目录)的统一读取入口(ARCHITECTURE.md §4.5)。根目录是应用的 assets/(engine/common/app_layout.h)
 // (Settings::assets_dir)。路径一律相对根目录, 拒绝绝对路径与逃出根目录的 "..",
 // 也拒绝经符号链接逃出根目录。
 // 线程约定: 无可变状态, 任意线程可调用;读取是阻塞 IO, 应在 io 线程调用。

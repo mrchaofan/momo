@@ -10,7 +10,7 @@
 //     输入路由投递);键盘事件经 mac_key_mapping 归一化为 KeyData 经 delegate 上报。
 //   - IME: 视图实现 NSTextInputClient, 委托给 MacTextInput(text_input())。
 //   - 光标: SetCursor 用 NSCursor(kHidden 只在鼠标位于视图内时隐藏, 离开即恢复)。
-//   - 平台视图(docs/05 §9): MomoPlatformViews 宿主挂在内容视图上;几何由 Metal surface 的合成帧驱动。
+//   - 平台视图(ARCHITECTURE.md §4.10): MomoPlatformViews 宿主挂在内容视图上;几何由 Metal surface 的合成帧驱动。
 //     点击 momo 区域时内容视图取回第一响应者;平台视图获得焦点时经 delegate 通知引擎。
 // 线程约定: platform(主)线程;surface() 由 raster 线程使用(render_surface.h)。
 

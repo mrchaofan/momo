@@ -18,7 +18,7 @@ StatusOr<std::unique_ptr<AppDriver>> CreateAppDriver(const Settings& settings, W
   runtime::JsRuntime::Options options;
   options.code_cache_dir = settings.code_cache_dir;
   options.builtin_dir = settings.builtin_dir;
-  // --dev: Node 的 inspector(docs/04 §7)。监听失败只由 Node 打印警告, 不影响应用启动。
+  // --dev: Node 的 inspector(ARCHITECTURE.md §3.9)。监听失败只由 Node 打印警告, 不影响应用启动。
   options.enable_inspector = settings.enable_inspector;
   options.inspector_port = settings.inspector_port;
   options.inspector_wait = settings.inspector_wait;

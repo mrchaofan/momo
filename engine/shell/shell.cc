@@ -91,7 +91,7 @@ void Shell::Shutdown() {
     }
   });
   // 3) ui: 销毁 Engine(JS 运行时与 Animator);扩展登记的清理函数在这里执行。此前投递到 ui 的任务按 FIFO
-  //    已执行完毕(包括尚未执行的 Run), 之后不再投递。必须在线程 join 前同步销毁(docs/01 §4), 所以这里
+  //    已执行完毕(包括尚未执行的 Run), 之后不再投递。必须在线程 join 前同步销毁(ARCHITECTURE.md §3.8), 所以这里
   //    同步汇合。返回后没有 JS 在运行, 引擎不再出帧。
   PostTaskAndWait(*task_runners_.ui, [this] { engine_.reset(); });
   // 释放 VsyncSource(DeleteLater, platform 事件循环安全点析构)。

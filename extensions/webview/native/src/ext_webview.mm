@@ -1,4 +1,4 @@
-// ext_webview: 系统 WebView(macOS WKWebView)作为平台视图嵌入 momo(docs/05 §9、docs/07 §3)。
+// ext_webview: 系统 WebView(macOS WKWebView)作为平台视图嵌入 momo(ARCHITECTURE.md §4.10、docs/07 §3)。
 // 一个 Node 插件: 与 JS 之间用 Node-API, 与引擎之间用宿主能力表(momo_host.h)——注册平台视图类型、
 // 把任务投到 platform 线程。不链接引擎任何符号。接口设计与 WebView2 映射见本扩展的 README。
 //

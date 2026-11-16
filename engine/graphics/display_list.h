@@ -1,6 +1,6 @@
 #pragma once
 
-// DisplayList: 一段不可变、可重放、可跨线程共享的绘制指令(docs/05 §2)。
+// DisplayList: 一段不可变、可重放、可跨线程共享的绘制指令(ARCHITECTURE.md §4.5)。
 // 存储 = POD 指令流(DisplayList::Op, 参数为 float, 与 Skia 一致)+ 侧表(Paint、Path、Matrix、嵌套 DisplayList)。
 // ui 线程由 DisplayListBuilder 记录(JS Canvas)→ Build() 冻结为 shared_ptr<const DisplayList>
 // → raster 线程首次回放时转换为 Skia 对象并缓存(raster_cache), 之后每帧直接重放缓存。
@@ -80,7 +80,7 @@ class DisplayList {
   // 含无界绘制(drawColor/drawPaint)且无 cull rect 时为 nullopt。
   const std::optional<Rect>& bounds() const { return bounds_; }
   // 可命中区域(本地坐标, 已考虑记录期的变换与裁剪;嵌套列表的已并入)。不参与绘制, 只告诉宿主
-  // "这里的 momo 内容会接收指针事件"(docs/05 §9: 宿主据此判断平台视图是否被 momo 内容盖住)。
+  // "这里的 momo 内容会接收指针事件"(ARCHITECTURE.md §4.10: 宿主据此判断平台视图是否被 momo 内容盖住)。
   const std::vector<Rect>& hit_regions() const { return hit_regions_; }
   size_t op_count() const { return ops_.size(); }
 

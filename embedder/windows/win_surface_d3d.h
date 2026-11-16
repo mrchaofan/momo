@@ -1,6 +1,6 @@
 #pragma once
 
-// WinD3DSurface: DXGI 交换链 surface(kind kDirect3D;docs/05 §4 Direct3DBackend 的平台端, 对应 macOS 的
+// WinD3DSurface: DXGI 交换链 surface(kind kDirect3D;ARCHITECTURE.md §3.5, D3DRasterizer 的平台端, 对应 macOS 的
 // MacMetalSurface)。仅被 embedder/windows 的 .cc 包含。
 //
 // 结构: 窗口(HWND)上的 flip-model 交换链(DXGI_SWAP_EFFECT_FLIP_DISCARD, 2 个 BGRA8 后台缓冲,

@@ -1,6 +1,6 @@
 #pragma once
 
-// PlatformIntegration: embedder 平台抽象的工厂与根入口(docs/03 §2)。engine 不可见;具体实现由平台入口创建并注入 Application。
+// PlatformIntegration: embedder 平台抽象的工厂与根入口(ARCHITECTURE.md §3.1)。engine 不可见;具体实现由平台入口创建并注入 Application。
 // 线程约定: 仅 platform 线程调用(native_loop() 返回的对象按 base/native_loop.h 约定线程安全)。
 
 #include <memory>

@@ -1,6 +1,6 @@
 #pragma once
 
-// WindowManager: 宿主的窗口注册表(docs/01 §3)。拥有全部 WindowController(视图 id → 窗口)与窗口通道
+// WindowManager: 宿主的窗口注册表(ARCHITECTURE.md §3.10)。拥有全部 WindowController(视图 id → 窗口)与窗口通道
 // momo/window, 负责窗口的创建、关闭询问与焦点归属。它不决定应用是否退出: 最后一个窗口关闭只通知 Observer
 // (Application 据此发 momo/app windowAllClosed, 由 JS 决定)。
 // 引擎先于窗口: 本对象在引擎创建之后构造, 每个窗口创建即绑定为引擎的视图——没有"有窗口、没有引擎"的状态。

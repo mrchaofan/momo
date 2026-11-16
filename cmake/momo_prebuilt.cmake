@@ -95,7 +95,7 @@ endif()
 
 # ---------------------------------------------------------------------------
 # V8: 来自 libnode(Node.js 26 LTS, tools/build_libnode.py 从源码构建)。momo 只使用 Node 内置的 V8,
-# 不另带一份 V8: 嵌入 Node(docs/04 §1)要求 isolate 由同一份 V8 创建。
+# 不另带一份 V8: 嵌入 Node(ARCHITECTURE.md §4.6)要求 isolate 由同一份 V8 创建。
 # V8 配置跟随 Node 默认: pointer compression 关、sandbox 关, 嵌入方不定义 V8_COMPRESS_POINTERS 等;
 # ICU 完整数据编入 libnode(无 icudtl.dat)。头文件: include/node/{node.h, uv.h, v8*.h, libplatform/}。
 

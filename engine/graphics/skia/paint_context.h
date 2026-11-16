@@ -20,7 +20,7 @@
 
 namespace momo::engine::graphics {
 
-// 平台视图分片器(composition.cc 实现, docs/05 §9)。只在合成路径上存在。
+// 平台视图分片器(composition.cc 实现, ARCHITECTURE.md §4.10)。只在合成路径上存在。
 class ViewSlicer {
  public:
   // 叶子即将在 leaf 上绘制 local_bounds(leaf 当前坐标系;nullopt = 无界), 用于计算各分片的内容范围。

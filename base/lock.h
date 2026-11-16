@@ -1,7 +1,7 @@
 #pragma once
 
 // Mutex / MutexLock: 上层(platform/engine/embedder)使用的互斥锁(docs/10 §1: 上层不直接用 std::mutex)。
-// 只用于"小临界区保护共享表"这类场景;跨线程协作优先消息传递 + 不可变数据(docs/08 §3)。
+// 只用于"小临界区保护共享表"这类场景;跨线程协作优先消息传递 + 不可变数据(ARCHITECTURE.md §1.3)。
 // header-only, 属于 momo_base。
 
 #include <mutex>

@@ -1,6 +1,6 @@
 #pragma once
 
-// 按键的平台无关规则(docs/03 §3): KeyData 的 physical_key / logical_key 怎么编码、哪些键算"特殊键"。
+// 按键的平台无关规则(ARCHITECTURE.md §3.4): KeyData 的 physical_key / logical_key 怎么编码、哪些键算"特殊键"。
 // 这是框架可见的契约, 同一个键在每个平台必须得到同一个答案, 所以只在这里定义一次;平台层只负责
 // "原生键码 → HID usage"的表和"取当前布局下不带修饰键的字符"的系统调用。
 //   physical_key: USB HID usage(Keyboard/Keypad page 0x07), 编码为 0x00070000 | usage;未知键为 0。

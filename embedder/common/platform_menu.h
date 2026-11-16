@@ -1,6 +1,6 @@
 #pragma once
 
-// PlatformMenus: 原生菜单与托盘图标(docs/03 §2)。embedder 的平台抽象, engine 不可见;由宿主的 momo/menu、
+// PlatformMenus: 原生菜单与托盘图标(ARCHITECTURE.md §3.11)。embedder 的平台抽象, engine 不可见;由宿主的 momo/menu、
 // momo/tray 通道(menu_channel.h、tray_channel.h)调用。平台按 MenuModel 构建原生菜单, 不保存 JS 的任何状态:
 // 内容变化 = 再设置一次。
 //

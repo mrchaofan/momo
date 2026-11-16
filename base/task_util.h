@@ -1,6 +1,6 @@
 #pragma once
 
-// 跨线程任务的常用组合(docs/12 §3)。都建立在 TaskRunner::PostTask 之上, 任意线程可调用。
+// 跨线程任务的常用组合(ARCHITECTURE.md §2.4)。都建立在 TaskRunner::PostTask 之上, 任意线程可调用。
 //
 //   PostTaskAndWait(runner, task)        在 runner 线程执行 task 并阻塞等待(仅限启动/关闭汇合点)。
 //   PostTaskAndReplyWithResult(runner, task, reply_runner, reply)
@@ -17,7 +17,7 @@
 
 namespace momo {
 
-// 已在 runner 线程则直接执行。帧路径等热路径禁止使用(docs/08 §3)。返回 task 是否被执行。
+// 已在 runner 线程则直接执行。帧路径等热路径禁止使用(ARCHITECTURE.md §1.3)。返回 task 是否被执行。
 bool PostTaskAndWait(TaskRunner& runner, Closure task);
 
 template <typename Task, typename Reply>

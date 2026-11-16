@@ -1,6 +1,6 @@
 #pragma once
 
-// macOS 键盘事件 → platform::KeyData 的翻译(docs/03 §3)。仅被 .mm 文件包含。
+// macOS 键盘事件 → platform::KeyData 的翻译(ARCHITECTURE.md §3.4)。仅被 .mm 文件包含。
 // physical_key / logical_key 的编码与"哪些键是特殊键"是平台无关的规则, 见 embedder/common/key_codes.h;
 // 这里只有 macOS 的部分: virtual keycode → HID usage 的表、取字符的 AppKit 调用、修饰键事件。
 

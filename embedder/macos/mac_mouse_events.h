@@ -1,6 +1,6 @@
 #pragma once
 
-// macOS 的鼠标与其他位置型输入(docs/05 §9 "输入")。仅被 .mm 包含。
+// macOS 的鼠标与其他位置型输入(ARCHITECTURE.md §4.10 "输入")。仅被 .mm 包含。
 //   - MomoClassifyMouseEvent: 事件分类(纯函数)。窗口的 -sendEvent: 按此分流: None 以外的事件全部先交给 momo,
 //     不由 AppKit 按几何直接投递给原生视图。
 //   - MacMouseInput: 进程内一个(由 MacPlatformIntegration 持有, 注入每个 MacWindow)。持有平台无关的
@@ -29,7 +29,7 @@ typedef NS_ENUM(NSInteger, MomoMouseEventKind) {
   MomoMouseEventKindEnter,
   MomoMouseEventKindExit,
   // 其他带位置的输入: 触控板捏合/旋转/轻扫/智能缩放、查询、Force Touch 压力、手写板点、手势开始/结束。
-  // 与鼠标事件一样先交给 momo, 由框架决定接收者(docs/05 §9 "输入")。
+  // 与鼠标事件一样先交给 momo, 由框架决定接收者(ARCHITECTURE.md §4.10 "输入")。
   MomoMouseEventKindGesture,
 };
 

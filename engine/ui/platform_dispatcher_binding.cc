@@ -1,4 +1,4 @@
-// momo:ui 的视图(窗口)对象、事件分发与 momo:ui 共享状态(docs/04 §6)。
+// momo:ui 的视图(窗口)对象、事件分发与 momo:ui 共享状态(ARCHITECTURE.md §4.7)。
 //
 // JS 可见(完整声明见 framework/packages/momo/src/ui/momo-ui.d.ts):
 //   Viewport(每个视图一个): id / devicePixelRatio / physicalSize / visible(只读快照, 变化时刷新)
@@ -387,7 +387,7 @@ void UiBindings::OnPointerPacket(ViewId view, const platform::PointerDataPacket&
   Entered js(*runtime_);
   v8::Isolate* isolate = js.isolate;
   const size_t needed = packet.size() * kPointerStride;
-  // 复用缓冲(docs/04 §6: 事件对象使用预分配的 TypedArray 视图), 容量不足时按 2 倍增长。
+  // 复用缓冲(ARCHITECTURE.md §4.7: 事件对象使用预分配的 TypedArray 视图), 容量不足时按 2 倍增长。
   if (impl_->pointer_buffer.IsEmpty() || impl_->pointer_capacity < needed) {
     impl_->pointer_capacity = std::max<size_t>(needed, impl_->pointer_capacity * 2);
     v8::Local<v8::ArrayBuffer> buffer =

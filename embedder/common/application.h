@@ -1,6 +1,6 @@
 #pragma once
 
-// Application: 进程级生命周期根对象(docs/01 §3)。每进程由平台入口创建一个。
+// Application: 进程级生命周期根对象(ARCHITECTURE.md §3.3)。每进程由平台入口创建一个。
 //
 // 状态机: NotRunning → Launching → Running ⇄ Suspended → Terminating
 //                         └──────────(启动失败)──────────────┘
@@ -11,7 +11,7 @@
 //
 // 职责: 持有 PlatformIntegration、OS 主线程的 EventLoop(经 base::NativeMessagePump 跑原生消息循环)、
 //       ui/raster/io 线程、引擎 Shell、窗口注册表(WindowManager);注册宿主通道(momo/app、momo/window、
-//       momo/menu、momo/tray、平台服务);执行没有系统标准动作的菜单 role;退出状态机;按 docs/01 §4 严格有序关闭。
+//       momo/menu、momo/tray、平台服务);执行没有系统标准动作的菜单 role;退出状态机;按 ARCHITECTURE.md §3.8 严格有序关闭。
 // 退出(同 Electron 的 app.quit / app.exit;没有"直接终止"的入口):
 //   Quit()  —— Cmd+Q、菜单退出、JS app.quit():  beforeQuit → 逐个询问窗口 closeRequested 并关闭 → willQuit →
 //              Shutdown;任一步被 JS 取消即中止。启动期间(bundle 还在执行)同样走这条流程: 询问排在 bundle
@@ -20,7 +20,7 @@
 //   Shutdown(内部): 进入 Terminating(JS 收到这一状态, 相当于 Electron 的 'quit' 事件), 请求消息循环结束。
 //              这里不销毁任何东西: JS 照常运行到循环结束。
 //   最后一个窗口关闭不退出: 只发 momo/app windowAllClosed, 由 JS 决定。
-// 销毁(TearDown): 消息循环结束之后(Run 返回前)按依赖逐级进行, 引擎最先(docs/01 §4):
+// 销毁(TearDown): 消息循环结束之后(Run 返回前)按依赖逐级进行, 引擎最先(ARCHITECTURE.md §3.8):
 //   引擎(平台视图 → JS 运行时 → GPU 资源, 见 Shell::Shutdown)→ 宿主通道 → 窗口 → 线程 join。
 //   销毁要与 ui 线程汇合。JS 不返回(等待调试器连接、脚本死循环)时退出就停在这里等它——不强行终止 JS,
 //   也不强杀进程。
@@ -55,7 +55,7 @@ class Application final : public Object,
  public:
   enum class State { kNotRunning, kLaunching, kRunning, kSuspended, kTerminating };
 
-  // 关闭步骤, 按发生顺序, 与 docs/01 §4 一一对应。
+  // 关闭步骤, 按发生顺序, 与 ARCHITECTURE.md §3.8 一一对应。
   enum class ShutdownStep {
     kMessageLoopQuit,  // 0) 请求 platform EventLoop 结束(排空任务、清理 DeleteLater 对象后退出原生循环)
     kEngineShutdown,   // 1+2) ui: 销毁 JsRuntime, 再停帧/卸扩展;raster: 释放 GPU 资源

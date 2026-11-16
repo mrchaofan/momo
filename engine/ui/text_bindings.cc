@@ -1,4 +1,4 @@
-// momo:ui 文本类: ParagraphBuilder、Paragraph、loadFontFromBytes(docs/02 §4、M3)。
+// momo:ui 文本类: ParagraphBuilder、Paragraph、loadFontFromBytes(ARCHITECTURE.md §4.7)。
 // 样式以普通 JS 对象传入(字段见 momo-ui.d.ts 的 TextStyle / ParagraphStyle), 未知字段忽略。
 
 #include <cmath>

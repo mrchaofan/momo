@@ -1,6 +1,6 @@
 #pragma once
 
-// AppChannel: 宿主的应用通道 momo/app(docs/03 §2)。应用生命周期属于宿主(不经引擎);框架的 app 对象的方法与
+// AppChannel: 宿主的应用通道 momo/app(ARCHITECTURE.md §3.10)。应用生命周期属于宿主(不经引擎);框架的 app 对象的方法与
 // 事件一一对应这里的协议。新增应用接口 = PlatformApp 加方法 + 这里 Register 一个方法 + 框架 app 加方法。
 //
 // momo/app(StandardMethodCodec):

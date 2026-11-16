@@ -1,4 +1,4 @@
-# embedder/: 宿主层(docs/01、docs/03), 对标 Flutter 的 shell/platform/<os>。
+# embedder/: 宿主层(ARCHITECTURE.md §3), 对标 Flutter 的 shell/platform/<os>。
 #   common/   平台无关的装配与生命周期(Application、WindowController…)+ embedder 自己的平台抽象
 #             (PlatformIntegration、PlatformWindow;engine 不可见), 可用 mock 单测
 #   macos/    Cocoa 实现(窗口、Metal/软件 surface、CVDisplayLink、IME、原生循环)+ 入口

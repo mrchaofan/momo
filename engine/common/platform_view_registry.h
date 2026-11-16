@@ -1,6 +1,6 @@
 #pragma once
 
-// PlatformViewRegistry: 平台视图的类型(工厂)与实例表(docs/05 §9、docs/07 §3)。
+// PlatformViewRegistry: 平台视图的类型(工厂)与实例表(ARCHITECTURE.md §4.10、docs/07 §3)。
 //   - 工厂: 扩展经宿主表的 platform_view_register_factory 注册(任意线程), 按视图类型名("acme.webview")索引;
 //     一经注册到 Clear 为止都有效。
 //   - 实例: JS 经 momo/platform_views 通道请求 create/dispose, Shell 在 platform 线程调用本表。

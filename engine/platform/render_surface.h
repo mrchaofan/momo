@@ -70,7 +70,7 @@ class RenderSurface {
   // physical_size: 物理像素。软件 surface 返回的缓冲在下一次 AcquireFrame 前有效。
   virtual StatusOr<SurfaceFrame> AcquireFrame(Size physical_size) = 0;
 
-  // ---- 平台视图合成(可选能力, docs/05 §9)----
+  // ---- 平台视图合成(可选能力, ARCHITECTURE.md §4.10)----
   // 不支持时平台视图不显示(PlatformViewLayer 不绘制任何内容), 其余画面照常。
   // 返回值可随回退变化(如 Metal 回退软件后变为 false), raster 线程每帧查询。
   virtual bool SupportsPlatformViews() const { return false; }

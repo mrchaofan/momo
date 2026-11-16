@@ -1,6 +1,6 @@
 #pragma once
 
-// MenuChannel: 宿主的菜单通道 momo/menu(docs/03 §2)。框架的 Menu 对象持有菜单内容与点击回调;这里把 JS 发来的
+// MenuChannel: 宿主的菜单通道 momo/menu(ARCHITECTURE.md §3.11)。框架的 Menu 对象持有菜单内容与点击回调;这里把 JS 发来的
 // 描述(MenuModel)交给平台(PlatformMenus), 把菜单项的激活送回 JS。
 //
 // momo/menu(StandardMethodCodec;菜单项的格式见 menu_model.h 的 ParseMenuModel):

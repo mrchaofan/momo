@@ -1,6 +1,6 @@
 #pragma once
 
-// Windows 平台集成工厂(docs/03 §2;对应 macOS 的 mac_platform_integration.h)。纯 C++ 头(不含 <windows.h>),
+// Windows 平台集成工厂(ARCHITECTURE.md §3.1;对应 macOS 的 mac_platform_integration.h)。纯 C++ 头(不含 <windows.h>),
 // 供入口(main_win.cc)使用。
 //
 // 必须在 OS 主线程调用, 且在此之前进程已声明 Per-Monitor-V2 DPI 感知(入口的

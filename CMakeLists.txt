@@ -2,7 +2,7 @@
 # 要求: CMake >= 3.24, Ninja, C++20。禁用异常与 RTTI(见 cmake/momo_options.cmake)。
 cmake_minimum_required(VERSION 3.24)
 
-# 最低部署 macOS 12(docs/09 §1), 须在 project() 之前设置。
+# 最低部署版本(Node 26 / libnode 的要求), 须在 project() 之前设置。
 set(CMAKE_OSX_DEPLOYMENT_TARGET "13.5" CACHE STRING "Minimum macOS version (Node 26 / libnode 要求)")
 
 # 版本号的唯一来源: @momo/framework 的 package.json(发布 tag v<version> 必须与之一致, docs/09 §6)。

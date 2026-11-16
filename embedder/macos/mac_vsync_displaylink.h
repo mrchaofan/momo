@@ -1,6 +1,6 @@
 #pragma once
 
-// MacVsyncDisplayLink: 基于 CVDisplayLink 的 platform::VsyncSource(docs/03 §4)。仅被 .mm 包含。
+// MacVsyncDisplayLink: 基于 CVDisplayLink 的 platform::VsyncSource(ARCHITECTURE.md §3.6)。仅被 .mm 包含。
 //
 // 按需运行: RequestFrameCallback 时启动 display link;下一个 tick 在 platform 线程触发一次性 callback;
 // 某个 tick 到达时没有待处理请求就停止 display link——无动画时零唤醒、零功耗。

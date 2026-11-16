@@ -1,6 +1,6 @@
 #pragma once
 
-// 段落排版: SkParagraph 的薄封装(docs/02 §6、docs/05 §6)。公共头不含 Skia 类型。
+// 段落排版: SkParagraph 的薄封装(ARCHITECTURE.md §4.5)。公共头不含 Skia 类型。
 // 文本以 UTF-16 传入, 所有下标为 UTF-16 码元下标(与 JS 字符串一致)。
 // 绘制: Paragraph::Record() 把当前排版结果录制为不可变的 graphics::ExternalPicture(在 ui 线程),
 // 记录进 DisplayList 后由 raster 线程重放——raster 线程从不触碰可变的段落对象。

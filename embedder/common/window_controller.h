@@ -1,6 +1,6 @@
 #pragma once
 
-// WindowController: PlatformWindow ↔ engine::Shell 视图的粘合层(docs/01 §3)。
+// WindowController: PlatformWindow ↔ engine::Shell 视图的粘合层(ARCHITECTURE.md §3.4)。
 //  - 正向: 窗口回调(尺寸/DPI、输入、焦点、可见性)→ Shell(由 Shell 转投 ui 线程);纯通知类的窗口事件
 //    (状态、焦点、屏幕框、窗口控制按钮、首帧)与输入法事件 → 直接交给注入的通道(JS);关闭请求需要
 //    WindowManager 做决定 → Events::close_requested。

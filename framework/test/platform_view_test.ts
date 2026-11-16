@@ -1,4 +1,4 @@
-// 平台视图(docs/05 §9): PlatformView view ↔ momo/platform_views 通道 ↔ SceneBuilder.addPlatformView。
+// 平台视图(ARCHITECTURE.md §4.10): PlatformView view ↔ momo/platform_views 通道 ↔ SceneBuilder.addPlatformView。
 import {
   ColoredBox, Colors, Focus, IgnorePointer, GestureDetector, FocusManager, FocusNode, MethodCall, PlatformView, PlatformViewLayer, PlatformViewsService,
   Positioned, SizedBox, Stack, StandardMethodCodec, defaultBinaryMessenger, type PlatformViewController,
@@ -139,7 +139,7 @@ group("platform views", () => {
     }
   }, { mockOnly: true });
 
-  // ---- 输入(docs/05 §9 "输入"): 宿主在主线程按每帧几何直接把原生事件交给原生视图, 不经过框架。
+  // ---- 输入(ARCHITECTURE.md §4.10 "输入"): 宿主在主线程按每帧几何直接把原生事件交给原生视图, 不经过框架。
   // 框架里的平台视图只占位: 几何刚变化、新帧尚未呈现时落到这里的事件不穿透到下面的 momo 内容。
   // 宿主按"平台视图之上的可命中区域"决定原生事件归谁: 只记录自身可命中的节点, IgnorePointer 子树与平台视图本身不记。
   testViews("content above a platform view records hit regions; ignored subtrees do not", async (t, ctx) => {

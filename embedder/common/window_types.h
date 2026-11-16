@@ -1,6 +1,6 @@
 #pragma once
 
-// 窗口管理的数据类型(momo/window 通道, docs/03 §2)。embedder 的平台抽象: engine 不可见——窗口外观
+// 窗口管理的数据类型(momo/window 通道, ARCHITECTURE.md §3.1)。embedder 的平台抽象: engine 不可见——窗口外观
 // 与行为属于宿主, 引擎只认识视图(尺寸、输入、画面)。
 
 #include <cstdint>

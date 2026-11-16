@@ -1,6 +1,6 @@
 #pragma once
 
-// IME 接入协议(docs/03 §3)。embedder 的平台抽象, engine 不可见。
+// IME 接入协议(ARCHITECTURE.md §3.7)。embedder 的平台抽象, engine 不可见。
 //
 // 编辑模型归 JS 框架所有(EditableText);平台只负责与系统输入法交互:
 //   JS → 平台(momo/textinput 通道, 由 embedder 的 PlatformChannels 交给当前获得焦点的窗口):

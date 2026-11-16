@@ -1,6 +1,6 @@
 #pragma once
 
-// 合成层(docs/05 §3)。ui 线程由 SceneBuilder 组装, 构建后结构与属性不可变, 随 LayerTree 交给 raster 线程。
+// 合成层(ARCHITECTURE.md §4.5)。ui 线程由 SceneBuilder 组装, 构建后结构与属性不可变, 随 LayerTree 交给 raster 线程。
 //   Layer(抽象: Preroll / Paint)
 //   ├── ContainerLayer
 //   │   ├── OffsetLayer      纯平移(RepaintBoundary 对应物)
@@ -9,7 +9,7 @@
 //   │   └── OpacityLayer     alpha 0..255;子树可"继承透明度"时下推到绘制, 否则 saveLayer
 //   ├── PictureLayer         叶子: DisplayList + 偏移
 //   ├── TextureLayer         叶子: 外部纹理(扩展注入)的最新帧
-//   └── PlatformViewLayer    叶子: 平台视图(系统原生视图)占位;自身不绘制, 合成时把画面切片(docs/05 §9)
+//   └── PlatformViewLayer    叶子: 平台视图(系统原生视图)占位;自身不绘制, 合成时把画面切片(ARCHITECTURE.md §4.10)
 // Preroll 计算每层在父坐标系下的 paint_bounds(供后续脏区/缓存决策);Paint 由 graphics 内部
 // 的光栅器调用(PaintContext 只在 graphics 实现中定义, 公共头不暴露 Skia 类型)。
 // 唯一的可变状态是 paint_bounds_: 只由 raster 线程在 Preroll 中写入。同一 Layer 可被多帧共享,
@@ -51,7 +51,7 @@ struct EmbeddedView {
 
 struct PrerollContext {
   Matrix matrix;  // 当前层到设备的变换
-  // 非空时收集平台视图(合成路径, docs/05 §9);同时维护下面两项祖先状态。
+  // 非空时收集平台视图(合成路径, ARCHITECTURE.md §4.10);同时维护下面两项祖先状态。
   std::vector<EmbeddedView>* platform_views = nullptr;
   std::vector<DeviceClip> clips;  // 当前祖先裁剪栈(仅收集时维护)
   double opacity = 1.0;           // 当前祖先透明度(仅收集时维护)
@@ -68,7 +68,7 @@ class Layer {
   const std::optional<Rect>& paint_bounds() const { return paint_bounds_; }
 
   // 本层能否把父 OpacityLayer 的 alpha 直接调制到自身绘制上(无自身重叠), 从而省掉 saveLayer
-  // (docs/05 §3)。为 true 时 Paint 会读取 PaintContext::inherited_alpha。
+  // (ARCHITECTURE.md §4.5)。为 true 时 Paint 会读取 PaintContext::inherited_alpha。
   virtual bool CanInheritOpacity() const { return false; }
 
  protected:

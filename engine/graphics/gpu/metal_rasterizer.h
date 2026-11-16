@@ -1,11 +1,11 @@
 #pragma once
 
-// MetalRasterizer: Metal 的 RenderBackend(docs/05 §4): Ganesh(Skia GPU), 每帧把 CAMetalDrawable 包装为
+// MetalRasterizer: Metal 的 RenderBackend(ARCHITECTURE.md §4.4): Ganesh(Skia GPU), 每帧把 CAMetalDrawable 包装为
 // render target。
 // 公共头不含 Skia/ObjC 类型(docs/10 §1): Metal 对象以 void* 传入(id<MTLDevice> / id<MTLCommandQueue> /
 // id<CAMetalDrawable> / id<MTLTexture> 的 __bridge 指针, 非拥有)。
 //
-// 线程约定: 只在 raster 线程创建、使用与析构(持有的 GrDirectContext 归 raster 线程, docs/08 §3)。
+// 线程约定: 只在 raster 线程创建、使用与析构(持有的 GrDirectContext 归 raster 线程, ARCHITECTURE.md §2.1)。
 // 析构前会同步等待已提交的 GPU 工作完成, 析构返回后不再触碰传入的 device/queue。
 // 仅 Apple 平台编译(engine/CMakeLists.txt)。
 

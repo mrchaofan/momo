@@ -1,6 +1,6 @@
 #pragma once
 
-// MacSoftwareSurface: 软件 surface(docs/05 §4 SoftwareBackend 的 mac 呈现端)。仅被 .mm 文件包含。
+// MacSoftwareSurface: 软件 surface(ARCHITECTURE.md §3.5: 软件后端的 mac 呈现端)。仅被 .mm 文件包含。
 //
 // raster 线程直接画进 IOSurface(零拷贝), present 后由主线程把该 IOSurface 设为视图 layer 的 contents;
 // 色彩空间标在 IOSurface 上, 由 WindowServer 在 GPU 上做色彩匹配(不占主线程)。

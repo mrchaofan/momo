@@ -1,7 +1,7 @@
 #pragma once
 
-// MessageChannelHub: 异步、面向字节的双向消息通道(docs/04 §5, 对标 Flutter BinaryMessenger)。
-// 平台服务(docs/03 §5)与扩展(docs/07)共用。
+// MessageChannelHub: 异步、面向字节的双向消息通道(ARCHITECTURE.md §4.8, 对标 Flutter BinaryMessenger)。
+// 平台服务(ARCHITECTURE.md §3.10)与扩展(docs/07)共用。
 //
 //   native handler: SetNativeHandler(channel, runner, handler) —— handler 在指定 runner 上被调用。
 //   JS 端点:       SetJsEndpoint(ui_runner, endpoint) —— 由 momo:services 绑定安装, 在 ui 线程分发到

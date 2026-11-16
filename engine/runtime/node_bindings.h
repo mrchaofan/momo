@@ -1,6 +1,6 @@
 #pragma once
 
-// NodeBindings: libuv 事件循环与 momo ui 线程的整合(docs/04 §1;对照 Electron shell/common/node_bindings)。
+// NodeBindings: libuv 事件循环与 momo ui 线程的整合(ARCHITECTURE.md §4.6;对照 Electron shell/common/node_bindings)。
 // 只能被 engine/runtime 的实现文件包含。
 //
 //   ui 线程(V8 + momo EventLoop)                  poll 线程 "momo.uv.poll"

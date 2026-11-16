@@ -88,7 +88,7 @@ void WindowController::OnKeyData(const platform::KeyData& data) {
 }
 
 void WindowController::OnCloseRequested() {
-  // 关闭需要询问 JS(异步, ui 线程), 且销毁必须按 docs/01 §4 的顺序进行: 交给 WindowManager。
+  // 关闭需要询问 JS(异步, ui 线程), 且销毁必须按 ARCHITECTURE.md §3.8 的顺序进行: 交给 WindowManager。
   if (attached_) {
     bindings_.close_requested();
   }

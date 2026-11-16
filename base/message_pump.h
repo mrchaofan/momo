@@ -1,6 +1,6 @@
 #pragma once
 
-// MessagePump: EventLoop 的"等待与唤醒"策略(docs/08 §2)。EventLoop 管任务与对象生命周期,
+// MessagePump: EventLoop 的"等待与唤醒"策略(ARCHITECTURE.md §2.2)。EventLoop 管任务与对象生命周期,
 // pump 只负责: 在合适的时刻回调 Delegate::DoWork(), 以及运行/退出底层循环。
 //  - DefaultMessagePump: 条件变量 + 定时等待, 用于引擎自建线程(ui/raster/io)与测试。
 //  - NativeMessagePump: 把 NativeLoop(平台层实现的 NSApp/GCD、Win32 消息泵)适配为 pump,

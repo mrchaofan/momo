@@ -1,6 +1,6 @@
 #pragma once
 
-// TrayChannel: 宿主的托盘通道 momo/tray(docs/03 §2)。拥有全部托盘图标(id → PlatformTray);框架里每个图标是
+// TrayChannel: 宿主的托盘通道 momo/tray(ARCHITECTURE.md §3.11)。拥有全部托盘图标(id → PlatformTray);框架里每个图标是
 // 一个 Tray 对象, id 由 JS 分配。托盘菜单的点击与其他菜单一样经 momo/menu itemClicked 报告。
 //
 // momo/tray(StandardMethodCodec;id 为托盘 id):

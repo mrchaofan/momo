@@ -1,6 +1,6 @@
 #pragma once
 
-// LayerTree: 一帧画面的合成结构(docs/05 §3)。ui 线程产生 → 经 Pipeline 交给 raster 线程消费。
+// LayerTree: 一帧画面的合成结构(ARCHITECTURE.md §4.5)。ui 线程产生 → 经 Pipeline 交给 raster 线程消费。
 // 线程约定: 入队后不可变(唯一所有权随 Pipeline 移交;其中的 Layer/DisplayList 可被多帧共享, 只读)。
 // 坐标: root 的坐标系即物理像素(框架层负责按 device_pixel_ratio 缩放)。
 

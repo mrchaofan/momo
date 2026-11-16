@@ -1,7 +1,7 @@
 #pragma once
 
 // NativeLoop: OS 原生消息循环的最小原语(由平台层实现: Mac NSApp + GCD 主队列, Win 隐藏消息窗口 + GetMessage 泵)。
-// base 只定义接口;NativeMessagePump 把它适配成 EventLoop 的 MessagePump(docs/12 §3)。
+// base 只定义接口;NativeMessagePump 把它适配成 EventLoop 的 MessagePump(ARCHITECTURE.md §2.3)。
 // 线程约定: PostTask/PostDelayedTask/RunsTasksOnCurrentThread/Quit 可在任意线程调用;
 // Run 只能在 OS 主线程调用。
 

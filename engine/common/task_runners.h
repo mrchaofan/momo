@@ -1,6 +1,6 @@
 #pragma once
 
-// TaskRunners: 四个 TaskRunner 的集合(docs/08 §1)。值类型, 可随意拷贝。
+// TaskRunners: 四个 TaskRunner 的集合(ARCHITECTURE.md §1.3)。值类型, 可随意拷贝。
 
 #include <memory>
 

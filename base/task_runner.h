@@ -1,6 +1,6 @@
 #pragma once
 
-// TaskRunner: 向某一线程投递任务的句柄(docs/08 §2)。
+// TaskRunner: 向某一线程投递任务的句柄(ARCHITECTURE.md §2.2)。
 // 线程约定: 所有方法线程安全, 可在任意线程调用。实例以 shared_ptr 共享。
 // 目标线程已终止时投递的任务被丢弃(闭包在投递线程析构)。
 

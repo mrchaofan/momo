@@ -1,6 +1,6 @@
 #pragma once
 
-// MacMetalSurface: CAMetalLayer surface(docs/03 §1、docs/05 §4 MetalBackend 的平台端)。仅被 .mm 包含。
+// MacMetalSurface: CAMetalLayer surface(ARCHITECTURE.md §3.5;engine 侧是 MetalRasterizer)。仅被 .mm 包含。
 //
 // 结构: 视图保持 layer-backed(普通 CALayer, 软件回退时 contents 放 IOSurface);CAMetalLayer 挂在一个
 // 专用的底层子视图(MomoSurfaceBaseView, 内容视图的第一个子视图)里铺满视图。层级只用 AppKit 的子视图顺序

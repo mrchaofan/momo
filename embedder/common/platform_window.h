@@ -1,6 +1,6 @@
 #pragma once
 
-// PlatformWindow + WindowDelegate(docs/03 §2)。embedder 自己的平台抽象, engine 不可见。
+// PlatformWindow + WindowDelegate(ARCHITECTURE.md §3.1)。embedder 自己的平台抽象, engine 不可见。
 // 窗口的外观与行为(标题、位置、标题栏、拖动、缩放…)都在这一层: JS 经宿主注册的 momo/window 通道
 // (window_channel.h)直接调用到这里, 不经过引擎。新增窗口能力 = 在这里加方法、各平台实现、在
 // WindowChannel 加一个方法名, 引擎与框架的其他部分不变。
@@ -42,7 +42,7 @@ class WindowDelegate {
   virtual void OnWindowFrameChanged(const Rect& screen_frame) { (void)screen_frame; }
   // 系统窗口控制按钮在内容区里的占用范围变化(逻辑点, 内容区左上原点;nullopt = 不占用内容区)。
   virtual void OnWindowControlsChanged(const std::optional<Rect>& rect) { (void)rect; }
-  // 平台视图获得键盘焦点(用户点击等, docs/05 §9)。
+  // 平台视图获得键盘焦点(用户点击等, ARCHITECTURE.md §4.10)。
   virtual void OnPlatformViewFocused(int64_t view_id) { (void)view_id; }
 
  protected:
@@ -129,7 +129,7 @@ class PlatformWindow {
     return Unsupported("setPosition");
   }
 
-  // ---- 平台视图(docs/05 §9;默认不支持)----
+  // ---- 平台视图(ARCHITECTURE.md §4.10;默认不支持)----
   // 挂入/移出窗口的视图层级。几何与可见性由 surface 的合成帧(RenderSurface::AcquireCompositionFrame)
   // 驱动, 挂入时初始隐藏。native_view 由扩展所有, 窗口在挂入期间额外持有引用。
   virtual void AddPlatformView(int64_t view_id, void* native_view) {

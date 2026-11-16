@@ -39,7 +39,7 @@ export interface PlatformViewOptions {
 }
 
 /**
- * 嵌入由扩展提供的系统原生视图(macOS: NSView, 如 WKWebView), docs/05 §9。
+ * 嵌入由扩展提供的系统原生视图(macOS: NSView, 如 WKWebView), ARCHITECTURE.md §4.10。
  * 视图与 momo 画面按绘制顺序叠放: 之后绘制的 momo 内容(对话框、浮层)盖在视图上, 且那片区域的点击归 momo。
  * 尺寸取约束的最大值(放进有界约束中, 如 SizedBox / Expanded)。
  * 焦点: 系统的键盘焦点与本组件的 FocusNode 保持一致, 只跟随 momo 的焦点树——

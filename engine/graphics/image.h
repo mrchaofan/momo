@@ -1,6 +1,6 @@
 #pragma once
 
-// Image: 已解码的位图(不可变, 线程无关, 以 shared_ptr<const Image> 跨线程共享, docs/05 §6)。
+// Image: 已解码的位图(不可变, 线程无关, 以 shared_ptr<const Image> 跨线程共享, ARCHITECTURE.md §4.5)。
 // 像素在 io 线程解码(engine/assets), raster 线程首次绘制时由 Skia 按需上传 GPU 并缓存。
 // 公共头不暴露 Skia 类型;Impl 定义在 graphics 内部头 skia/paint_context.h。
 

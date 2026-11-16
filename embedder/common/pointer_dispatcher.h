@@ -1,6 +1,6 @@
 #pragma once
 
-// PointerDispatcher: 宿主里鼠标与其他位置型输入的唯一决策者(docs/05 §9 "输入")。进程内一个, 平台无关。
+// PointerDispatcher: 宿主里鼠标与其他位置型输入的唯一决策者(ARCHITECTURE.md §4.10 "输入")。进程内一个, 平台无关。
 //
 // 分工(中介者): 平台层把原生事件翻译成 PointerInput 交给 Dispatch, 派发器决定接收方, 再经 PointerWindow
 // 执行——交给某个窗口的 momo 内容(指针包), 或把原生事件交给某个平台视图。接收方的状态只在这里有一份:

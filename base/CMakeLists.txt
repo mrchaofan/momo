@@ -1,4 +1,4 @@
-# base/: 全项目的基础库(docs/12)。不依赖任何上层(platform/engine/embedder 都依赖它)。
+# base/: 全项目的基础库(ARCHITECTURE.md §2)。不依赖任何上层(platform/engine/embedder 都依赖它)。
 # 内容: 词汇类型(Status/logging/time/geometry/Closure)、对象模型(Object/WeakPtr/ObjectPtr)、
 #       线程与任务(TaskRunner/EventLoop/MessagePump/Thread/task_util/Pipeline)、
 #       原生循环适配(NativeLoop/NativeMessagePump)。

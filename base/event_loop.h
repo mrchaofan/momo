@@ -1,6 +1,6 @@
 #pragma once
 
-// EventLoop: 所有线程(platform/ui/raster/io)统一的事件循环(docs/08 §2、§5)。
+// EventLoop: 所有线程(platform/ui/raster/io)统一的事件循环(ARCHITECTURE.md §2.2、§3.8)。
 // 负责任务调度与 Object 的延迟析构;等待/唤醒与底层原生循环交给 MessagePump。
 //
 // 一轮迭代(DoWork):

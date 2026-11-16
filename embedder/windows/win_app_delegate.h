@@ -1,6 +1,6 @@
 #pragma once
 
-// WinAppDelegate: Win32 进程级集成(docs/01 §5), 把应用级系统事件翻译给 embedder::Application
+// WinAppDelegate: Win32 进程级集成(ARCHITECTURE.md §3.13), 把应用级系统事件翻译给 embedder::Application
 // (对应 macOS 的 MacAppDelegate)。属于入口(momo_app_win), 不在平台实现库里。
 //  - 前台状态: WinAppObserver::OnAppActiveChanged(WinApp 汇集各窗口的 WM_ACTIVATEAPP)→ Application::OnAppActiveChanged。
 //  - 重新激活: 用户再次启动应用(开始菜单、任务栏、快捷方式)= macOS 点击 Dock 图标。后续实例经 WM_COPYDATA 把命令行
