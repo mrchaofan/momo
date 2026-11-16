@@ -32,6 +32,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Windows 上 Python 默认按系统代码页(cp1252)读文件;仓库里的 JSON 与脚本含中文, 一律按 UTF-8。
+  PYTHONUTF8: "1"
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
