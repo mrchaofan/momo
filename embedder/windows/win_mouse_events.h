@@ -71,13 +71,6 @@ struct WinMouseMessage {
 // 滚轮每行对应的逻辑点(与 macOS / Chromium 一致)。
 inline constexpr double kScrollLinePixels = 40.0;
 
-// 鼠标消息的分类(纯函数)。
-bool IsWinMouseMessage(uint32_t message);
-// WM_*BUTTON* 的逻辑按键位(bit0 主键, bit1 次键, bit2 中键, bit3/4 侧键);不是按键消息时为 0。
-uint32_t WinButtonBit(uint32_t message, uint64_t wparam);
-// wparam 的 MK_* 按键状态 → 逻辑按键位图。
-uint32_t WinHeldButtons(uint64_t wparam);
-
 class WinMouseInput {
  public:
   WinMouseInput() = default;
