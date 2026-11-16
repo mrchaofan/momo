@@ -3,5 +3,4 @@
 # <builtin>/webview/ext_webview.node(MOMO_EXTENSION_OUTPUT_DIR)。
 momo_add_extension(ext_webview src/ext_webview.mm)
 target_compile_options(ext_webview PRIVATE -fobjc-arc)
-target_link_libraries(ext_webview PRIVATE "-framework Cocoa" "-framework WebKit"
-  "-framework UniformTypeIdentifiers")
+target_link_libraries(ext_webview PRIVATE "-framework Cocoa" "-framework WebKit")

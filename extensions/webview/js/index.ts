@@ -10,13 +10,14 @@ import {
   FocusNode, PlatformView, State, StatefulView, utf8Decode, utf8Encode,
   type BuildContext, type Key, type PlatformViewController, type View,
 } from "momo:framework";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { assetsDir, nativeHost } from "momo:services";
 // @ts-ignore 编译产物旁边的原生插件: 源码树里没有这个文件, 也没有类型(形状见下)。
 import addon from "./ext_webview.node";
 
 const native = addon as {
   attach(host: bigint, options: {
-    assetsDir: string;
     onEvent(json: string): void;
     onProtocolRequest(frame: ArrayBuffer): void;
   }): void;
@@ -57,7 +58,7 @@ export interface ProtocolResponse {
 
 export type ProtocolHandler = (request: ProtocolRequest) => ProtocolResponse | Promise<ProtocolResponse>;
 
-/** 把协议映射到应用打包的资源目录: 原生直接读文件应答, 不经过 JS。 */
+/** 把协议映射到应用打包的资源目录(一个读文件的处理函数的简写)。 */
 export interface AssetProtocol {
   /** 资源目录, 相对应用的 assets/(如 "web" → assets/web/)。 */
   assets: string;
@@ -71,7 +72,46 @@ type ProtocolSource = ProtocolHandler | AssetProtocol;
 
 // 系统 WebView 自己处理、不能接管的协议。
 const kBuiltInSchemes = new Set(["http", "https", "file", "about", "data", "blob", "javascript", "ws", "wss", "ftp"]);
-const protocols = new Map<string, ProtocolSource>();
+const protocols = new Map<string, ProtocolHandler>();
+
+const kMimeTypes: Readonly<Record<string, string>> = {
+  html: "text/html", htm: "text/html", js: "text/javascript", mjs: "text/javascript", css: "text/css",
+  json: "application/json", map: "application/json", txt: "text/plain", xml: "application/xml",
+  svg: "image/svg+xml", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+  webp: "image/webp", ico: "image/x-icon", avif: "image/avif", wasm: "application/wasm",
+  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf",
+  mp3: "audio/mpeg", mp4: "video/mp4", webm: "video/webm", pdf: "application/pdf",
+};
+
+/** 从应用的资源目录应答: 目录地址取 index, 找不到文件时改用 fallback(没有则 404)。读不到资源目录之外的文件。 */
+function assetHandler(source: AssetProtocol): ProtocolHandler {
+  const root = path.resolve(assetsDir, source.assets);
+  const read = async (file: string): Promise<Uint8Array | null> => {
+    const full = path.resolve(root, file);
+    if (!full.startsWith(root + path.sep)) return null;  // 越出资源目录(.. 或绝对路径)
+    try {
+      return await readFile(full);
+    } catch {
+      return null;
+    }
+  };
+  return async (request) => {
+    let file: string;
+    try {
+      file = decodeURIComponent(new URL(request.url).pathname).replace(/^\/+/, "");
+    } catch {
+      return { status: 400, mimeType: "text/plain", body: "Bad Request" };
+    }
+    if (file === "" || file.endsWith("/")) file += source.index ?? "index.html";
+    let body = await read(file);
+    if (body === null && source.fallback !== undefined) {
+      file = source.fallback;
+      body = await read(file);
+    }
+    if (body === null) return { status: 404, mimeType: "text/plain", body: "Not Found" };
+    return { mimeType: kMimeTypes[path.extname(file).slice(1).toLowerCase()] ?? "application/octet-stream", body };
+  };
+}
 
 /**
  * 声明一个自定义资源协议, 之后创建的 WebView 可以加载 `<scheme>://…` 地址(如 `app://localhost/index.html`)。
@@ -83,17 +123,17 @@ const protocols = new Map<string, ProtocolSource>();
 export function registerProtocol(scheme: string, source: ProtocolSource): void {
   if (!/^[a-z][a-z0-9+.-]*$/.test(scheme)) throw new Error(`momo.webview: invalid protocol scheme "${scheme}" (lowercase letters, digits, + . -)`);
   if (kBuiltInSchemes.has(scheme)) throw new Error(`momo.webview: "${scheme}" is handled by the system WebView and cannot be registered`);
-  protocols.set(scheme, source);
+  protocols.set(scheme, typeof source === "function" ? source : assetHandler(source));
 }
 
 /**
- * 创建参数里的协议表(JS 处理的只给 scheme)。only 给出时只包含其中的协议。
+ * 创建参数里的协议表。only 给出时只包含其中的协议。
  * 这里不做校验: 注册协议与打开网页是两回事, 没有注册(或不给这个视图用)的协议, 其地址加载失败, 经 onError 报告。
  */
 function protocolSpecs(only?: readonly string[]): Record<string, unknown>[] {
-  return [...protocols]
-    .filter(([scheme]) => only === undefined || only.includes(scheme))
-    .map(([scheme, source]) => (typeof source === "function" ? { scheme } : { scheme, ...source }));
+  return [...protocols.keys()]
+    .filter((scheme) => only === undefined || only.includes(scheme))
+    .map((scheme) => ({ scheme }));
 }
 
 // 协议请求与应答的帧: uint32 LE 头长度 + 头 JSON + 正文。
@@ -122,7 +162,7 @@ async function serveProtocolRequest(frame: ArrayBuffer): Promise<void> {
   let response: ProtocolResponse;
   try {
     const handler = protocols.get(url.slice(0, url.indexOf(":")).toLowerCase());
-    if (typeof handler !== "function") {
+    if (handler === undefined) {
       response = { status: 404, mimeType: "text/plain", body: "No handler for this protocol" };
     } else {
       response = await handler({
@@ -267,7 +307,6 @@ export interface MessageSource {
 const controllers = new Map<number, WebViewController>();
 
 native.attach(nativeHost, {
-  assetsDir,
   onEvent(json) {
     const m = JSON.parse(json) as Record<string, unknown>;
     if (typeof m.id === "number") controllers.get(m.id)?._handleEvent(m);

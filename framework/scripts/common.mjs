@@ -2,7 +2,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-/** 产物是单文件 ESM, 运行在引擎的 Node 环境里;momo:* 由运行时提供, 导入原样保留。 */
+/** 产物是单文件 ESM, 运行在引擎的 Node 环境里;momo:* 由运行时提供、node:* 是 Node 内置模块, 导入原样保留。 */
 export const baseOptions = {
   bundle: true,
   format: "esm",
@@ -12,7 +12,7 @@ export const baseOptions = {
   logLevel: "warning",
   legalComments: "none",
   mainFields: ["module", "main"],
-  external: ["momo:*"],
+  external: ["momo:*", "node:*"],
 };
 
 export const frameworkRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
