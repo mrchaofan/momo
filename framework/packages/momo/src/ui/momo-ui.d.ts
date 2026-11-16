@@ -1,4 +1,4 @@
-// momo:ui / momo:services —— 引擎原生模块的 TypeScript 声明(docs/02 §4、docs/04 §5-6)。
+// momo:ui / momo:services —— 引擎原生模块的 TypeScript 声明(ARCHITECTURE.md §4.7、§4.8)。
 // **这是 JS↔C++ 的接口契约文件**: 修改须同步 engine/ui/*_bindings.cc。
 // 对应 C++ 实现: engine/ui/{painting,scene,window,text,image,services}_bindings.cc。
 // 约定:
@@ -258,7 +258,7 @@ declare module "momo:ui" {
     /** 外部纹理层(扩展注入)。 */
     addTexture(textureId: number, x: number, y: number, width: number, height: number): this;
     /**
-     * 平台视图占位层(docs/05 §9): 由扩展创建的系统原生视图(如 WKWebView)在此位置与 momo 画面交替叠放。
+     * 平台视图占位层(ARCHITECTURE.md §4.10): 由扩展创建的系统原生视图(如 WKWebView)在此位置与 momo 画面交替叠放。
      * viewId 为经 momo/platform_views 通道 create 过的视图;未知 id 在合成时被忽略。
      * 视图之后添加的内容画在视图之上。
      */
@@ -344,7 +344,7 @@ declare module "momo:ui" {
   export const viewports: ReadonlyMap<number, Viewport>;
 }
 
-// 消息通道(docs/04 §5): 异步、字节流、双向。平台服务与扩展共用。
+// 消息通道(ARCHITECTURE.md §4.8): 异步、字节流、双向。平台服务与扩展共用。
 // 内置通道(载荷编码见 framework services/standard_codec.ts 与 engine/runtime/standard_codec.h):
 // 引擎注册的: momo/platform_views;宿主(embedder)注册的: momo/app、momo/window、
 // momo/clipboard、momo/url、momo/textinput(应用、窗口与平台服务不经引擎, 见 embedder/common/*_channel.h)。

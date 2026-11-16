@@ -1,6 +1,6 @@
 #pragma once
 
-// WindowChannel: 宿主的窗口管理通道 momo/window(docs/03 §2)。窗口外观与行为属于宿主, 所以由 embedder 直接在
+// WindowChannel: 宿主的窗口管理通道 momo/window(ARCHITECTURE.md §3.10)。窗口外观与行为属于宿主, 所以由 embedder 直接在
 // 引擎的消息通道上注册处理器, JS 与宿主之间往返, 不经过引擎(对标 Chromium views::Widget ⇄ NativeWidget)。
 // 框架里每个窗口是一个 Widget 对象, 它的方法与事件一一对应这里的协议。
 //

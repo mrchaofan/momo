@@ -1,4 +1,4 @@
-// 平台视图分片合成(docs/05 §9): Composition::Build 的收集、分片、范围与遮挡计算。
+// 平台视图分片合成(ARCHITECTURE.md §4.10): Composition::Build 的收集、分片、范围与遮挡计算。
 
 #include "engine/graphics/composition.h"
 

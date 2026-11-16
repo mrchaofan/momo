@@ -1,6 +1,6 @@
 #pragma once
 
-// Animator: ui 线程的帧调度器(docs/05 §5)。
+// Animator: ui 线程的帧调度器(ARCHITECTURE.md §4.3)。
 //   RequestFrame() → VsyncWaiter → BeginFrame: 预占 Pipeline 槽位 → Delegate::OnAnimatorBeginFrame
 //   (Engine 驱动 JS onBeginFrame/onDrawFrame)→ 期间各视图 Render(layer_tree) 收集进本帧 FrameItem
 //   → 帧结束时整体入队 → OnAnimatorDraw。

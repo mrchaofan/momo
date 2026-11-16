@@ -153,7 +153,7 @@ export class PointerScrollEvent extends PointerSignalEvent {
   }
 }
 
-/** 平台手势种类(macOS 触控板等;docs/05 §9 "输入")。 */
+/** 平台手势种类(macOS 触控板等;ARCHITECTURE.md §4.10 "输入")。 */
 export type PointerGestureKind =
   "magnify" | "rotate" | "smartMagnify" | "swipe" | "quickLook" | "tabletPoint" | "begin" | "end";
 

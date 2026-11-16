@@ -1,6 +1,6 @@
 #pragma once
 
-// Windows 键盘事件 → platform::KeyData 的映射(docs/03 §3)。physical_key / logical_key 的编码与"哪些键是
+// Windows 键盘事件 → platform::KeyData 的映射(ARCHITECTURE.md §3.4)。physical_key / logical_key 的编码与"哪些键是
 // 特殊键"是平台无关的规则, 见 embedder/common/key_codes.h;这里只有 Windows 的部分: 扫描码 → HID usage 的表。
 // 本头文件不依赖 <windows.h>(纯 C++, 可在任意平台单测)。
 #include <cstdint>

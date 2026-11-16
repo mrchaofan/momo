@@ -1,6 +1,6 @@
 #pragma once
 
-// RenderBackend: 把 LayerTree 画进一帧 SurfaceFrame 的后端(docs/05 §4)。shell 的 Rasterizer 按 surface 种类
+// RenderBackend: 把 LayerTree 画进一帧 SurfaceFrame 的后端(ARCHITECTURE.md §4.4)。shell 的 Rasterizer 按 surface 种类
 // 经 CreateRenderBackend 选取;新增后端只需新增实现并在工厂登记, Rasterizer 不变。
 //   kSoftware → 软件光栅(CPU 画进 SoftwarePixels)
 //   kMetal    → MetalRasterizer(Apple;GrDirectContext 建在 surface.gpu_context() 给出的设备与队列上)
@@ -9,7 +9,7 @@
 // 一个后端不属于某个视图: 它只持有设备级的状态(GPU 后端是一份 GrDirectContext 及其资源缓存), 可以依次
 // 画进任意多个使用同一设备的 surface。Rasterizer 据此让同一设备上的全部视图共用一个后端。
 // GPU 后端创建失败时由 Rasterizer 负责回退(surface.FallBackToSoftware() 后重建, rasterizer.cc)。
-// 线程约定: raster 线程创建、使用与析构(GPU 资源归 raster 线程, docs/08 §3)。
+// 线程约定: raster 线程创建、使用与析构(GPU 资源归 raster 线程, ARCHITECTURE.md §2.1)。
 
 #include <memory>
 
@@ -33,7 +33,7 @@ class RenderBackend {
   // 画完的帧由别处(而非 SurfaceFrame::present)呈现之前调用: 保证命令已可被其他线程呈现。
   virtual void PrepareForExternalPresent() {}
 
-  // 平台视图合成(docs/05 §9): 分片 0 画进 frame.base, 分片 i+1 画进 frame.overlays[i](为空则跳过),
+  // 平台视图合成(ARCHITECTURE.md §4.10): 分片 0 画进 frame.base, 分片 i+1 画进 frame.overlays[i](为空则跳过),
   // 然后 PrepareForExternalPresent(合成帧总是由 CompositionFrame::present 在别处呈现)。不 present。
   Status DrawComposition(const Composition& composition,
                          const platform::CompositionFrame& frame);

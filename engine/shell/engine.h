@@ -1,6 +1,6 @@
 #pragma once
 
-// Engine(内部类): ui 线程侧的根(docs/02 §2)。持有各视图的 ViewportMetrics/焦点、帧调度器 Animator
+// Engine(内部类): ui 线程侧的根(ARCHITECTURE.md §4.3)。持有各视图的 ViewportMetrics/焦点、帧调度器 Animator
 // 与应用驱动 AppDriver。多视图: 一个 Animator(帧时钟)驱动全部视图;视图全部来自宿主的绑定(AddView),
 // 可以先于 JS 运行时存在。窗口的外观与行为不经过引擎(宿主的 momo/window 通道)。
 // JS 运行时在 Engine 的一生里只有一个: 构造出来的 Engine 没有运行时(不出帧), StartRuntime 创建驱动并执行

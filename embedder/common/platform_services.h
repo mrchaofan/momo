@@ -1,7 +1,7 @@
 #pragma once
 
 // 低频平台服务(剪贴板、打开 URL 等)。embedder 的平台抽象: 由 embedder 自己注册的通道处理器
-// (platform_channels.h: momo/clipboard、momo/url)调用, engine 不可见(docs/03 §5)。
+// (platform_channels.h: momo/clipboard、momo/url)调用, engine 不可见(ARCHITECTURE.md §3.10)。
 // 新增服务只改 embedder: 在这里加方法、各平台实现、在 PlatformChannels 注册通道。
 // 线程约定: 仅 platform 线程调用。
 

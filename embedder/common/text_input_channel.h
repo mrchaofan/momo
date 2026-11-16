@@ -1,6 +1,6 @@
 #pragma once
 
-// TextInputChannel: 宿主的输入法通道 momo/textinput(docs/03 §5)。输入法会话属于获得焦点的窗口, 所以它
+// TextInputChannel: 宿主的输入法通道 momo/textinput(ARCHITECTURE.md §3.10)。输入法会话属于获得焦点的窗口, 所以它
 // 和窗口在一起, 不和剪贴板这类无状态的平台服务放在一处。
 //
 //   JS → 宿主   show(), hide(), setCaretRect([x, y, w, h]), setEditingState({...})

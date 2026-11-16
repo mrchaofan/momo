@@ -1,6 +1,6 @@
 #pragma once
 
-// Windows 的鼠标与其他位置型输入(docs/05 §9 "输入";对应 macOS 的 mac_mouse_events.h)。
+// Windows 的鼠标与其他位置型输入(ARCHITECTURE.md §4.10 "输入";对应 macOS 的 mac_mouse_events.h)。
 // 纯 C++, 不含 <windows.h>: 消息常量在本头文件里按 Win32 的值定义(Windows 上编译时与 <windows.h> 静态核对),
 // 翻译逻辑因此可以在任意平台单测。
 //   - WinMouseMessage: 一条原生鼠标消息及其上下文(屏幕位置、系统设置等由窗口在消息到达时取好)。

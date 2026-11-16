@@ -37,7 +37,7 @@ typedef enum MomoStatus {
 
 typedef void (*MomoTaskFn)(void* user_data);
 
-// ---------- 平台视图(docs/05 §9) ----------
+// ---------- 平台视图(ARCHITECTURE.md §4.10) ----------
 
 // 两个回调都在 platform 线程执行(原生视图只能在主线程创建/销毁)。
 // create: 为 view_id 创建原生视图(macOS: NSView*;Windows: HWND), params 为 JS 传入的创建参数

@@ -1,6 +1,6 @@
 #pragma once
 
-// Object: 全项目的框架对象基类, 统一管理线程归属与生命周期(参考 QObject / NSObject, docs/12 §2)。
+// Object: 全项目的框架对象基类, 统一管理线程归属与生命周期(参考 QObject / NSObject, ARCHITECTURE.md §2.1)。
 //
 // 1) 线程归属(affinity): 构造时绑定到当前线程的 EventLoop(或显式指定的 TaskRunner)。
 //    规则: 对象的方法只在归属线程调用;其他线程经 task_runner()->PostTask 投递, 并用 WeakPtr

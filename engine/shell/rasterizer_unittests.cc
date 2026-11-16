@@ -210,7 +210,7 @@ TEST(RasterizerTest, ViewsOnTheSameDeviceShareOneBackend) {
   EXPECT_EQ(b.presented.load(), 1);
 }
 
-// ---- 平台视图合成路径(docs/05 §9)----
+// ---- 平台视图合成路径(ARCHITECTURE.md §4.10)----
 
 // 支持平台视图的软件 surface: 记录每次合成帧的布局, 主帧与 overlay 都是软件像素缓冲。
 class FakeCompositingSurface final : public platform::RenderSurface {

@@ -45,7 +45,7 @@ add_custom_command(
   VERBATIM)
 add_custom_target(momo_ext_sdk_package ALL DEPENDS ${MOMO_EXT_SDK_BUILD_DIR}/.stamp)
 
-# 内置扩展 webview(macOS;ObjC++, 系统 WebView 作为平台视图嵌入, docs/05 §9): 运行时的一部分。插件直接输出到
+# 内置扩展 webview(macOS;ObjC++, 系统 WebView 作为平台视图嵌入, ARCHITECTURE.md §4.10): 运行时的一部分。插件直接输出到
 # 运行时自带模块的目录, 与它的 JS(framework/scripts/build_builtin.mjs 编译)放在一起: <builtin>/webview/。
 if(APPLE)
   set(MOMO_EXTENSION_OUTPUT_DIR "${MOMO_BUILTIN_DIR}/webview")

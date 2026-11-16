@@ -5,7 +5,7 @@ import { PlatformViewLayer } from "./layer";
 import type { PaintingContext } from "./object";
 
 /**
- * 平台视图(扩展创建的系统原生视图, 如 WKWebView)在渲染树中的占位(docs/05 §9)。
+ * 平台视图(扩展创建的系统原生视图, 如 WKWebView)在渲染树中的占位(ARCHITECTURE.md §4.10)。
  * 尺寸取约束的最大值;绘制时追加一个 PlatformViewLayer, 引擎合成时把原生视图摆到这个位置,
  * 之后绘制的 momo 内容叠在它上面。
  *

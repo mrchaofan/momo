@@ -1,6 +1,6 @@
 #pragma once
 
-// D3DRasterizer: Ganesh(Skia GPU)Direct3D 12 后端的 graphics 侧实现(docs/05 §4 Direct3DBackend;对应 macOS 的
+// D3DRasterizer: Ganesh(Skia GPU)Direct3D 12 后端的 graphics 侧实现(ARCHITECTURE.md §4.4;对应 macOS 的
 // MetalRasterizer)。公共头不含 Skia/D3D 类型(docs/10 §1): D3D 对象以 void* 传入(ID3D12Device* /
 // ID3D12CommandQueue* / ID3D12Resource*, 非拥有)。
 //
@@ -9,7 +9,7 @@
 // surface 才能随时在 raster 线程 ResizeBuffers(DXGI 要求届时没有任何对后台缓冲的引用);代价是 CPU 与 GPU 不
 // 重叠, 对以 2D 界面为主的帧可以接受。
 //
-// 线程约定: 只在 raster 线程创建、使用与析构(持有的 GrDirectContext 归 raster 线程, docs/08 §3)。
+// 线程约定: 只在 raster 线程创建、使用与析构(持有的 GrDirectContext 归 raster 线程, ARCHITECTURE.md §2.1)。
 // 析构前同步等待已提交的 GPU 工作完成, 析构返回后不再触碰传入的 device/queue。
 // 仅 Windows 编译(engine/CMakeLists.txt)。
 
@@ -35,7 +35,7 @@ class D3DRasterizer final : public RenderBackend {
   // PRESENT 状态并等待 GPU 完成, surface 的 present 可以直接 Present。
   platform::SurfaceKind kind() const override { return platform::SurfaceKind::kDirect3D; }
   Status Draw(LayerTree& tree, const platform::SurfaceFrame& frame) override;
-  // 平台视图合成的一片(docs/05 §9): 后台缓冲像素 (0,0) 对应设备坐标 origin。
+  // 平台视图合成的一片(ARCHITECTURE.md §4.10): 后台缓冲像素 (0,0) 对应设备坐标 origin。
   Status DrawSlice(const Composition& composition, size_t slice, const platform::SurfaceFrame& frame,
                    Point origin) override;
 

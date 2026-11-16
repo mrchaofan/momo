@@ -1,6 +1,6 @@
 #pragma once
 
-// UiBindings: AppDriver 的 JS 实现(docs/02 §4、docs/04 §6)。拥有 JS 运行时, 向它注册 momo:ui 与
+// UiBindings: AppDriver 的 JS 实现(ARCHITECTURE.md §4.7)。拥有 JS 运行时, 向它注册 momo:ui 与
 // momo:services, 并把引擎的事件(帧、尺寸、输入、视图增减)交给 JS 注册的回调。头文件不含 V8 类型。
 // 应用没有导入 momo:ui 时没有回调可调用: 各入口是空操作, 引擎不出帧。
 // 线程约定: 仅 ui 线程。

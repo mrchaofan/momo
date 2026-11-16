@@ -1,4 +1,4 @@
-// examples/hello_frame — M1 验收示例: 直接用 momo:ui 底层 API 画帧(docs/11 M1)。
+// examples/hello_frame — 直接用 momo:ui 底层 API 画帧(不经框架)。
 // 渐变圆角卡片 + 旋转的路径星形 + 描边图形;每帧重新请求下一帧, 驱动整条帧管线:
 //   onBeginFrame → onDrawFrame → view.render → Animator/Pipeline → raster 软件光栅 → present。
 // 坐标以逻辑像素书写, 场景根部按 devicePixelRatio 缩放到物理像素(与 Flutter 相同的分工)。

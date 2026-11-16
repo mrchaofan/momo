@@ -1,6 +1,6 @@
 #pragma once
 
-// 平台无关输入事件(docs/03 §3)。坐标统一为物理像素。
+// 平台无关输入事件(ARCHITECTURE.md §3.4)。坐标统一为物理像素。
 
 #include <cstdint>
 #include <string>
@@ -10,7 +10,7 @@ namespace momo::engine::platform {
 
 enum class PointerDeviceKind : uint8_t { kMouse, kTrackpad, kTouch, kStylus };
 // kGesture: 带位置、但不是按钮/移动/滚动的输入(触控板捏合与旋转、轻扫、Force Touch 压力…)。
-// 全部位置型输入都先交给框架, 由框架决定接收者(docs/05 §9 "输入"), 不由宿主按几何直接投递给原生视图。
+// 全部位置型输入都先交给框架, 由框架决定接收者(ARCHITECTURE.md §4.10 "输入"), 不由宿主按几何直接投递给原生视图。
 // kRemove 只表示指针离开(框架不再掌握它的位置);kCancel 表示进行中的按下序列被取消(如接收窗口关闭)。
 enum class PointerPhase : uint8_t { kAdd, kDown, kMove, kUp, kRemove, kHover, kScroll, kGesture, kCancel };
 // 触控板手势的阶段(kScroll / kGesture 事件)。框架据此在整个手势(含惯性)内锁定接收者:

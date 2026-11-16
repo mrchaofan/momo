@@ -1,8 +1,8 @@
 #pragma once
 
-// Shell: 引擎实例的协调中枢与生命周期根对象(docs/02 §2)。
+// Shell: 引擎实例的协调中枢与生命周期根对象(ARCHITECTURE.md §4.2)。
 // 线程约定: momo::Object, 归属 platform 线程: 在该线程创建、调用与析构;内部把工作投递到 ui/raster 线程。
-// Shell 不拥有线程(线程由 embedder 创建与 join, docs/01 §4)。
+// Shell 不拥有线程(线程由 embedder 创建与 join, ARCHITECTURE.md §3.8)。
 //
 // 子系统与归属线程:
 //   platform: 宿主视图 Delegate、帧时钟的 VsyncSource(ObjectPtr 持有, ui 只拿 WeakPtr)、平台视图表
@@ -52,7 +52,7 @@ class Shell final : public Object {
   // 引擎 → 宿主视图的请求, 在 platform 线程回调。由 embedder 的 WindowController 实现。
   class Delegate {
    public:
-    // ---- 平台视图(docs/05 §9;默认空实现 = 宿主不嵌入平台视图) ----
+    // ---- 平台视图(ARCHITECTURE.md §4.10;默认空实现 = 宿主不嵌入平台视图) ----
     // 平台视图表是全局的: 创建/销毁/聚焦请求广播给所有窗口。原生视图实际挂在哪个窗口由合成帧决定
     // (哪个窗口的画面里出现它, 就由那个窗口接管)。
     // 视图已创建(或窗口刚绑定, 补发已有视图): 登记(初始不显示)。

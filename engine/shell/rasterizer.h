@@ -1,16 +1,16 @@
 #pragma once
 
-// Rasterizer: raster 线程侧的根, 持有各视图 RenderSurface 的使用权与 GPU 后端(docs/05)。
+// Rasterizer: raster 线程侧的根, 持有各视图 RenderSurface 的使用权与 GPU 后端(ARCHITECTURE.md §4.5)。
 // 从 Pipeline 消费 FrameItem(一帧里各视图的 LayerTree)→ 按 LayerTree::view_id 找到视图 →
 // AcquireFrame → graphics::RenderBackend::Draw → present。
 // 含平台视图的帧(且 surface 支持)改走合成路径: Composition::Build 分片 → AcquireCompositionFrame →
-// graphics::RenderBackend::DrawComposition → CompositionFrame::present(docs/05 §9)。
+// graphics::RenderBackend::DrawComposition → CompositionFrame::present(ARCHITECTURE.md §4.10)。
 // 后端在 Setup 时按 surface 的种类与设备选取(graphics/render_backend.h);GPU 后端创建失败时调用
-// surface->FallBackToSoftware() 并改用软件后端(docs/05 §4 逐级回退)。
+// surface->FallBackToSoftware() 并改用软件后端(ARCHITECTURE.md §4.4 逐级回退)。
 // 多视图: 每个视图一份状态(surface、最近一帧、合成状态), 视图之间互不影响;后端按设备共享——surface 报告
 // 同一 GPU 设备与队列(gpu_context())的视图共用一个后端, 即整个应用一份 GrDirectContext(一份着色器/字形/
 // 纹理缓存), 而不是每个窗口一份。
-// GPU 资源由后端持有, 最后一个使用它的视图解绑时(或析构时)于 raster 线程释放(docs/01 §4)。
+// GPU 资源由后端持有, 最后一个使用它的视图解绑时(或析构时)于 raster 线程释放(ARCHITECTURE.md §3.8)。
 // 线程约定: momo::Object, 归属 raster 线程(创建时的当前 EventLoop), 仅在该线程调用与析构。
 
 #include <compare>
@@ -58,7 +58,7 @@ class Rasterizer final : public Object {
 
   // 消费 Pipeline 中全部已入队的帧(深度有限, 通常 1 个)。
   void Draw(LayerTreePipeline& pipeline);
-  // 重绘视图最近一帧(resize 后 / 首帧预热, docs/05 §5)。没有时返回 false。
+  // 重绘视图最近一帧(resize 后 / 首帧预热, ARCHITECTURE.md §4.4)。没有时返回 false。
   bool DrawLastLayerTree(platform::ViewId view_id);
 
   platform::RenderSurface* surface(platform::ViewId view_id) const;
@@ -94,7 +94,7 @@ class Rasterizer final : public Object {
   // 画进视图的 surface;本次 Setup 后第一次呈现成功时报告 on_first_frame_。
   void DrawAndReport(platform::ViewId view_id, ViewState& view, graphics::LayerTree& layer_tree);
   void DrawToSurface(ViewState& view, graphics::LayerTree& layer_tree);
-  // 平台视图合成路径(docs/05 §9)。
+  // 平台视图合成路径(ARCHITECTURE.md §4.10)。
   void DrawComposited(ViewState& view, graphics::LayerTree& layer_tree);
 
   std::map<platform::ViewId, ViewState> views_;

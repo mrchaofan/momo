@@ -1,6 +1,6 @@
 #pragma once
 
-// 图片解码(docs/02 §6、docs/05 §6): Skia codecs(PNG/JPEG/WebP/GIF/BMP/ICO)。
+// 图片解码(ARCHITECTURE.md §4.5): Skia codecs(PNG/JPEG/WebP/GIF/BMP/ICO)。
 // 解码产物为不可变的 graphics::Image(CPU 位图), raster 线程首次绘制时上传 GPU。
 // 线程约定: DecodeImage 无状态, 任意线程(通常 io 线程)调用;
 // MultiFrameCodec 内部持有解码状态, 只能在同一线程(io)上顺序调用 DecodeNextFrame, 可跨线程转移所有权。

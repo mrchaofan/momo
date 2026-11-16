@@ -1,4 +1,4 @@
-// examples/counter — View 版计数器(docs/11 M4 验收):文字 + 按钮 + 点击计数。
+// examples/counter — View 版计数器:文字 + 按钮 + 点击计数。
 // 运行: (cd examples/counter && npm run build) 把本文件编译成 dist/main.js, 然后 Momo --dev examples/counter
 import {
   AppBar, Center, Column, EdgeInsets, ElevatedButton, FloatingActionButton, Intent, CallbackAction, LogicalKeyboardKey,

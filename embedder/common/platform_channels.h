@@ -1,6 +1,6 @@
 #pragma once
 
-// PlatformChannels: 宿主提供的无状态平台服务通道(docs/03 §5)。embedder 直接在引擎的消息通道上注册处理器,
+// PlatformChannels: 宿主提供的无状态平台服务通道(ARCHITECTURE.md §3.10)。embedder 直接在引擎的消息通道上注册处理器,
 // 不经过引擎——新增平台服务只改 embedder(对标 Flutter embedder 注册 flutter/platform 等系统通道)。
 // 每个通道是一个 HostChannel(解码、分发、回复与错误码都在那里)。
 //

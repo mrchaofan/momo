@@ -1,6 +1,6 @@
 #pragma once
 
-// AppDriver: 驱动帧内容的"应用侧"(docs/02 §2)。Engine 只面向本接口, 不关心是否链接了 V8。
+// AppDriver: 驱动帧内容的"应用侧"(ARCHITECTURE.md §4.7)。Engine 只面向本接口, 不关心是否链接了 V8。
 //  - JS 驱动(engine/ui/js_app_driver.cc, 有 V8 时链接): 运行 bundle, 帧/metrics/关闭请求交给 JS window。
 //  - 占位驱动(PlaceholderDriver): 无 bundle(--dev)或无 V8(sanitizer 构建)时, 让帧管线照常运转。
 // 不含 V8 类型。线程约定: 仅 ui 线程。

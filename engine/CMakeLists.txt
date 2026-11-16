@@ -1,4 +1,4 @@
-# engine/: 每个模块一个静态库 momo_engine_<module>(docs/02 §1)。基础设施(线程/任务/对象/Status…)在顶层 base/。
+# engine/: 每个模块一个静态库 momo_engine_<module>(ARCHITECTURE.md §4.1)。基础设施(线程/任务/对象/Status…)在顶层 base/。
 # 模块依赖(单向, 无环; A → B 表示 A 依赖 B):
 #   shell → {ui, native_host};ui → {runtime, text, assets} → graphics → platform → base
 #   native_host → {common, graphics};各模块按需 → platform(纯接口)/ common(Settings、TaskRunners、消息通道)
@@ -7,7 +7,7 @@ if(NOT MOMO_HAVE_SKIA)
   message(FATAL_ERROR "engine requires the Skia prebuilt: python3 tools/fetch_deps.py skia")
 endif()
 
-# ---- momo_engine_platform: engine 对宿主(embedder)的平台契约, 纯接口 + POD(docs/03) ----
+# ---- momo_engine_platform: engine 对宿主(embedder)的平台契约, 纯接口 + POD(ARCHITECTURE.md §3.1) ----
 # RenderSurface、VsyncSource、输入事件、ViewportMetrics、视图 id、平台视图的合成布局。
 # engine 只认识这些接口;embedder 实现它们并注入。零平台 include、零三方依赖。
 add_library(momo_engine_platform INTERFACE)
@@ -35,11 +35,11 @@ add_library(momo_engine_graphics STATIC
   graphics/software_rasterizer.cc)
 target_link_libraries(momo_engine_graphics PUBLIC momo_base momo_engine_platform PRIVATE momo::skia)
 if(APPLE)
-  # Ganesh Metal 后端(docs/05 §4 MetalBackend);Skia target 已带 SK_METAL 与 Metal/QuartzCore 框架。
+  # Ganesh Metal 后端(ARCHITECTURE.md §4.4 MetalRasterizer);Skia target 已带 SK_METAL 与 Metal/QuartzCore 框架。
   target_sources(momo_engine_graphics PRIVATE graphics/gpu/metal_rasterizer.mm)
   target_link_libraries(momo_engine_graphics PRIVATE "-framework Metal" "-framework QuartzCore")
 elseif(WIN32)
-  # Ganesh Direct3D 12 后端(docs/05 §4 Direct3DBackend);Skia target 在 Windows 上带 SK_DIRECT3D。
+  # Ganesh Direct3D 12 后端(ARCHITECTURE.md §4.4 D3DRasterizer);Skia target 在 Windows 上带 SK_DIRECT3D。
   target_sources(momo_engine_graphics PRIVATE graphics/gpu/d3d_rasterizer.cc)
   target_link_libraries(momo_engine_graphics PRIVATE d3d12 dxgi)
 endif()
@@ -64,7 +64,7 @@ target_link_libraries(momo_engine_native_host PUBLIC momo_base momo_engine_commo
 
 # ---- momo_engine_runtime / momo_engine_ui: V8(v8.h 只在这两个模块的实现文件中出现) ----
 # ui 提供 AppDriver(engine/ui/app_driver.h)的实现, shell 只面向该接口。
-# sanitizer 构建没有 V8(docs/09 §2.1): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)。
+# sanitizer 构建没有 V8(docs/09 §2): 不构建 runtime, ui 只含占位驱动(无 JS 的占位帧)。
 if(MOMO_HAVE_V8)
   add_library(momo_engine_runtime STATIC
     runtime/js_args.cc

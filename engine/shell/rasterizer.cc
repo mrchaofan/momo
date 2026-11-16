@@ -104,7 +104,7 @@ void Rasterizer::SelectBackend(ViewState& view) {
   StatusOr<std::shared_ptr<graphics::RenderBackend>> backend = AcquireBackend(surface);
   if (!backend.ok() && surface.kind() != platform::SurfaceKind::kSoftware &&
       surface.kind() != platform::SurfaceKind::kNone) {
-    // GPU 后端不可用(无设备、驱动/上下文创建失败): 逐级降回软件(docs/05 §4)。
+    // GPU 后端不可用(无设备、驱动/上下文创建失败): 逐级降回软件(ARCHITECTURE.md §4.4)。
     MOMO_LOG(WARNING) << "GPU render backend unavailable (" << backend.status()
                       << "); falling back to software rendering.";
     if (surface.FallBackToSoftware()) {
@@ -126,7 +126,7 @@ void Rasterizer::Teardown(platform::ViewId view_id) {
   if (it == views_.end() || it->second.surface == nullptr) {
     return;
   }
-  it->second.backend.reset();  // 最后一个使用者放手时, 在 raster 线程释放 GPU 资源(docs/01 §4)
+  it->second.backend.reset();  // 最后一个使用者放手时, 在 raster 线程释放 GPU 资源(ARCHITECTURE.md §3.8)
   it->second.surface = nullptr;
   MOMO_LOG(VERBOSE) << "Rasterizer surface detached (view " << view_id << ").";
 }

@@ -1,6 +1,6 @@
 #pragma once
 
-// Matrix: 4x4 仿射/透视变换矩阵(TransformLayer、hit test 用, docs/05 §3)。
+// Matrix: 4x4 仿射/透视变换矩阵(TransformLayer、hit test 用, ARCHITECTURE.md §4.5)。
 // header-only, 属于 momo_base。值类型, 线程无关。
 //
 // 约定: 行主序存储 m[row][col], 作用于列向量 p' = M * p。

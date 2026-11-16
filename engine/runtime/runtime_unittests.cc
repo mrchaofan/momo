@@ -152,7 +152,7 @@ TEST_F(JsRuntimeTest, ForegroundTasksRunOnTheUiThreadThroughUv) {
       << Eval("cleaned.join(',')");
 }
 
-// ---- Node.js 集成(docs/04 §1;对照 Electron NodeBindings)----
+// ---- Node.js 集成(ARCHITECTURE.md §4.6;对照 Electron NodeBindings)----
 
 // Node 的定时器: 由 poll 线程等到期, 在 ui 线程执行(不需要任何 momo 事件触发)。
 TEST_F(JsRuntimeTest, NodeTimersFireOnTheUiThread) {

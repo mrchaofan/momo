@@ -1,7 +1,7 @@
 #pragma once
 
 // JsRuntime: 一个 Node.js 环境(node::CommonEnvironmentSetup: uv 循环 + isolate + IsolateData + Environment,
-// docs/04 §1)。含 V8 / Node 类型: 只能被 engine/runtime 与 engine/ui 的实现文件包含(docs/10 §1);引擎的
+// ARCHITECTURE.md §4.6)。含 V8 / Node 类型: 只能被 engine/runtime 与 engine/ui 的实现文件包含(docs/10 §1);引擎的
 // 其余部分经 ui::AppDriver 驱动 JS, 不见 V8。
 // 线程约定: momo::Object, 归属 ui 线程, 仅在该线程创建、调用与析构;整个生命周期持有 v8::Locker 并保持
 // isolate 进入状态。

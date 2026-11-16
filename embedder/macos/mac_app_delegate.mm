@@ -11,7 +11,7 @@ using momo::embedder::Application;
   if (app == nullptr || app->state() == Application::State::kTerminating) {
     return NSTerminateNow;
   }
-  // 由我们自己按 docs/01 §4 有序关闭并 [NSApp stop:], 不让 AppKit 直接 exit()。
+  // 由我们自己按 ARCHITECTURE.md §3.8 有序关闭并 [NSApp stop:], 不让 AppKit 直接 exit()。
   app->Quit();
   return NSTerminateCancel;
 }

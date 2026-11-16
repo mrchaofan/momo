@@ -1,6 +1,6 @@
 #pragma once
 
-// Wrappable: 由 JS 对象拥有的 C++ 宿主对象(docs/04 §3)。只能被 runtime/ui 实现文件包含。
+// Wrappable: 由 JS 对象拥有的 C++ 宿主对象(ARCHITECTURE.md §4.6)。只能被 runtime/ui 实现文件包含。
 //  - JS 对象的 internal field 0 指向 Wrappable;类型校验靠 WrapperTypeInfo(无 RTTI)。
 //  - 生命周期: JS 包装对象被 GC 时(弱回调)删除 C++ 对象;JsRuntime 销毁时删除仍存活的全部对象。
 //  - 线程: 仅 ui 线程。

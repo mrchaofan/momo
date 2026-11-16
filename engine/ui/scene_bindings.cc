@@ -1,4 +1,4 @@
-// momo:ui 场景类: SceneBuilder、Scene(docs/02 §4)。
+// momo:ui 场景类: SceneBuilder、Scene(ARCHITECTURE.md §4.7)。
 // SceneBuilder 维护一个 ContainerLayer 栈: push* 压入新容器层, addPicture 加叶子, pop 弹出, build 冻结。
 
 #include <algorithm>
@@ -86,7 +86,7 @@ void AddTexture(JsSceneBuilder& b, const Args& a) {
   }
 }
 
-// addPlatformView(viewId, x, y, w, h): 平台视图占位(docs/05 §9)。视图是否存在由合成时的宿主决定,
+// addPlatformView(viewId, x, y, w, h): 平台视图占位(ARCHITECTURE.md §4.10)。视图是否存在由合成时的宿主决定,
 // 未创建/已销毁的 id 在合成时被忽略。
 void AddPlatformView(JsSceneBuilder& b, const Args& a) {
   double v[5];

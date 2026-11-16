@@ -1,6 +1,6 @@
 #pragma once
 
-// ClassBuilder<T>: 把 Wrappable 子类 T 暴露为 JS 类(docs/04 §3 NativeClassBuilder)。只能被
+// ClassBuilder<T>: 把 Wrappable 子类 T 暴露为 JS 类(ARCHITECTURE.md §4.6)。只能被
 // runtime/ui 实现文件包含。方法/访问器以普通函数指针注册, 收到的 this 已做类型校验。
 //
 //   auto tmpl = ClassBuilder<Paint>(isolate, "Paint", &Paint::Construct)

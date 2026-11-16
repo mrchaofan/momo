@@ -938,7 +938,7 @@ PointerDispatcher& MacWindow::dispatcher() const { return mouse_.dispatcher(); }
 
 std::optional<int64_t> MacWindow::PointerOwner() const { return dispatcher().PointerOwner(this); }
 
-// 鼠标与其他位置型输入的入口(docs/05 §9 "输入"): 交给派发器决定接收方(momo 内容或平台视图), 不经 AppKit
+// 鼠标与其他位置型输入的入口(ARCHITECTURE.md §4.10 "输入"): 交给派发器决定接收方(momo 内容或平台视图), 不经 AppKit
 // 投递。只有窗口装饰(红绿灯、边缘缩放区)的按下序列直接交给 AppKit;装饰的跟踪区由 ForwardToWindowChrome
 // 照常记账。窗口拖动由应用在按下时请求(momo/window startDrag), StartWindowDrag 以该序列的按下开始系统拖动。
 void MacWindow::SendEvent(NSEvent* event, MomoSuperSendEvent super_send) {

@@ -1,6 +1,6 @@
 #pragma once
 
-// Pipeline<T>: 固定深度的帧生产/消费管道, 实现帧管线背压(docs/05 §5, docs/08 §4)。
+// Pipeline<T>: 固定深度的帧生产/消费管道, 实现帧管线背压(ARCHITECTURE.md §4.3)。
 // header-only, 属于 momo_base。
 //
 // 深度 = "排队 + 正在消费" 的上限。Shell 使用深度 2(队列 1 + 正在绘制 1)。

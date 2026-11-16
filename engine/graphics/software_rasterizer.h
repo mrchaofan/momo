@@ -1,6 +1,6 @@
 #pragma once
 
-// 软件光栅化(docs/05 §4 SoftwareBackend 的 M1 形态): 把 LayerTree 画进调用方提供的像素缓冲。
+// 软件光栅化(ARCHITECTURE.md §4.4 的软件后端): 把 LayerTree 画进调用方提供的像素缓冲。
 // 用于: 无 GPU / 远程桌面回退、headless 测试与 golden 比对。
 // 线程约定: raster 线程(或测试线程);函数本身无共享状态。
 

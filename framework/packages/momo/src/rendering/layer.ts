@@ -206,7 +206,7 @@ export class TextureLayer extends Layer {
   }
 }
 
-/** 平台视图层(系统原生视图占位, docs/05 §9)。之后添加的层画在该视图之上。 */
+/** 平台视图层(系统原生视图占位, ARCHITECTURE.md §4.10)。之后添加的层画在该视图之上。 */
 export class PlatformViewLayer extends Layer {
   constructor(public rect: Rect, public viewId: number) {
     super();

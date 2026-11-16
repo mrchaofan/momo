@@ -1,6 +1,6 @@
 #pragma once
 
-// VsyncWaiter: Animator 使用的一次性 vsync 等待器(docs/05 §5)。回调总在 ui 线程触发。
+// VsyncWaiter: Animator 使用的一次性 vsync 等待器(ARCHITECTURE.md §4.3)。回调总在 ui 线程触发。
 //  - PlatformVsyncWaiter: 包装 platform::VsyncSource(Mac CVDisplayLink / Win DWM)。
 //  - TimerVsyncWaiter:    平台无 vsync(或视图未绑定)时的回退, 在 ui 线程按固定刷新率对齐节拍。
 // 线程约定: momo::Object, 归属 ui 线程, 仅在 ui 线程创建、调用与析构。析构后未触发的回调被丢弃。

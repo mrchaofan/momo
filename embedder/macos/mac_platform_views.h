@@ -1,6 +1,6 @@
 #pragma once
 
-// MomoPlatformViews: 平台视图在 macOS 窗口中的宿主(docs/05 §9)。仅被 .mm 包含。
+// MomoPlatformViews: 平台视图在 macOS 窗口中的宿主(ARCHITECTURE.md §4.10)。仅被 .mm 包含。
 //
 // 视图层级(内容视图 MomoContentView 的子视图, 自下而上):
 //   ├── MomoSurfaceBaseView(主帧 CAMetalLayer, MacMetalSurface)

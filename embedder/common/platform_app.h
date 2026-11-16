@@ -1,6 +1,6 @@
 #pragma once
 
-// PlatformApp: 应用级的平台能力(docs/03 §2)。embedder 的平台抽象, engine 不可见;由宿主的 momo/app 通道
+// PlatformApp: 应用级的平台能力(ARCHITECTURE.md §3.1)。embedder 的平台抽象, engine 不可见;由宿主的 momo/app 通道
 // (app_channel.h)调用。新增应用能力 = 在这里加方法与能力位、各平台实现、在 AppChannel 注册一个方法,
 // 再在框架的 app 对象上加方法。
 // 线程约定: 仅 platform 线程调用。

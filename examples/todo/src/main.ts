@@ -1,4 +1,4 @@
-// examples/todo — View 版待办(docs/11 M4 验收):TextField 输入、添加、勾选、删除、列表滚动。
+// examples/todo — View 版待办:TextField 输入、添加、勾选、删除、列表滚动。
 // 运行: (cd examples/todo && npm run build) 把本文件编译成 dist/main.js, 然后 Momo --dev examples/todo
 import {
   AppBar, Checkbox, Color, Colors, Column, Container, Divider, EdgeInsets, ElevatedButton, Expanded, InputDecoration, ListTile,
@@ -21,7 +21,7 @@ class TodoApp extends StatefulView {
 
 class TodoAppState extends State<TodoApp> {
   #items: TodoItem[] = [
-    { id: 1, title: "读 docs/06-framework-js.md", done: true },
+    { id: 1, title: "读 ARCHITECTURE.md §5", done: true },
     { id: 2, title: "用 View 写一个 todo", done: false },
     { id: 3, title: "试试滚轮滚动列表", done: false },
   ];

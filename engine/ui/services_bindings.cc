@@ -1,4 +1,4 @@
-// momo:services: 消息通道的 JS 端(docs/04 §5)。
+// momo:services: 消息通道的 JS 端(ARCHITECTURE.md §4.8)。
 //   send(channel, data) → Promise<ArrayBuffer|null>   JS → native(MessageChannelHub::SendToNative)
 //   setHandler(channel, fn|null)                       native → JS 的处理函数;fn 可返回数据或 Promise
 //   isDev / platform

@@ -1,6 +1,6 @@
 #pragma once
 
-// Paint: 绘制样式(值类型)。颜色一律为 0xAARRGGBB(非预乘)。docs/05 §2。
+// Paint: 绘制样式(值类型)。颜色一律为 0xAARRGGBB(非预乘)。ARCHITECTURE.md §4.5。
 
 #include <cstdint>
 #include <memory>

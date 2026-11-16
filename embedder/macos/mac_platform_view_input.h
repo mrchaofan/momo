@@ -1,6 +1,6 @@
 #pragma once
 
-// MomoPlatformViewInputRouter: 窗口级的平台视图输入路由(docs/05 §9 "输入")。仅被 .mm 包含。
+// MomoPlatformViewInputRouter: 窗口级的平台视图输入路由(ARCHITECTURE.md §4.10 "输入")。仅被 .mm 包含。
 //
 // 分工(同 Chromium 的 RenderWidgetHostInputEventRouter / aura WindowEventDispatcher, Flutter 的
 // FlutterMutatorView 只管几何):

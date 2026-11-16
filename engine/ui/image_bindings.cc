@@ -1,5 +1,5 @@
 // momo:ui 图片: Image、Codec、decodeImage、instantiateCodec、imageFromPixels、loadAsset(M3)。
-// 解码与资源读取在 io 线程进行(docs/08 §1), 结果经 Promise 回到 ui 线程;运行时在此期间被销毁
+// 解码与资源读取在 io 线程进行(ARCHITECTURE.md §1.3), 结果经 Promise 回到 ui 线程;运行时在此期间被销毁
 // (引擎关闭)时结果被丢弃。
 
 #include <cstring>
@@ -37,7 +37,7 @@ void JsImage::Set(v8::Isolate* isolate, std::shared_ptr<const graphics::Image> i
   height = image ? image->height() : 0;
   reported_bytes_ = image ? static_cast<int64_t>(image->byte_size()) : 0;
   if (reported_bytes_ > 0) {
-    // 大对象向 isolate 报告外部内存压力(docs/04 §3), 促使 GC 及时回收不再引用的 Image。
+    // 大对象向 isolate 报告外部内存压力(ARCHITECTURE.md §4.6), 促使 GC 及时回收不再引用的 Image。
     isolate_->AdjustAmountOfExternalAllocatedMemory(reported_bytes_);
   }
 }

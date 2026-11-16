@@ -1,7 +1,7 @@
 #pragma once
 
 // NativeMessagePump: 把 NativeLoop(NSApp + GCD 主队列 / Win32 消息泵)适配为 MessagePump,
-// 让 OS 主线程也运行统一的 EventLoop(docs/12 §3)。
+// 让 OS 主线程也运行统一的 EventLoop(ARCHITECTURE.md §2.3)。
 //
 // 唤醒 = 向 native 投递一个"执行 DoWork"的原生任务;延迟唤醒去重, 只保留最早的一个在途。
 // 原生嵌套循环(模态框、live resize)期间 native 仍会执行这些任务, DoWork 因此可能重入,

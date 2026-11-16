@@ -1,6 +1,6 @@
 #pragma once
 
-// Composition: 含平台视图的一帧的分片结果(docs/05 §9)。raster 线程使用。
+// Composition: 含平台视图的一帧的分片结果(ARCHITECTURE.md §4.10)。raster 线程使用。
 //
 // Build 对 LayerTree 做一次收集平台视图的 Preroll, 再按绘制顺序把叶子绘制录制到 N+1 个分片:
 //   slice 0       底层: 第一个平台视图之前的全部内容(画进主 surface)

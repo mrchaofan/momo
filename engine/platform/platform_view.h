@@ -1,6 +1,6 @@
 #pragma once
 
-// 平台视图(platform view)的合成布局契约(docs/05 §9)。engine 产出, embedder 消费。
+// 平台视图(platform view)的合成布局契约(ARCHITECTURE.md §4.10)。engine 产出, embedder 消费。
 //
 // 平台视图 = 由扩展创建的系统原生视图(NSView / HWND, 如 WKWebView), 由 embedder 挂进窗口的视图层级,
 // 与 momo 的画面交替叠放。raster 线程按 LayerTree 中 PlatformViewLayer 的位置把画面切成若干片(slice):

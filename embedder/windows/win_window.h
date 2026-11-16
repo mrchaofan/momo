@@ -1,6 +1,6 @@
 #pragma once
 
-// WinWindow: HWND 封装 + WndProc(docs/03 §1/§6;对应 macOS 的 MacWindow)。仅被 embedder/windows 的 .cc 包含。
+// WinWindow: HWND 封装 + WndProc(ARCHITECTURE.md §3.13;对应 macOS 的 MacWindow)。仅被 embedder/windows 的 .cc 包含。
 //
 //  - DPI: 进程为 Per-Monitor-V2(入口在创建任何窗口前设置)。客户区坐标即物理像素;DPR = GetDpiForWindow / 96。
 //    WM_DPICHANGED 采用系统建议矩形;WM_GETDPISCALEDSIZE 精确换算客户区。WindowOptions 的尺寸为逻辑点。

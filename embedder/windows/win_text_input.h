@@ -1,6 +1,6 @@
 #pragma once
 
-// WinTextInput: TextInputConnection 的 IMM32 实现(docs/03 §3, embedder/common/text_input.h)。
+// WinTextInput: TextInputConnection 的 IMM32 实现(ARCHITECTURE.md §3.7, embedder/common/text_input.h)。
 // 仅被 embedder/windows 的 .cc 包含。
 // 分工: WinWindow 的 WndProc 把 IME 消息、WM_CHAR、WM_KEYDOWN 转给本对象;本对象把输入法动作翻译为
 // TextInputEvent 经 WindowDelegate::OnTextInput 上报(只在 Show 之后, 与 mac 一致)。

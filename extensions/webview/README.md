@@ -1,12 +1,12 @@
 # momo:webview
 
 系统 WebView(macOS `WKWebView`)作为**平台视图**嵌入 momo 界面的**内置扩展**:随运行时提供, 应用直接
-`import { WebView } from "momo:webview"`, 不需要安装或配置任何东西(docs/07 §1、§2.1)。目前只有 macOS。原理见
-`docs/05-rendering-pipeline.md` §9, 扩展侧接口见 `docs/07-extension-system.md` §3。
+`import { WebView } from "momo:webview"`, 不需要安装或配置任何东西(docs/07 §1)。目前只有 macOS。平台视图的原理见
+`ARCHITECTURE.md` §4.10, 扩展侧接口见 `docs/07-extension-system.md` §3。
 
 - 原生部分 `native/src/ext_webview.mm`:一个 Node 插件。与 JS 之间用 Node-API, 与引擎之间用宿主能力表(`momo_host.h`):注册视图类型 `momo.webview`, 命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。线上协议在文件头。
 - JS 门面 `js/index.ts`(唯一的入口):下面的全部接口。它 `import "momo:framework"`(与应用拿到的是同一份), 按相对路径 `./ext_webview.node` 加载插件。
-- 构建:随运行时一起(CMake target `momo_builtin` 与 `ext_webview`), JS 编译成 `<构建目录>/embedder/builtin/webview/index.js`, 插件输出到同一个目录的 `ext_webview.node`, 再同步进 `Momo.app/Contents/Resources/builtin/webview/`(docs/09 §4)。这里没有 `package.json`, 它不是一个 npm 包。
+- 构建:随运行时一起(CMake target `momo_builtin` 与 `ext_webview`), JS 编译成 `<构建目录>/embedder/builtin/webview/index.js`, 插件输出到同一个目录的 `ext_webview.node`, 再同步进 `Momo.app/Contents/Resources/builtin/webview/`(docs/09 §4.1)。这里没有 `package.json`, 它不是一个 npm 包。
 - 类型:目前没有单独发布的类型包;仓库内靠 `framework/tsconfig.json` 的 `paths` 把 `momo:webview` 指到 `js/index.ts`。
 
 接口参照 Tauri(wry)的取舍, 只保留 WKWebView 与 WebView2 都能实现的部分。

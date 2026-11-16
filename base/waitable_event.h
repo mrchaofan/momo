@@ -1,6 +1,6 @@
 #pragma once
 
-// WaitableEvent: 手动复位事件。仅用于启动/关闭等有限几次线程汇合(docs/08 §3),
+// WaitableEvent: 手动复位事件。仅用于启动/关闭等有限几次线程汇合(ARCHITECTURE.md §1.3),
 // 帧路径禁止使用。header-only。
 
 #include <condition_variable>

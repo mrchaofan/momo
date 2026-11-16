@@ -580,7 +580,7 @@ export abstract class RenderObject implements HitTestTarget {
 
   /**
    * 记录本节点自身的可命中区域(Canvas.addHitRegion, 包围盒)。宿主据此判断平台视图上方是否有 momo 内容
-   * 接收指针(docs/05 §9)。在 paint 之前调用, 因此区域与本节点的绘制同属一层、同一 z 序。
+   * 接收指针(ARCHITECTURE.md §4.10)。在 paint 之前调用, 因此区域与本节点的绘制同属一层、同一 z 序。
    */
   paintHitRegion(_context: PaintingContext, _offset: Offset): void {}
 

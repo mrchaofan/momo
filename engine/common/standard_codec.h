@@ -1,6 +1,6 @@
 #pragma once
 
-// StandardCodec: 消息通道的二进制值编码(docs/04 §5), 字节格式与 Flutter StandardMessageCodec 一致,
+// StandardCodec: 消息通道的二进制值编码(ARCHITECTURE.md §4.8), 字节格式与 Flutter StandardMessageCodec 一致,
 // JS 侧实现见 framework/packages/momo/src/services/standard_codec.ts(两端必须同步)。
 //   0 null | 1 true | 2 false | 3 int32 LE | 4 int64 LE | 6 float64 LE(先按 8 字节对齐)
 //   7 UTF-8 string | 8 Uint8 列表 | 9 Int32 列表(4 对齐) | 11 Float64 列表(8 对齐) | 12 list | 13 map
