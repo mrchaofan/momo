@@ -269,6 +269,7 @@ class RootViewState extends State<RootView> {
           reportError(e, "while handling a pointer packet");
         }
       },
+      // 返回焦点树是否消费了这个按键: 引擎不使用, 测试据此观察。
       onKeyData: (data) => {
         try {
           return HardwareKeyboard.instance.handleKeyData(data);

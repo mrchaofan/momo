@@ -319,9 +319,9 @@ TEST_F(UiBindingsTest, PointerAndKeyEventsReachJs) {
   key.physical_key = 0x00070004;
   key.character = "a";
   key.modifiers = platform::kModifierShift;
-  EXPECT_TRUE(bindings_->OnKeyData(platform::kImplicitViewId, key));
+  bindings_->OnKeyData(platform::kImplicitViewId, key);
   key.character = "b";
-  EXPECT_FALSE(bindings_->OnKeyData(platform::kImplicitViewId, key));
+  bindings_->OnKeyData(platform::kImplicitViewId, key);
 
   EXPECT_EQ(Eval("log.join(' ')"), "p1@10,20b1 p3@11,21b0 k:down:70004:a:1 k:down:70004:b:1");
 }

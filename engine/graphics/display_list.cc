@@ -205,7 +205,6 @@ void DisplayListBuilder::DrawDisplayList(std::shared_ptr<const DisplayList> disp
   } else {
     AccumulateUnbounded();
   }
-  list_->dynamic_ = list_->dynamic_ || display_list->is_dynamic();
   for (const Rect& r : display_list->hit_regions()) {
     if (std::optional<Rect> mapped = ToRoot(r)) list_->hit_regions_.push_back(*mapped);
   }
@@ -258,17 +257,6 @@ void DisplayListBuilder::DrawExternal(std::shared_ptr<const ExternalPicture> pic
   list_->externals_.push_back(std::move(picture));
   Push(DisplayList::OpType::kDrawExternal, 0,
        static_cast<uint32_t>(list_->externals_.size() - 1), {offset.x, offset.y});
-}
-
-void DisplayListBuilder::DrawTexture(std::shared_ptr<Texture> texture, const Rect& dst) {
-  if (texture == nullptr) {
-    return;
-  }
-  AccumulateLocal(dst, nullptr);
-  list_->dynamic_ = true;
-  list_->textures_.push_back(std::move(texture));
-  Push(DisplayList::OpType::kDrawTexture, 0, static_cast<uint32_t>(list_->textures_.size() - 1),
-       {dst.x, dst.y, dst.width, dst.height});
 }
 
 std::shared_ptr<const DisplayList> DisplayListBuilder::Build() {

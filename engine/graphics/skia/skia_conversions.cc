@@ -205,15 +205,6 @@ void ReplayOps(const DisplayList& list, SkCanvas* canvas, const std::vector<SkPa
         }
         break;
       }
-      case OpType::kDrawTexture: {
-        // 动态内容: 取当前最新帧(本 DisplayList 不进入 SkPicture 缓存)。
-        std::shared_ptr<const Image> frame = list.textures()[op.aux]->latest();
-        if (frame && frame->impl().image) {
-          canvas->drawImageRect(frame->impl().image, SkRect::MakeXYWH(a[0], a[1], a[2], a[3]),
-                                SkSamplingOptions(SkFilterMode::kLinear), nullptr);
-        }
-        break;
-      }
     }
   }
 }
@@ -242,11 +233,7 @@ sk_sp<SkPicture> RecordPicture(const DisplayList& list) {
 const DisplayList::RasterCache& DisplayList::raster_cache() const {
   std::call_once(raster_cache_once_, [this] {
     auto cache = std::make_shared<RasterCache>();
-    if (dynamic_) {
-      cache->paints = ConvertPaints(*this);  // 动态列表只缓存转换好的 paint
-    } else {
-      cache->picture = RecordPicture(*this);
-    }
+    cache->picture = RecordPicture(*this);
     raster_cache_ = std::move(cache);
   });
   return *raster_cache_;
@@ -257,8 +244,7 @@ void RenderDisplayListWithAlpha(const DisplayList& list, SkCanvas* canvas, uint8
     RenderDisplayList(list, canvas);
     return;
   }
-  std::vector<SkPaint> paints = list.raster_cache().paints.empty() ? ConvertPaints(list)
-                                                                   : list.raster_cache().paints;
+  std::vector<SkPaint> paints = ConvertPaints(list);
   for (SkPaint& paint : paints) {
     paint.setAlphaf(paint.getAlphaf() * (alpha / 255.0f));
   }
@@ -267,13 +253,7 @@ void RenderDisplayListWithAlpha(const DisplayList& list, SkCanvas* canvas, uint8
 }
 
 void RenderDisplayList(const DisplayList& list, SkCanvas* canvas) {
-  const DisplayList::RasterCache& cache = list.raster_cache();
-  if (cache.picture) {
-    canvas->drawPicture(cache.picture);
-    return;
-  }
-  SkAutoCanvasRestore restore(canvas, true);
-  ReplayOps(list, canvas, cache.paints);
+  canvas->drawPicture(list.raster_cache().picture);
 }
 
 }  // namespace momo::engine::graphics

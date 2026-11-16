@@ -421,9 +421,9 @@ void UiBindings::OnPointerPacket(ViewId view, const platform::PointerDataPacket&
   impl_->CallViewHandler(view, "onPointerPacket", 2, argv);
 }
 
-bool UiBindings::OnKeyData(ViewId view, const platform::KeyData& data) {
+void UiBindings::OnKeyData(ViewId view, const platform::KeyData& data) {
   if (!is_imported()) {
-    return false;
+    return;
   }
   Entered js(*runtime_);
   v8::Isolate* isolate = js.isolate;
@@ -439,8 +439,7 @@ bool UiBindings::OnKeyData(ViewId view, const platform::KeyData& data) {
   set("character", V8String(isolate, data.character));
   set("modifiers", v8::Number::New(isolate, data.modifiers));
   v8::Local<v8::Value> argv[] = {o};
-  v8::Local<v8::Value> result;
-  return impl_->CallViewHandler(view, "onKeyData", 1, argv).ToLocal(&result) && result->IsTrue();
+  impl_->CallViewHandler(view, "onKeyData", 1, argv);
 }
 
 void UiBindings::OnVisibilityChanged(ViewId view, bool visible) {

@@ -35,8 +35,8 @@ class UiBindings final : public AppDriver {
   void OnMetricsChanged(ViewId view) override;
   // viewport.onPointerPacket(data: Float64Array, count)。
   void OnPointerPacket(ViewId view, const platform::PointerDataPacket& packet) override;
-  // viewport.onKeyData(data) 返回 true 表示已消费。
-  bool OnKeyData(ViewId view, const platform::KeyData& data) override;
+  // viewport.onKeyData(data)。
+  void OnKeyData(ViewId view, const platform::KeyData& data) override;
   // 同步 viewport.visible 后调用 viewport.onVisibilityChanged(visible)。
   void OnVisibilityChanged(ViewId view, bool visible) override;
   // 视图集合变化: 更新 viewports 后调用 platformDispatcher.onViewportsChanged()。

@@ -443,16 +443,6 @@ void CanvasDrawParagraph(JsCanvas& c, const Args& a) {
   }
   b->DrawExternal(para->paragraph->Record(), {v[0], v[1]}, para->paragraph->paint_bounds());
 }
-void CanvasDrawTexture(JsCanvas& c, const Args& a) {
-  auto* b = Builder(c, a);
-  double v[5];
-  if (!b || !Numbers(a, 0, 5, v)) return;
-  std::shared_ptr<graphics::TextureRegistry> registry = UiTextures(a.GetIsolate());
-  std::shared_ptr<graphics::Texture> texture =
-      registry ? registry->Get(static_cast<int64_t>(v[0])) : nullptr;
-  if (texture == nullptr) return;  // 未注册/已注销: 空操作(与 Flutter Texture 一致)
-  b->DrawTexture(std::move(texture), RectOf(v + 1));
-}
 void CanvasDrawColor(JsCanvas& c, const Args& a) {
   uint32_t color = 0;
   if (auto* b = Builder(c, a); b && ArgUint32(a, 0, &color)) b->DrawColor(color);
@@ -592,7 +582,6 @@ void InstallPaintingClasses(v8::Isolate* isolate, v8::Local<v8::Context> context
       .Method("drawImage", &CanvasDrawImage)
       .Method("drawImageRect", &CanvasDrawImageRect)
       .Method("drawParagraph", &CanvasDrawParagraph)
-      .Method("drawTexture", &CanvasDrawTexture)
       .Method("drawColor", &CanvasDrawColor)
       .Method("drawPaint", &CanvasDrawPaint)
       .Method("drawRect", &CanvasDrawRect)

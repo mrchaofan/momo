@@ -492,7 +492,6 @@ export class Canvas {
     this.#rec("drawImageRect", image, sx, sy, sw, sh, dx, dy, dw, dh);
   }
   drawParagraph(paragraph: Paragraph, x: number, y: number): void { this.#rec("drawParagraph", paragraph.text, x, y); }
-  drawTexture(textureId: number, x: number, y: number, w: number, h: number): void { this.#rec("drawTexture", textureId, x, y, w, h); }
 }
 
 export class PictureRecorder {
@@ -555,7 +554,7 @@ interface MockView {
   visible: boolean;
   onMetricsChanged: (() => void) | null;
   onPointerPacket: ((data: Float64Array, count: number) => void) | null;
-  onKeyData: ((data: KeyData) => boolean | void) | null;
+  onKeyData: ((data: KeyData) => void) | null;
   onVisibilityChanged: ((visible: boolean) => void) | null;
   render(scene: Scene): void;
 }

@@ -233,8 +233,6 @@ declare module "momo:ui" {
     drawImageRect(image: Image, sx: number, sy: number, sw: number, sh: number,
                   dx: number, dy: number, dw: number, dh: number, paint?: Paint | null): void;
     drawParagraph(paragraph: Paragraph, x: number, y: number): void;
-    /** 外部纹理(扩展注入, docs/07 §3)占位绘制。 */
-    drawTexture(textureId: number, x: number, y: number, width: number, height: number): void;
   }
 
   export class PictureRecorder {
@@ -320,8 +318,8 @@ declare module "momo:ui" {
     onMetricsChanged: (() => void) | null;
     /** count 个指针事件, 见 POINTER_DATA_STRIDE。坐标为本视图的物理像素。 */
     onPointerPacket: ((data: Float64Array, count: number) => void) | null;
-    /** 返回 true 表示已消费。 */
-    onKeyData: ((data: KeyData) => boolean | void) | null;
+    /** 按键事件。引擎不使用返回值(应用菜单的快捷键在按键到达这里之前已由宿主处理)。 */
+    onKeyData: ((data: KeyData) => void) | null;
     onVisibilityChanged: ((visible: boolean) => void) | null;
     /** 提交本视图本帧的画面(只能在 onDrawFrame 内调用;每视图每帧一次)。 */
     render(scene: Scene): void;
