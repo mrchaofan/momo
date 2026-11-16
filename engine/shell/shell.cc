@@ -48,11 +48,15 @@ StatusOr<std::unique_ptr<Shell>> Shell::Create(const TaskRunners& task_runners,
     };
   }
   // Engine 归属 ui 线程: 在那里构造(没有 JS 运行时;Run 时才创建)。
-  task_runners.ui->PostTask([raw, settings, host = std::move(host)] {
-    raw->engine_ = std::make_unique<Engine>(
-        settings,
-        [raw](std::shared_ptr<LayerTreePipeline> pipeline) { raw->OnEngineDraw(std::move(pipeline)); },
-        raw->MakeVsyncWaiter({}), host);
+  // 帧管道: ui 线程生产(Animator), raster 线程消费(Rasterizer), 整个引擎就这一个。
+  auto pipeline = LayerTreePipeline::Create(Animator::kPipelineDepth);
+  task_runners.ui->PostTask([raw, settings, pipeline, host = std::move(host)] {
+    // on_draw 在 ui 线程调用: 让 raster 把管道里的帧画出来。
+    Closure on_draw = [raw, pipeline] {
+      raw->PostToRasterizer([pipeline](Rasterizer& rasterizer) { rasterizer.Draw(*pipeline); });
+    };
+    raw->engine_ = std::make_unique<Engine>(settings, pipeline, std::move(on_draw),
+                                            raw->MakeVsyncWaiter({}), host);
   });
   return shell;
 }
@@ -167,11 +171,7 @@ void Shell::AttachView(platform::ViewId view_id, Delegate* delegate, platform::R
     delegate->OnPlatformViewCreated(view.id, view.native);
   }
   PostToEngine([view_id](Engine& engine) { engine.AddView(view_id); });
-  task_runners_.raster->PostTask([this, view_id, surface] {
-    if (rasterizer_) {
-      rasterizer_->Setup(view_id, surface);
-    }
-  });
+  PostToRasterizer([view_id, surface](Rasterizer& rasterizer) { rasterizer.Setup(view_id, surface); });
 }
 
 void Shell::DetachView(platform::ViewId view_id) {
@@ -211,6 +211,16 @@ void Shell::PostToEngine(MoveOnlyFunction<void(Engine&)> task) {
   task_runners_.ui->PostTask([this, task = std::move(task)]() mutable {
     if (engine_) {
       task(*engine_);
+    }
+  });
+}
+
+void Shell::PostToRasterizer(MoveOnlyFunction<void(Rasterizer&)> task) {
+  // 任意线程(platform 或 ui)。捕获 this 安全: Shutdown 先同步排空 ui, 再在 raster 上排到这些任务之后同步销毁
+  // Rasterizer, Shell 之后才析构;所以这里的任务要么先于销毁执行, 要么发现 rasterizer_ 已空。
+  task_runners_.raster->PostTask([this, task = std::move(task)]() mutable {
+    if (rasterizer_) {
+      task(*rasterizer_);
     }
   });
 }
@@ -330,18 +340,6 @@ StatusOr<EncodableValue> Shell::HandlePlatformViewCall(const MethodCall& call) {
     return EncodableValue();
   }
   return UnimplementedError("momo/platform_views: unknown method " + call.method);
-}
-
-// ---------------------------------------------------------------------------
-// 帧路径
-
-void Shell::OnEngineDraw(std::shared_ptr<LayerTreePipeline> pipeline) {
-  // 捕获 this 安全: 本任务由 ui 线程投递, Shutdown 先同步排空 ui, 再在 raster 上排到这些任务之后。
-  task_runners_.raster->PostTask([this, pipeline = std::move(pipeline)] {
-    if (rasterizer_) {
-      rasterizer_->Draw(*pipeline);
-    }
-  });
 }
 
 }  // namespace momo::engine

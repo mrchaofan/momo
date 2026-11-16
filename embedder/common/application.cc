@@ -196,7 +196,7 @@ Status Application::CreateEngine() {
 
   // 宿主通道在 JS bundle 执行之前就位(bundle 顶层代码就可能设置标题、打开窗口、退出)。
   AppChannel::Host* app_host = this;  // 私有基类: 在成员上下文内转换
-  app_channel_ = std::make_unique<AppChannel>(shell_->hub(), task_runner(), app_host);
+  app_channel_ = std::make_unique<AppChannel>(shell_->hub(), task_runner(), app_host, platform_->app());
   // 输入法会话在获得焦点的窗口上(窗口注册表稍后创建, 调用时已存在)。
   text_input_channel_ = std::make_unique<TextInputChannel>(
       shell_->hub(), task_runner(), [this] { return window_manager_->FocusedTextInput(); });
@@ -261,25 +261,6 @@ void Application::OnAllWindowsClosed() {
   }
   MOMO_LOG(INFO) << "The last window was closed; the application keeps running.";
   app_channel_->NotifyWindowAllClosed();
-}
-
-// ---------------------------------------------------------------------------
-// AppChannel::Host
-
-Status Application::HideApp() { return platform_->app().Hide(); }
-
-Status Application::ShowApp() { return platform_->app().Show(); }
-
-Status Application::FocusApp(bool steal) { return platform_->app().Activate(steal); }
-
-engine::EncodableValue Application::GetAppState() {
-  engine::EncodableList caps;
-  const uint32_t bits = platform_->app().capabilities();
-  if ((bits & kAppCapabilityHide) != 0) caps.emplace_back("hide");
-  if ((bits & kAppCapabilityActivate) != 0) caps.emplace_back("activate");
-  return engine::EncodableValue(engine::EncodableMap{{"state", std::string(StateName(state_))},
-                                                     {"active", active_},
-                                                     {"capabilities", std::move(caps)}});
 }
 
 // ---------------------------------------------------------------------------

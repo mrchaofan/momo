@@ -536,7 +536,8 @@ static BOOL MomoMenuHandlesKeyEquivalent(NSEvent* event) {
   return self;
 }
 - (BOOL)windowShouldClose:(NSWindow*)sender {
-  return _owner->delegate()->OnCloseRequested() ? YES : NO;
+  _owner->delegate()->OnCloseRequested();
+  return NO;  // 窗口由 embedder 在询问 JS 之后关闭
 }
 - (void)windowDidResize:(NSNotification*)notification {
   _owner->LayoutTrafficLights();

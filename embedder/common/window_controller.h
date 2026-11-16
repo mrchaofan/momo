@@ -60,7 +60,7 @@ class WindowController final : public Object,
   void OnMetricsChanged(const platform::ViewportMetrics& metrics) override;
   void OnPointerPacket(platform::PointerDataPacket packet) override;
   void OnKeyData(const platform::KeyData& data) override;
-  bool OnCloseRequested() override;
+  void OnCloseRequested() override;
   void OnFocusChanged(bool focused) override;
   void OnWindowStateChanged(const WindowStateFlags& state) override;
   void OnTextInput(const TextInputEvent& event) override;

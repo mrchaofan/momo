@@ -7,12 +7,12 @@
 namespace momo::engine {
 
 Animator::Animator(Delegate& delegate, std::shared_ptr<TaskRunner> ui_runner,
-                   std::unique_ptr<VsyncWaiter> waiter)
+                   std::unique_ptr<VsyncWaiter> waiter, std::shared_ptr<LayerTreePipeline> pipeline)
     : Object(std::move(ui_runner)),
       delegate_(delegate),
       waiter_(std::move(waiter)),
-      pipeline_(LayerTreePipeline::Create(kPipelineDepth)) {
-  MOMO_CHECK(waiter_ != nullptr);
+      pipeline_(std::move(pipeline)) {
+  MOMO_CHECK(waiter_ != nullptr && pipeline_ != nullptr);
   MOMO_DCHECK_ON_AFFINITY_THREAD();
 }
 
@@ -79,7 +79,7 @@ void Animator::BeginFrame(TimePoint frame_start, TimePoint frame_target) {
   }
   continuation_.Complete(std::move(item));
   stats_.frames_rendered++;
-  delegate_.OnAnimatorDraw(pipeline_);
+  delegate_.OnAnimatorDraw();
 }
 
 void Animator::Render(std::unique_ptr<graphics::LayerTree> layer_tree) {
