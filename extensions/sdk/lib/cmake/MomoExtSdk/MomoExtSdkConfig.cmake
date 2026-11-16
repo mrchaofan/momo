@@ -16,7 +16,8 @@
 #   momo::ext_sdk                    INTERFACE target: 头文件路径与链接方式
 #   momo_add_extension(<name> <src>...)
 #       建一个 Node 插件 <name>.node, 输出到 CMakeLists.txt 上一级目录的 build/(node-gyp 的惯例位置,
-#       JS 门面按相对路径 import)。隐藏可见性、C11 / C++17。插件内部可以使用异常与 RTTI, 但异常不得
+#       JS 门面按相对路径 import);设了 MOMO_EXTENSION_OUTPUT_DIR 则输出到那里(不想写进源码树的构建)。
+#       隐藏可见性、C11 / C++17。插件内部可以使用异常与 RTTI, 但异常不得
 #       穿过 Node-API 与宿主表的回调边界。
 
 get_filename_component(_momo_ext_sdk_prefix "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
@@ -47,7 +48,11 @@ endif()
 
 function(momo_add_extension name)
   add_library(${name} MODULE ${ARGN})
-  get_filename_component(_output_dir "${CMAKE_CURRENT_SOURCE_DIR}/../build" ABSOLUTE)
+  if(MOMO_EXTENSION_OUTPUT_DIR)
+    get_filename_component(_output_dir "${MOMO_EXTENSION_OUTPUT_DIR}" ABSOLUTE)
+  else()
+    get_filename_component(_output_dir "${CMAKE_CURRENT_SOURCE_DIR}/../build" ABSOLUTE)
+  endif()
   set_target_properties(${name} PROPERTIES
     PREFIX ""
     SUFFIX ".node"

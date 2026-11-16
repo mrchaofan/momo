@@ -6,6 +6,8 @@ execute_process(
   COMMAND ${CMAKE_COMMAND} -S "${SOURCE_DIR}" -B "${WORK_DIR}" -G "${GENERATOR}"
           "-DCMAKE_MAKE_PROGRAM=${MAKE_PROGRAM}" "-DCMAKE_CXX_COMPILER=${CXX_COMPILER}"
           "-DMomoExtSdk_DIR=${SDK_DIR}/lib/cmake/MomoExtSdk"
+          # 产物留在工作目录: 默认位置(源码树的 <包>/build/)是端到端测试正在加载的那个文件。
+          "-DMOMO_EXTENSION_OUTPUT_DIR=${WORK_DIR}/addon"
   RESULT_VARIABLE configure_result)
 if(NOT configure_result EQUAL 0)
   message(FATAL_ERROR "Standalone configure against the SDK failed")
