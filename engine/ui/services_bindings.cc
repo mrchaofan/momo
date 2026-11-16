@@ -156,7 +156,6 @@ void DispatchToJs(UiBindings::Impl& impl, const std::string& channel, MessageByt
                                    "message handler '" + channel + "'");
   if (!result.ok()) {
     reply.Send(std::nullopt);
-    impl.runtime->DrainMicrotasks();
     return;
   }
   v8::Local<v8::Value> value = *result;
@@ -169,6 +168,7 @@ void DispatchToJs(UiBindings::Impl& impl, const std::string& channel, MessageByt
     v8::Local<v8::Function> on_err =
         v8::Function::New(context, &OnHandlerRejected, data).ToLocalChecked();
     (void)value.As<v8::Promise>()->Then(context, on_ok, on_err);
+    impl.runtime->DrainMicrotasks();  // Promise 已兑现时, 刚挂上的回调此刻才入队
   } else {
     MessageBytes bytes;
     v8::TryCatch try_catch(isolate);
@@ -178,7 +178,6 @@ void DispatchToJs(UiBindings::Impl& impl, const std::string& channel, MessageByt
       reply.Send(std::nullopt);
     }
   }
-  impl.runtime->DrainMicrotasks();
 }
 
 const char* PlatformName() {

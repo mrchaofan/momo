@@ -10,7 +10,7 @@
 //     `momo:*` 原生模块——经 module.registerHooks 映射到 node::AddLinkedBinding 注册的原生绑定
 //     (RegisterNativeModule;node_bootstrap.cc)——和原生扩展 `*.node`(docs/07)。
 //   - 从 momo 进入 JS(帧、输入、通道回调): Call 在 node::CallbackScope 里调用(同 node::MakeCallback),
-//     返回时按 Node 语义排空 process.nextTick 与 microtask;DrainMicrotasks 另外唤醒 poll 线程。
+//     返回时按 Node 语义排空 process.nextTick 与 microtask, 并唤醒 poll 线程。
 
 #include <filesystem>
 #include <functional>
@@ -82,11 +82,12 @@ class JsRuntime final : public Object {
                          const std::filesystem::path& base_dir = {});
   // 以经典脚本求值, 结果转为字符串。测试/诊断用。
   StatusOr<std::string> EvalToString(std::string_view source, std::string_view url = "<eval>");
-  // 从 momo 进入 JS 之后调用: 按 Node 语义排空 nextTick 与 microtask, 并让 uv poll 线程按新状态等待。
+  // C++ 在 Call 之外让 microtask 入队之后调用(兑现 Promise、给已兑现的 Promise 挂上回调): 按 Node 语义排空
+  // nextTick 与 microtask, 并让 uv poll 线程按新状态等待。经 Call 进入 JS 不需要它——Call 自己收尾。
   void DrainMicrotasks();
 
   // 调用 JS 函数(在本 context 中, 于 node::CallbackScope 内), 异常转为 Status 并记录日志。最外层的调用返回前
-  // 按 Node 语义排空 nextTick 与 microtask(嵌套调用由最外层排空)。
+  // 按 Node 语义排空 nextTick 与 microtask(嵌套调用由最外层排空), 并让 uv poll 线程按新的定时器/IO 状态等待。
   StatusOr<v8::Local<v8::Value>> Call(v8::Local<v8::Function> fn, v8::Local<v8::Value> receiver,
                                       int argc, v8::Local<v8::Value> argv[],
                                       std::string_view what);
@@ -122,6 +123,7 @@ class JsRuntime final : public Object {
   node::Environment* env_ = nullptr;
   v8::Global<v8::Context> context_;
   std::unique_ptr<NodeBindings> bindings_;
+  int call_depth_ = 0;  // 进行中的 Call 层数
   // node_bootstrap 返回的宿主对象: { importModule, flushCompileCache }(importModule 返回 { promise, started, detached })。
   v8::Global<v8::Object> host_;
   bool code_cache_ = false;
