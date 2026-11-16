@@ -6,7 +6,7 @@
 // 排序时被拖的标签原位置留空, 浮动副本跟随指针, 其他标签平移让位。
 import {
   AnimatedBuilder, AnimationController, Border, BorderRadius, BorderSide, GlobalKey, BoxDecoration, ClipRect, CurvedAnimation, Curves,
-  EdgeInsets, Expanded, GestureDetector, IgnorePointer, ImplicitlyAnimatedView, ImplicitlyAnimatedViewState, MouseRegion,
+  EdgeInsets, Expanded, FocusNode, GestureDetector, IgnorePointer, ImplicitlyAnimatedView, ImplicitlyAnimatedViewState, MouseRegion,
   Offset, Opacity, Padding, Positioned, Row, SizedBox, Stack, State, StatefulView, Text, Transform, Tween, Container, Center, ValueKey,
   type BuildContext, type DragDownDetails, type DragStartDetails, type Key, type TickerProvider, type View,
 } from "momo:framework";
@@ -39,12 +39,23 @@ export class Tab {
    * GlobalKey 子树始终挂在树上, 页面不刷新。
    */
   parking: BrowserWindow | null = null;
+  /** 网页(WebView)的焦点节点: 它持有焦点 = 键盘焦点在这个网页里。 */
+  readonly pageFocus = new FocusNode({ debugLabel: "page" });
+  /**
+   * 键盘焦点是否属于这个标签的网页(否则在地址栏等窗口自己的界面上)。只随用户的意图变化: 网页获得焦点 → true;
+   * 标签活动时地址栏 / 查找栏获得焦点 → false。标签被隐藏、换窗口时网页暂时失去焦点不改变它——之后据此恢复
+   * (BrowserAppState.restoreFocus)。网页内部聚焦在哪个元素由它自己的 WebView 保持, 各标签互不影响。
+   */
+  pageFocused = true;  // 新打开的标签: 焦点在它的网页里
   readonly animation: AnimationController;
   readonly curve: CurvedAnimation;
 
   /** vsync: 应用级 State(而非某个窗口的页面), 标签在窗口之间移动后动画仍有效。 */
   constructor(vsync: TickerProvider, readonly initialUrl: string | null) {
     this.url = initialUrl ?? "";
+    this.pageFocus.addListener(() => {
+      if (this.pageFocus.hasFocus) this.pageFocused = true;
+    });
     this.animation = new AnimationController({ vsync, duration: kTabAnimationMs });
     this.curve = new CurvedAnimation({ parent: this.animation, curve: Curves.easeOutCubic, reverseCurve: Curves.easeInCubic });
   }
@@ -66,6 +77,7 @@ export class Tab {
 
   dispose(): void {
     this.animation.dispose();
+    this.pageFocus.dispose();
   }
 }
 

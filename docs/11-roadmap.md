@@ -83,6 +83,9 @@
       `Application` 与 `WindowManager` 拆分, 宿主通道统一为方法注册表(`HostChannel`);JS 侧 `app` / `Widget` 对象,
       组件基类改名为 `View`(对齐 Chromium views)。Windows: `WM_ACTIVATEAPP`(经 `WinApp`)、再次启动 = 重新激活(`OnReopen`)、
       `WM_ENDSESSION` 有序关闭已接入, 未在 Windows 上运行验证
+- [x] 原生菜单与托盘(对标 Electron `Menu` / `MenuItem` / `Tray`;docs/03 §5.1): 应用菜单、上下文菜单、托盘图标与托盘菜单;
+      role(由系统执行的标准动作)、快捷键、复选/单选、动态更新。宿主通道 `momo/menu`、`momo/tray`, engine 没有改动。
+      macOS 已在真机验证;Windows(`win_menu.cc`)已实现, 未编译、未验证
 - [ ] 无障碍(语义树 → UIA/AX)——设计预留,独立立项(未做)
 
 ## M7 · 接入 Node.js(参照 Electron `NodeBindings`)

@@ -270,16 +270,19 @@ export class FocusManager extends ChangeNotifier {
     if (node === this.#primary) return;
     const old = this.#primary;
     this.#primary = node;
-    if (node !== null) {
-      // 记录各级作用域的 focusedChild
-      let child: FocusNode = node;
-      for (let s = node.enclosingScope; s !== null; s = s.enclosingScope) {
-        s.focusedChild = child;
-        child = s;
-      }
-    }
+    this.#recordFocusedChildren();
     this.#notifyNodes(old, node);
     this.notifyListeners();
+  }
+
+  /** 主焦点所在的各级作用域记下自己聚焦的后代(作用域再次获得焦点时恢复给它)。 */
+  #recordFocusedChildren(): void {
+    let child = this.#primary;
+    if (child === null) return;
+    for (let s = child.enclosingScope; s !== null; s = s.enclosingScope) {
+      s.focusedChild = child;
+      child = s;
+    }
   }
 
   /** @internal 节点被移除时转移焦点。 */
@@ -295,8 +298,12 @@ export class FocusManager extends ChangeNotifier {
     this.notifyListeners();
   }
 
-  /** @internal */
+  /**
+   * @internal 持有焦点的节点换了父节点(如 GlobalKey 子树移到另一个窗口): 焦点跟着它走——新位置的各级作用域
+   * 记下它(否则新作用域里的 autofocus 会把焦点抢走), 沿途节点收到焦点变化。
+   */
   _notifyChain(): void {
+    this.#recordFocusedChildren();
     this.#notifyNodes(this.#primary, this.#primary);
   }
 

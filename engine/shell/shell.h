@@ -64,6 +64,8 @@ class Shell final : public Object {
     virtual void OnPlatformViewDisposed(int64_t view_id) { (void)view_id; }
     // 框架请求把键盘焦点交给视图(macOS: makeFirstResponder)。
     virtual void OnPlatformViewFocusRequested(int64_t view_id) { (void)view_id; }
+    // 框架的焦点离开了视图: 若视图正持有键盘焦点, 交还给宿主视图自己的内容。
+    virtual void OnPlatformViewBlurRequested(int64_t view_id) { (void)view_id; }
 
     // 本视图的第一帧已呈现到 surface(宿主可在此显示以 show:false 创建的窗口)。每次 AttachView 后最多一次。
     virtual void OnFirstFramePresented() {}

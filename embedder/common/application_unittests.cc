@@ -691,6 +691,37 @@ TEST_F(ApplicationTest, TextInputGoesToTheFocusedWindow) {
   EXPECT_TRUE(second_shown);
 }
 
+// 平台没有系统标准动作的 role(Windows)由 Application 执行: 窗口类作用于获得焦点的窗口, 编辑类经
+// momo/textinput 的编辑命令交给 JS, quit 走退出流程。
+TEST_F(ApplicationTest, MenuRolesActOnTheFocusedWindowTheTextFieldAndTheApp) {
+  FakeJs js;
+  auto app = LaunchWithFakeJs(js);
+  MenuDelegate* menus = state_->menus->delegate;
+  ASSERT_NE(menus, nullptr);
+  MockWindow* window = state_->window;
+
+  menus->OnMenuRoleActivated(MenuRole::kMinimize);  // 没有获得焦点的窗口: 什么也不做
+  EXPECT_FALSE(window->state().minimized);
+  window->delegate()->OnFocusChanged(true);
+  menus->OnMenuRoleActivated(MenuRole::kZoom);
+  EXPECT_TRUE(window->state().maximized);
+  menus->OnMenuRoleActivated(MenuRole::kZoom);
+  EXPECT_FALSE(window->state().maximized);
+  menus->OnMenuRoleActivated(MenuRole::kMinimize);
+  EXPECT_TRUE(window->state().minimized);
+
+  menus->OnMenuRoleActivated(MenuRole::kCopy);
+  menus->OnMenuRoleActivated(MenuRole::kClose);
+  EventLoop::Current()->RunUntilIdle();
+  EXPECT_TRUE(Contains(js.messages, "momo/textinput:command"));
+  EXPECT_TRUE(Contains(js.questions, "momo/window:closeRequested"));
+
+  menus->OnMenuRoleActivated(MenuRole::kQuit);
+  EXPECT_EQ(app->Run(), 0);
+  EXPECT_TRUE(Contains(js.questions, "momo/app:beforeQuit"));
+  EXPECT_EQ(state_->menus->delegate, nullptr) << "the channel detaches from the platform menus on teardown";
+}
+
 // 平台服务通道与其他宿主通道是同一套实现(HostChannel): 方法按注册表分发, 未知方法回复 unimplemented。
 TEST_F(ApplicationTest, PlatformServiceChannelsDispatchAndReportUnknownMethods) {
   WriteBundle();

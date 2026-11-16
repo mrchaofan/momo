@@ -263,7 +263,8 @@ void Shell::SetAppSuspended(bool suspended) {
 // 平台视图通道(momo/platform_views, JS→平台):
 //   create  {id: int, viewType: string, params: bytes|null}
 //   dispose {id: int}
-//   focus   {id: int}
+//   focus   {id: int}      把键盘焦点交给原生视图
+//   blur    {id: int}      原生视图不再持有键盘焦点(若它正持有, 交还给视图自己的内容)
 // 平台视图表归引擎(扩展经宿主能力表注册工厂, 合成帧按 LayerTree 中的位置切片), 所以这个通道由 Shell 处理;
 // 原生视图挂进哪个窗口由宿主决定(Shell::Delegate 的平台视图回调)。
 
@@ -332,6 +333,12 @@ StatusOr<EncodableValue> Shell::HandlePlatformViewCall(const MethodCall& call) {
     // 只有当前承载该原生视图的窗口会响应。
     for (const auto& [view, delegate] : delegates_) {
       delegate->OnPlatformViewFocusRequested(id);
+    }
+    return EncodableValue();
+  }
+  if (call.method == "blur") {
+    for (const auto& [view, delegate] : delegates_) {
+      delegate->OnPlatformViewBlurRequested(id);
     }
     return EncodableValue();
   }

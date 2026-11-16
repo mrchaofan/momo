@@ -35,7 +35,7 @@ struct TextInputEvent {
     kComposingEnd,    // 结束 composing(输入法取消预编辑, text 为空)
     // 编辑命令。注意: 由按键产生的编辑操作(退格/方向键/回车等)以 KeyData 送达框架处理, 平台**不**
     // 再为同一按键发 kCommand(否则执行两次);kCommand 只用于没有对应按键事件的来源(如辅助功能、
-    // 系统服务菜单)。
+    // 系统服务菜单, 以及菜单的编辑类 role: "cut" / "copy" / "paste" / "selectAll")。
     kCommand,         // command = "deleteBackward" | "deleteForward" | "insertNewline" |
                       // "insertTab" | "moveLeft" | "moveRight" | "moveUp" | "moveDown" |
                       // "moveToLineStart" | "moveToLineEnd" | "selectAll" | ...(macOS 选择子名去掉冒号)

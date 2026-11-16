@@ -22,6 +22,7 @@
 //  - Surface: WinD3DSurface(Direct3D 12 交换链, 失败可回退软件);无 D3D12 设备或环境变量
 //    MOMO_SOFTWARE_RENDERING=1 时直接用 GDI 软件 surface(WinSoftwareSurface)。拖拽缩放时在 WM_SIZE 里等一帧
 //    新尺寸的内容(SynchronizeLiveResize, 同 macOS)。
+//  - 应用菜单(win_menu.h): 菜单栏由 UpdateMenuBar 挂上;菜单栏的 WM_COMMAND 与按键的快捷键匹配交给 WinMenus。
 //  - 不支持(对 JS 回复 unimplemented): 平台视图、非激活窗口(non_activating 按普通窗口处理)。
 // 重入: 拖拽缩放时的等帧(执行平台线程任务)与系统拖动(系统模态循环)期间可能执行任意任务, 包括退出
 // (Application::Exit 同步关闭全部窗口)。这两处在重入返回后先检查 alive_, 窗口已销毁就不再访问本对象。
@@ -46,6 +47,7 @@ class WinApp;
 class WinCaptionButtons;
 class WinD3DDevice;
 class WinDisplays;
+class WinMenus;
 class WinSoftwareSurface;
 class WinTextInput;
 
@@ -56,6 +58,7 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
     WinMouseInput& mouse;
     WinDisplays& displays;
     WinApp& app;
+    WinMenus& menus;
     // 应用级的 Direct3D 设备(全部窗口共用);为空则窗口用软件 surface。
     std::shared_ptr<const WinD3DDevice> d3d_device;
   };
@@ -108,6 +111,10 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
 
   HWND hwnd() const { return hwnd_; }
 
+  // 按当前的应用菜单更新本窗口的菜单栏(WinMenus 在应用菜单变化时调用)。隐藏了标题栏的窗口没有菜单栏。
+  // 菜单栏的有无改变客户区的高度(照常经 WM_SIZE 上报)。
+  void UpdateMenuBar();
+
  private:
   WinWindow(const WindowOptions& options, WindowDelegate* delegate, const Context& context);
 
@@ -157,6 +164,7 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   WinMouseInput& mouse_;
   WinDisplays& displays_;
   WinApp& app_;
+  WinMenus& menus_;
   HWND hwnd_ = nullptr;
   UINT dpi_ = USER_DEFAULT_SCREEN_DPI;
   bool created_ = false;  // 创建过程中的消息不上报

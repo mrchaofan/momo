@@ -20,6 +20,7 @@
 #include "embedder/windows/win_caption_buttons.h"
 #include "embedder/windows/win_displays.h"
 #include "embedder/windows/win_key_mapping.h"
+#include "embedder/windows/win_menu.h"
 #include "embedder/windows/win_surface_d3d.h"
 #include "embedder/windows/win_surface_software.h"
 #include "embedder/windows/win_text_input.h"
@@ -183,6 +184,7 @@ WinWindow::WinWindow(const WindowOptions& options, WindowDelegate* delegate, con
       mouse_(context.mouse),
       displays_(context.displays),
       app_(context.app),
+      menus_(context.menus),
       min_size_(options.min_size) {
   resize_options_.resizable = options.resizable;
 }
@@ -259,7 +261,8 @@ SIZE WinWindow::WindowSizeForClient(double logical_width, double logical_height,
   const double scale = static_cast<double>(dpi) / USER_DEFAULT_SCREEN_DPI;
   RECT rect = {0, 0, Round(logical_width * scale), Round(logical_height * scale)};
   if (!title_bar_.hidden) {
-    ::AdjustWindowRectExForDpi(&rect, style(), FALSE, ex_style(), dpi);
+    const BOOL has_menu_bar = hwnd_ != nullptr && ::GetMenu(hwnd_) != nullptr;
+    ::AdjustWindowRectExForDpi(&rect, style(), has_menu_bar, ex_style(), dpi);
   }
   return {rect.right - rect.left, rect.bottom - rect.top};
 }
@@ -291,6 +294,7 @@ Status WinWindow::Initialize(const WindowOptions& options, std::shared_ptr<const
   if (hwnd_ == nullptr) {  // WM_NCCREATE 中已赋值
     return InternalError("CreateWindowExW failed: " + std::to_string(::GetLastError()));
   }
+  UpdateMenuBar();  // 先挂上菜单栏: 下面按"含菜单栏"换算窗口尺寸
   dpi_ = ::GetDpiForWindow(hwnd_);
   size = WindowSizeForClient(options.size.width, options.size.height, dpi_);
   HMONITOR monitor = ::MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
@@ -549,8 +553,22 @@ double WinWindow::CaptionHeight() const {
   return physical / device_pixel_ratio();
 }
 
+void WinWindow::UpdateMenuBar() {
+  HMENU old = ::GetMenu(hwnd_);
+  HMENU next = title_bar_.hidden ? nullptr : menus_.CreateMenuBar();
+  if (old == nullptr && next == nullptr) {
+    return;
+  }
+  ::SetMenu(hwnd_, next);  // 菜单归窗口所有(随窗口销毁);换下来的由我们销毁
+  if (old != nullptr) {
+    ::DestroyMenu(old);
+  }
+  ::DrawMenuBar(hwnd_);
+}
+
 Status WinWindow::SetTitleBar(const TitleBarOptions& options) {
   title_bar_ = options;
+  UpdateMenuBar();
   if (options.hidden && caption_buttons_ == nullptr) {
     caption_buttons_ = std::make_unique<WinCaptionButtons>(hwnd_);
   }
@@ -1153,9 +1171,10 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       }
       break;
     case WM_SYSCOMMAND:
-      // 单独按 Alt / F10 / Alt+字母会进入菜单模式(本窗口无菜单, 只会吞掉下一次按键并蜂鸣)。
+      // 单独按 Alt / F10 / Alt+字母会进入菜单模式: 窗口没有菜单栏时只会吞掉下一次按键并蜂鸣, 拦掉;
+      // 有菜单栏(应用菜单)时照常交给系统。
       // 保留 Alt+Space(系统菜单)。
-      if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != VK_SPACE) {
+      if ((wparam & 0xFFF0) == SC_KEYMENU && lparam != VK_SPACE && ::GetMenu(hwnd_) == nullptr) {
         return 0;
       }
       break;
@@ -1197,15 +1216,30 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
       }
       return 0;
 
+    // ---- 应用菜单 ----
+    case WM_COMMAND:
+      if (lparam == 0 && HIWORD(wparam) == 0) {  // 来自菜单栏
+        menus_.OnMenuBarCommand(LOWORD(wparam));
+        return 0;
+      }
+      break;
+
     // ---- 键盘 ----
+    // 应用菜单的快捷键先于应用内容: 命中的按下不再上报(同 macOS 菜单的 key equivalent)。
     case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+      if (menus_.HandleKeyDown(static_cast<UINT>(wparam), CurrentModifiers(), (lparam & (1 << 30)) != 0)) {
+        return 0;
+      }
+      OnKey(message, wparam, lparam);
+      if (message == WM_KEYDOWN) return 0;
+      break;  // WM_SYSKEYDOWN 交给 DefWindowProc: Alt+F4 → SC_CLOSE → WM_CLOSE 等系统行为
     case WM_KEYUP:
       OnKey(message, wparam, lparam);
       return 0;
-    case WM_SYSKEYDOWN:
     case WM_SYSKEYUP:
       OnKey(message, wparam, lparam);
-      break;  // 交给 DefWindowProc: Alt+F4 → SC_CLOSE → WM_CLOSE 等系统行为
+      break;
     case WM_CHAR:
       if (text_input_ != nullptr) {
         text_input_->OnChar(static_cast<wchar_t>(wparam));

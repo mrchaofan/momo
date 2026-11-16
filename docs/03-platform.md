@@ -25,6 +25,8 @@ engine/platform/                   # 平台契约(engine 可见的全部;零平�
 embedder/common/                   # embedder 的平台抽象(engine 不可见)
 ├── platform_integration.h         # 工厂与根入口(创建窗口、应用唯一的 VsyncSource、服务、应用能力、显示器、原生循环)
 ├── platform_app.h                 # 应用级能力(隐藏/显示/激活, AppCapability)
+├── platform_menu.h                # 原生菜单与托盘(PlatformMenus、PlatformTray;平台没有时 menus() 为空)
+├── menu_model.h                   # 菜单的描述(MenuModel: 类型、role、快捷键…), JS 发来、平台据此构建原生菜单
 ├── platform_window.h              # 窗口接口(含可选能力 WindowCapability)+ WindowDelegate 回调
 ├── platform_services.h            # 剪贴板/打开 URL(低频服务)
 ├── text_input.h                   # IME 接入接口与 TextEditingState/TextInputEvent
@@ -32,10 +34,11 @@ embedder/common/                   # embedder 的平台抽象(engine 不可见)
 ├── host_channel.h                 # 宿主通道的公共实现(方法注册表、宿主 → JS 通知与询问)
 ├── app_channel.h                  # 宿主通道 momo/app(应用生命周期与退出)
 ├── window_channel.h               # 宿主通道 momo/window(窗口)
+├── menu_channel.h                 # 宿主通道 momo/menu(应用菜单、上下文菜单、菜单项的点击)
+├── tray_channel.h                 # 宿主通道 momo/tray(托盘图标)
 ├── platform_channels.h            # 宿主通道 momo/clipboard、momo/url、momo/textinput
 ├── pointer_dispatcher.h           # 指针接收方的唯一决策者(PointerDispatcher)+ 平台窗口执行端 PointerWindow
-├── display.h                      # 显示器信息(DPR、刷新率、工作区;主屏左上原点的逻辑点)
-└── (menu.h)                       # 应用菜单与右键菜单接口(规划)
+└── display.h                      # 显示器信息(DPR、刷新率、工作区;主屏左上原点的逻辑点)
 
 engine/platform/ 只放 engine 自己要用的东西(画面、输入、视图尺寸)。窗口外观与行为、剪贴板、输入法这类能力
 engine 不需要知道: 它们由 embedder 在引擎的消息通道上注册处理器(宿主通道), JS 与宿主直接往返。
@@ -56,11 +59,14 @@ embedder/windows/                  # Win32 实现(与 main_win.cc、win_app_dele
 ├── win_vsync_dwm.h/.cc            # DwmFlush vblank 等待
 ├── win_text_input.h/.cc           # IMM32
 ├── win_services.h/.cc             # 剪贴板、OpenUrl
+├── win_menu.h/.cc                 # WinMenus: 菜单栏(每个窗口)、快捷键匹配、TrackPopupMenu、Shell_NotifyIcon 托盘
 └── win_key_mapping / win_util
 
 embedder/macos/                    # Cocoa 实现(Objective-C++)
 ├── main_mac.mm                    # 进程入口(只做翻译)
-├── mac_app_delegate.h/.mm         # NSApplicationDelegate: 退出拦截、隐藏/激活 → Application;最小主菜单
+├── mac_app_delegate.h/.mm         # NSApplicationDelegate: 退出拦截、隐藏/激活 → Application
+├── mac_menu.h/.mm                 # MacMenus: MenuModel → NSMenu(应用菜单、上下文菜单), role = AppKit 标准 action
+├── mac_tray.h/.mm                 # MacTray: NSStatusItem
 ├── mac_platform_integration.h/.mm # PlatformIntegration 工厂 + PlatformApp + PlatformServices;持有 MacMouseInput
 ├── mac_native_loop.h/.mm          # NativeLoop: GCD 主队列 + NSApp run/stop
 ├── mac_window.h/.mm               # MacWindow: NSWindow/NSPanel + 内容视图 MomoContentView(键盘、IME、光标)
@@ -157,11 +163,40 @@ class RenderSurface {
 
 ## 5. 平台服务与消息通道
 
-应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 之后、`Shell::Run` 之前, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层。
+应用生命周期、窗口管理、剪贴板、系统对话框、菜单、打开 URL 等低频能力不做同步绑定,统一经 `MessageChannelHub` 以异步消息暴露。处理器由 **embedder** 注册(`app_channel.cc`:`momo/app`;`window_channel.cc`:`momo/window`;`menu_channel.cc`:`momo/menu`;`tray_channel.cc`:`momo/tray`;`platform_channels.cc`:`momo/clipboard`、`momo/url`、`momo/textinput`), 调用 `PlatformApp` / `PlatformWindow` / `PlatformServices`;注册发生在 `Shell::Create` 之后、`Shell::Run` 之前, 早于 JS bundle 执行。新增服务、窗口或应用能力 = embedder 里注册一个通道方法(`HostChannel::Register`)+ 框架对象(`app` / `Widget`)加方法, 不改 engine, 不改 ui 绑定层。
 
 所有宿主通道共用 `HostChannel` 的错误码映射:`unimplemented`(未知方法、平台不支持)、`notFound`、`invalidArgument`, 其余为 `error`。
 
 窗口的可选能力(隐藏标题栏、系统拖动、移动循环、指针捕获、置顶、定位、平台视图、隐藏、最小化/最大化…)由 `PlatformWindow::capabilities()` 显式声明, 不支持的方法返回 `Unimplemented`(JS 收到错误码 `unimplemented`, 框架当作空操作), JS 可经 `momo/window getState` 查询。
+
+### 5.1 菜单与托盘
+
+对标 Electron 的 `Menu` / `MenuItem` / `Tray`。分工:
+
+- **菜单的内容与点击回调归 JS**(框架的 `Menu` / `MenuItem`, `services/menu.ts`)。宿主不保存 JS 的状态: JS 把菜单序列化成
+  一份描述(`MenuModel`, `menu_model.h`), 宿主据此构建原生菜单;菜单项被点击时宿主只发回它的 id
+  (`momo/menu itemClicked`), JS 在使用中的菜单里找到菜单项、更新复选/单选状态、调用 `click`。使用中的菜单
+  (应用菜单、托盘菜单)内容变化后, JS 重新发送整份描述(同一轮事件循环里的多次修改合并为一次)。
+- **一份描述、三处使用**: 应用菜单(`setApplicationMenu`)、上下文菜单(`popup`)、托盘菜单(`momo/tray setContextMenu`)
+  用同一种描述、同一个构建函数, 点击都经同一个 `MenuDelegate` 回到 `MenuChannel`。
+- **role 由宿主执行**(退出、复制、最小化…), 不向 JS 报告点击, 标题与快捷键缺省取平台的。macOS: role 就是 AppKit 的
+  标准 action, target 为空, 沿响应链发送(`terminate:`、`copy:`、`performClose:`…), 可用状态也由 AppKit 按响应链
+  判定——`MomoContentView` 在有文本输入会话时响应 cut/copy/paste/selectAll(作为 `momo/textinput` 的编辑命令交给
+  框架的文本框), 原生视图(WKWebView)自己响应。Windows 没有对应的机制: 平台回调 `MenuDelegate::OnMenuRoleActivated`,
+  由 `Application::PerformMenuRole` 执行(窗口类作用于获得焦点的窗口, 编辑类同样走编辑命令)。平台没有的 role, 菜单项不显示。
+- **快捷键由宿主识别**(只有应用菜单里的): 字符串在 JS 解析成 `{key, modifiers}`(`services/accelerator.ts`);macOS 是
+  菜单项的 key equivalent, 窗口在 `performKeyEquivalent:` 里先交给主菜单、菜单不处理才交给视图层级(AppKit 的默认
+  顺序相反, 而获得键盘焦点的 WKWebView 会收走全部带 Command 的按键), Windows 由 `WinMenus` 在 `WM_KEYDOWN` 交给应用内容之前
+  匹配。命中的按键不再作为 KeyData 上报。
+- **上下文菜单不在 platform 任务里弹出**。系统的菜单跟踪循环是嵌套的原生循环;macOS 上, 在 GCD 主队列的任务里
+  进入嵌套 run loop, 主队列(即 platform EventLoop)不再被服务——菜单打开期间画面与通道全部停转。所以
+  `PlatformMenus::Popup` 立即返回(通道回复 true), 平台随后从 run loop 的 block(macOS)/ 宿主窗口的消息(Windows)里
+  打开菜单, 关闭后回调 `on_closed`(通道发 `popupClosed`)。JS 的 `menu.popup()` 是在 `popupClosed` 时完成的 Promise。
+- **更新不打断用户**(macOS): 结构没变(项数、分隔线与子菜单的位置)时原地修改 `NSMenuItem` 的属性, 用户正打开着的
+  菜单不会被关掉;结构变了才重建那一个菜单的各项。
+- **托盘图标**的生命周期归宿主的 `TrayChannel`(id → `PlatformTray`): 一直存在到 JS 调用 `destroy()` 或应用退出
+  (JS 丢掉 `Tray` 对象的引用不会移除图标)。设置了上下文菜单时点击(macOS)/ 右键(Windows)由系统打开菜单;
+  其余点击经 `momo/tray` 报告, 带图标的屏幕框。
 
 ## 6. 实现要点备忘
 
@@ -179,5 +214,8 @@ class RenderSurface {
     (单实例转发)= macOS 点击 Dock 图标(激活 + `OnReopen`);`WM_ENDSESSION` 有序关闭。没有应用级隐藏。
   - 渲染: D3D12 flip-model 交换链(`WinD3DSurface`, raster 线程 `ResizeBuffers`/`Present`), 失败回退 GDI;拖拽缩放时 `WM_SIZE`
     里等待一帧新尺寸的帧(同 macOS, 上限 100 ms)。深色标题栏 DWMWA_USE_IMMERSIVE_DARK_MODE;WM_DPICHANGED。
+  - 菜单与托盘(`WinMenus`, **连交叉编译检查也没有做**): 应用菜单是每个窗口的菜单栏(`SetMenu`;隐藏了标题栏的窗口
+    没有), 内容变化 = 换一个新的 `HMENU`;快捷键在 `WM_KEYDOWN` 里匹配;上下文菜单 `TrackPopupMenuEx`;托盘
+    `Shell_NotifyIcon`(只支持 `.ico`), 资源管理器重启后重新添加。
   - 不支持: 平台视图、非激活窗口(`non_activating` 按普通窗口处理)。
 - **macOS**:NSView 开 layer-backed + CAMetalLayer(挂在专用底层子视图里);`drawableSize` 以 raster 请求的尺寸为准,主线程只同步 frame 与 contentsScale;拖拽缩放时等一帧新尺寸的内容与窗口尺寸同一事务提交;快捷键由框架按 KeyData 处理(Cmd 按住时 AppKit 吞掉的 keyUp 用本地监视器补发);Space/全屏切换时 metrics 更新。

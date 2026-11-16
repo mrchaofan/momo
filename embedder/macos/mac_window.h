@@ -81,6 +81,7 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   void AddPlatformView(int64_t view_id, void* native_view) override;
   void RemovePlatformView(int64_t view_id) override;
   void FocusPlatformView(int64_t view_id) override;
+  void BlurPlatformView(int64_t view_id) override;
 
   // PointerWindow(PointerDispatcher 的执行端, 见 mac_window.mm"指针")
   std::optional<int64_t> HitTest(Point screen) const override;

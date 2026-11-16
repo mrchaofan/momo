@@ -3,10 +3,13 @@
 #import <Cocoa/Cocoa.h>
 #import <CoreVideo/CoreVideo.h>
 
+#include <optional>
+
 #include "base/logging.h"
 #include "embedder/common/engine_platform.h"
 #include "embedder/common/fallback_surface.h"
 #include "embedder/macos/mac_mouse_events.h"
+#import "embedder/macos/mac_menu.h"
 #include "embedder/macos/mac_native_loop.h"
 #include "embedder/macos/mac_surface_metal.h"
 #include "embedder/macos/mac_vsync_displaylink.h"
@@ -75,6 +78,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
   MacPlatformIntegration() {
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+    menus_.emplace();  // 默认的应用菜单
     if (SoftwareRenderingForced()) {
       MOMO_LOG(INFO) << "MOMO_SOFTWARE_RENDERING set: windows use the software surface.";
     } else if (auto device = MacMetalDevice::Create(); device.ok()) {
@@ -107,6 +111,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
 
   momo::embedder::PlatformServices& services() override { return services_; }
   momo::embedder::PlatformApp& app() override { return app_; }
+  PlatformMenus* menus() override { return &menus_.value(); }
 
   std::vector<DisplayInfo> displays() const override {
     std::vector<DisplayInfo> out;
@@ -133,6 +138,7 @@ class MacPlatformIntegration final : public PlatformIntegration {
   MacNativeLoop native_loop_;
   MacServices services_;
   MacApp app_;
+  std::optional<MacMenus> menus_;  // NSApplication 初始化之后构造
   // 进程内唯一的指针输入(PointerDispatcher), 注入每个窗口;窗口先于本对象销毁。
   MacMouseInput mouse_input_;
   // 应用级的 Metal 设备与命令队列: 全部窗口共用(引擎因此只建一个 GPU 后端)。为空 = 软件呈现。

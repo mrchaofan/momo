@@ -47,7 +47,7 @@ embedder ──► engine（含 engine/platform 契约）──► base
 - engine 不 include 任何 `embedder/` 头文件，可以脱离真实窗口做 headless 测试；
 - 移植新平台 = 在 `embedder/<os>/` 实现这组接口，再写一个入口。
 
-**engine 只认识视图**：一个视图的画面、尺寸、输入、焦点与输入归属（捕获）。窗口的外观与行为（标题、光标、位置、标题栏、拖动、创建与关闭的询问）、剪贴板、打开 URL、输入法都属于宿主——它们不出现在 engine 的任何接口里，而是由 embedder 在引擎的消息通道上注册处理器（`momo/window`、`momo/app`、`momo/clipboard`、`momo/url`、`momo/textinput`），JS 与宿主直接往返（§3.10）。这与 Flutter（engine 只有 view，窗口由 embedder/插件经 platform channel 处理）和 Chromium（cc/content 不关心窗口边框，窗口归 `views::Widget` ⇄ `NativeWidget`）的分工一致。新增窗口能力或平台服务只改 embedder 与框架，不改 engine。
+**engine 只认识视图**：一个视图的画面、尺寸、输入、焦点与输入归属（捕获）。窗口的外观与行为（标题、光标、位置、标题栏、拖动、创建与关闭的询问）、菜单与托盘、剪贴板、打开 URL、输入法都属于宿主——它们不出现在 engine 的任何接口里，而是由 embedder 在引擎的消息通道上注册处理器（`momo/window`、`momo/app`、`momo/menu`、`momo/tray`、`momo/clipboard`、`momo/url`、`momo/textinput`），JS 与宿主直接往返（§3.10）。这与 Flutter（engine 只有 view，窗口由 embedder/插件经 platform channel 处理）和 Chromium（cc/content 不关心窗口边框，窗口归 `views::Widget` ⇄ `NativeWidget`）的分工一致。新增窗口能力或平台服务只改 embedder 与框架，不改 engine。
 
 ### 1.2 运行时对象图
 
@@ -56,8 +56,9 @@ embedder ──► engine（含 engine/platform 契约）──► base
 ```
 main()                                         embedder/macos/main_mac.mm
 └─ embedder::Application              (platform)  进程生命周期状态机与退出流程(Quit / Exit);不决定窗口
-   ├─ PlatformIntegration (Mac)       (platform)  工厂：窗口、VSync、服务、应用能力(PlatformApp)、显示器、原生循环
-   │   └─ MacMouseInput               (platform)  进程内唯一的指针输入:PointerDispatcher + 序列监视器(注入每个 MacWindow)
+   ├─ PlatformIntegration (Mac)       (platform)  工厂：窗口、VSync、服务、应用能力(PlatformApp)、菜单与托盘、显示器、原生循环
+   │   ├─ MacMouseInput               (platform)  进程内唯一的指针输入:PointerDispatcher + 序列监视器(注入每个 MacWindow)
+   │   └─ MacMenus                    (platform)  应用菜单(NSApp.mainMenu)、上下文菜单、托盘图标(MacTray)
    ├─ EventLoop  + NativeMessagePump  (platform)  跑在 [NSApp run] 之上
    ├─ engine::ThreadHost                          创建并 join ui / raster / io 三个线程
    ├─ WindowManager                   (platform)  窗口注册表:创建、关闭询问、焦点/IME 路由(视图 0 = 启动窗口)
@@ -68,6 +69,7 @@ main()                                         embedder/macos/main_mac.mm
    ├─ AppChannel                      (platform)  宿主通道 momo/app(§3.10)
    ├─ WindowChannel                   (platform)  宿主通道 momo/window(§3.10)
    ├─ PlatformChannels                (platform)  宿主通道 momo/clipboard、momo/url、momo/textinput
+   ├─ MenuChannel / TrayChannel       (platform)  宿主通道 momo/menu、momo/tray(§3.10"菜单与托盘")
    └─ engine::Shell                   (platform)  引擎实例的协调中枢
        ├─ MessageChannelHub           (任意线程)  异步消息通道
        ├─ NativeHost               (platform)  原生扩展的宿主能力表
@@ -222,7 +224,8 @@ macOS 实现（`embedder/macos/`）：
 | 文件 | 实现的接口 | 要点 |
 |---|---|---|
 | `main_mac.mm` | — | 进程入口，只做翻译（<100 行） |
-| `mac_app_delegate.mm` | `NSApplicationDelegate` | 退出拦截、隐藏/显示 → 生命周期；最小主菜单（隐藏、退出） |
+| `mac_app_delegate.mm` | `NSApplicationDelegate` | 退出拦截、隐藏/显示 → 生命周期 |
+| `mac_menu.mm` / `mac_tray.mm` | `PlatformMenus`、`PlatformTray`（embedder 抽象） | `MenuModel` → `NSMenu`（应用菜单原地更新、上下文菜单）；role = AppKit 标准 action（沿响应链）；`NSStatusItem` 托盘 |
 | `mac_platform_integration.mm` | `PlatformIntegration`、`PlatformApp`、`PlatformServices`（embedder 抽象） | 工厂；应用隐藏/激活（NSApp）；剪贴板（NSPasteboard）、打开 URL（NSWorkspace）；`NSScreen` → `DisplayInfo`（主屏左上原点）；持有进程内唯一的 `MacMouseInput` 并注入每个窗口 |
 | `mac_native_loop.mm` | `NativeLoop` | GCD 主队列 + `[NSApp run]` / `[NSApp stop:]` |
 | `mac_window.mm` | `PlatformWindow`、`PointerWindow` | `MomoWindow`（NSWindow）/ `MomoPanel`（NSPanel，非激活面板）只把 `-sendEvent:` 转给 `MacWindow::SendEvent`；`MomoContentView`（自定义 `NSView`，first responder，键盘、`NSTextInputClient`、光标）；全部可选窗口能力（隐藏标题栏、系统拖动、移动循环、指针捕获…） |
@@ -242,9 +245,9 @@ macOS 实现（`embedder/macos/`）：
 // 伪代码：进程入口（embedder/macos/main_mac.mm）
 int main(argc, argv) {
   config   = AppConfig::Parse(args);                    // [<app>] --title --width --height --dev --inspect-port --inspect-brk
-  platform = macos::CreateMacPlatformIntegration();     // [NSApplication sharedApplication]，ActivationPolicyRegular
+  platform = macos::CreateMacPlatformIntegration();     // [NSApplication sharedApplication]，ActivationPolicyRegular，
+                                                        // 默认的应用菜单(MacMenus: 隐藏、退出)
   NSApp.delegate = [MacAppDelegate new];
-  [MacAppDelegate installMainMenuWithAppName:title];
 
   app = Application::Create({config, resources_dir = NSBundle.mainBundle.resourcePath}, platform);
   delegate.application = app;
@@ -289,6 +292,8 @@ Application::LaunchEngine() {
   app_channel_       = AppChannel(shell_->hub(), platform runner, host = this);                // momo/app
   window_channel_    = WindowChannel(shell_->hub(), platform runner, host = window_manager_);  // momo/window
   platform_channels_ = PlatformChannels(shell_->hub(), ..., focused_text_input = WindowManager::FocusedTextInput);
+  menu_channel_      = MenuChannel(shell_->hub(), platform runner, platform->menus(), host = this);  // momo/menu
+  tray_channel_      = TrayChannel(shell_->hub(), platform runner, platform->menus());               // momo/tray
   window_manager_->AttachEngine(*shell_, ...);  // 应用唯一的 VsyncSource: CreateVsyncSource → Shell::SetVsyncSource;
                                                 // 每个窗口: Shell::AttachView + 补发 metrics/焦点/可见性
   // 第二阶段: 异步启动 JS 运行时(ui 线程执行 bundle), 结果回到 platform 线程
@@ -489,6 +494,7 @@ void Application::Exit(int code) {                       // 不询问
 
 void Application::Shutdown() {                           // 幂等;不销毁任何东西
   TransitionTo(kTerminating);                            // 把 terminating 状态发给 JS(相当于 Electron 的 'quit')
+  platform->menus()->ClosePopup();                       // 打开着的上下文菜单在系统的跟踪循环里: 不关掉它循环结束不了
   platform_loop_->Terminate();                           // 当前任务返回后排空、析构 DeleteLater 对象 → [NSApp stop:]
 }
 
@@ -500,6 +506,7 @@ void Application::TearDown() {                           // 消息循环结束�
                                         // 3) raster 同步：销毁 Rasterizer（GPU 资源, 停用各窗口的 surface）
   window_manager_->DetachEngine();      //    窗口放开引擎
   app_channel_.reset(); window_channel_.reset(); platform_channels_.reset();   // 移除宿主通道处理器
+  menu_channel_.reset(); tray_channel_.reset();                                 // 托盘图标在这里移除
   window_manager_->DestroyAll();        // 3) 销毁还开着的 MacWindow 与 RenderSurface（正常退出时窗口已在流程里关闭）
   thread_host_->Join();                 // 4) join ui → raster → io
 }
@@ -519,12 +526,14 @@ void Application::TearDown() {                           // 消息循环结束�
 
 ### 3.10 宿主通道：窗口管理与平台服务
 
-应用生命周期、窗口的外观与行为、剪贴板、打开 URL、输入法属于宿主，不经过 engine。`Application` 在 `Shell::Create` 之后、`Shell::Run` 之前（JS bundle 执行**之前**）往 `shell.hub()` 注册通道处理器，JS 与宿主直接往返；处理器跑在 platform 线程。每个宿主通道是一个 `HostChannel`（`embedder/common/host_channel.h`）：方法以注册表分发，新增接口 = `Register` 一行；宿主 → JS 的通知与询问（回复 bool）也在这里。框架侧每个通道对应一个对象：`momo/app` ↔ `app`，`momo/window` ↔ 每个窗口一个 `Widget`。
+应用生命周期、窗口的外观与行为、菜单与托盘、剪贴板、打开 URL、输入法属于宿主，不经过 engine。`Application` 在 `Shell::Create` 之后、`Shell::Run` 之前（JS bundle 执行**之前**）往 `shell.hub()` 注册通道处理器，JS 与宿主直接往返；处理器跑在 platform 线程。每个宿主通道是一个 `HostChannel`（`embedder/common/host_channel.h`）：方法以注册表分发，新增接口 = `Register` 一行；宿主 → JS 的通知与询问（回复 bool）也在这里。框架侧每个通道对应一个对象：`momo/app` ↔ `app`，`momo/window` ↔ 每个窗口一个 `Widget`，`momo/menu` ↔ `Menu`，`momo/tray` ↔ 每个图标一个 `Tray`。
 
 | 通道 | 实现 | 内容 |
 |---|---|---|
 | `momo/app` | `embedder/common/app_channel.cc` | JS → 宿主：`quit`、`exit {code}`、`hide`、`show`、`focus {steal}`、`getState`；宿主 → JS：`stateChanged`、`activeChanged`、`beforeQuit`（→ bool）、`willQuit`（→ bool）、`windowAllClosed`、`activate {hasVisibleWindows}`。应用级平台能力在 `PlatformApp`（`embedder/common/platform_app.h`） |
 | `momo/window` | `embedder/common/window_channel.cc` | JS → 宿主：`create {…, show}`、`close`（立即）、`requestClose`（先询问）、`getState`（屏幕框、窗口控制按钮占用区域、状态、能力列表）、`show` / `hide` / `minimize` / `maximize` / `restore` / `activate`、`setTitle`、`setMinSize`、`setCursor`、`setAlwaysOnTop`、`setPosition`、`setResizable`、`setResizeBorder`、`setTitleBar`、`startDrag`、`startMoveLoop` / `endMoveLoop`、`capturePointer`；宿主 → JS：`frameChanged`、`controlsChanged`、`stateChanged`、`focusChanged`、`readyToShow`、`closed`、`closeRequested`（→ bool） |
+| `momo/menu` | `embedder/common/menu_channel.cc` | JS → 宿主：`setApplicationMenu {items \| null}`、`popup {id, items, view?, x?, y?}`（→ true：已交给系统弹出）、`closePopup`；宿主 → JS：`itemClicked {id}`、`popupClosed {id}`。菜单项的格式见 `menu_model.h` |
+| `momo/tray` | `embedder/common/tray_channel.cc` | JS → 宿主：`create {id, image}`、`destroy`、`setImage`、`setToolTip`、`setTitle`、`setContextMenu {id, items \| null}`、`getBounds`；宿主 → JS：`click` / `rightClick` / `doubleClick {id, bounds}` |
 | `momo/clipboard` / `momo/url` / `momo/textinput` | `embedder/common/platform_channels.cc` | 调用 `PlatformServices`；输入法交给**获得焦点的窗口**的 `TextInputConnection` |
 
 要点：
@@ -536,6 +545,27 @@ void Application::TearDown() {                           // 消息循环结束�
 - **拖动窗口**。宿主与框架都不保存拖动几何，也不提供拖动区域：哪里可拖由应用决定（例如浏览器示例的 `WindowDragArea`，按下时经命中测试与手势竞技场决定）。应用以那次按下的序列请求 `startDrag {view, sequenceId}`，宿主校验它是本窗口进行中的 momo 序列后，以序列的按下开始系统拖动（macOS `performWindowDragWithEvent:`，双击按系统设置缩放/最小化）；系统拖动结束时序列随之结束（momo 收到抬起）。
 - **移动循环**。窗口跟随指针（拖动标签成窗）由宿主完成：`startMoveLoop {grab}` 之后，宿主在每个鼠标拖动事件上同步移动窗口（内容区左上角 = 指针屏幕位置 − grab），直到松开，不经 ui 线程往返。
 - **指针序列与捕获**：见下方"指针序列与捕获"。
+
+#### 菜单与托盘
+
+对标 Electron 的 `Menu` / `MenuItem` / `Tray`（平台抽象 `PlatformMenus` / `PlatformTray`，`embedder/common/platform_menu.h`；设计见 docs/03 §5.1）。
+
+```
+JS:  Menu(内容 + click 回调)── 序列化 ──► momo/menu setApplicationMenu / popup、momo/tray setContextMenu
+宿主: ParseMenuModel → MenuModel ──► PlatformMenus(MacMenus / WinMenus)──► NSMenu / HMENU
+用户点击(或快捷键):
+  普通菜单项 ──► MenuDelegate::OnMenuItemActivated(id) ──► momo/menu itemClicked {id} ──► JS: 找到菜单项, 调 click
+  role 菜单项 ──► macOS: AppKit 标准 action 沿响应链(terminate: / copy: / performClose: …), 不经宿主代码
+                 Windows: MenuDelegate::OnMenuRoleActivated ──► Application::PerformMenuRole
+```
+
+- **宿主不保存菜单状态**。菜单的内容与回调只在 JS；宿主拿到的是一份不可变的描述，内容变化就是 JS 重新发送整份描述（同一轮事件循环里的修改合并为一次）。macOS 在结构不变时原地更新 `NSMenuItem`，用户正打开着的菜单不受影响。
+- **应用菜单、上下文菜单、托盘菜单是同一种菜单**：同一种描述、同一个构建函数、同一条点击回路；菜单项 id 在 JS 进程内唯一，JS 只在"使用中的菜单"里查找。
+- **role** 是由系统执行的标准动作：标题、快捷键、可用状态都跟随系统。编辑类 role（cut / copy / paste / selectAll）到达 momo 内容时，作为 `momo/textinput` 的编辑命令交给获得焦点的文本框——与输入法的编辑命令同一条路；没有文本输入会话时菜单项灰显，快捷键照常作为按键送达框架。
+- **快捷键**只有应用菜单里的会被识别，由宿主在按键到达应用内容之前处理（macOS：菜单的 key equivalent，`MomoWindow` 的 `performKeyEquivalent:` 先交给主菜单，再交给视图层级——否则获得键盘焦点的网页会收走全部带 Command 的按键；Windows：`WinMenus::HandleKeyDown`），命中的按键不再上报。菜单项不可用时菜单不处理，按键照常交给内容。
+- **上下文菜单是异步的**：`popup` 立即回复，宿主在 platform 任务之外进入系统的菜单跟踪循环，关闭后发 `popupClosed`。在 GCD 主队列的任务里进入嵌套 run loop，主队列（platform EventLoop）不再被服务，所以 `MacMenus::Popup` 用 `CFRunLoopPerformBlock` 弹出；菜单打开期间 platform 任务、出帧、JS 都照常运行。
+- **键盘焦点只跟随框架的焦点树**（docs/05 §9）：系统的键盘焦点在 momo 内容与平台视图（网页）之间的去向，由 `PlatformView` 的焦点节点决定——获得焦点发 `momo/platform_views focus`，失去焦点发 `blur`；鼠标按在 momo 内容上本身不移动键盘焦点，框架里只有输入框在点击时请求焦点。宿主只有一条规则：框架焦点所在的平台视图，只要显示在某个窗口里，就是那个窗口的第一响应者（隐藏、换窗口后再次显示时照常取回）。在此之上的策略属于应用：`WebViewController.focus()` / `blur()`；浏览器示例按标签记忆焦点（网页还是地址栏），在活动标签变化和窗口回到前台时恢复。
+- **托盘图标**归 `TrayChannel` 所有（id → `PlatformTray`），存在到 `destroy` 或应用退出，与 JS 对象的引用无关。
 
 #### 指针派发
 
@@ -854,6 +884,7 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 | `momo/platform_views` | 双向 | engine | 平台视图的创建、销毁、聚焦 |
 | `momo/app` | 双向 | 宿主 | 应用生命周期与退出（§3.8、§3.10） |
 | `momo/window` | 双向 | 宿主 | 窗口（§3.10） |
+| `momo/menu` / `momo/tray` | 双向 | 宿主 | 应用菜单、上下文菜单、托盘图标（§3.10） |
 | `momo/app` | native → JS | 宿主 | 退出应用的询问 |
 | `momo/clipboard` | JS → native（platform 线程） | 宿主 | 读写剪贴板 |
 | `momo/url` | JS → native（platform 线程） | 宿主 | 用系统浏览器打开 URL |
@@ -916,7 +947,7 @@ JS: import { … } from "@acme/ext-x"                  （三方：Node 从应�
 | `rendering/` | `RenderObject`/`RenderBox`、`PipelineOwner`、`PaintingContext`、`Layer`、Flex/Stack/Viewport/Paragraph/Editable… |
 | `views/` | `View`/`Element`/`State`、`BuildOwner`、`ViewsBinding`、`runApp`/`runView`、`RootView`/`ViewAnchor`、`WidgetScope`、`Title`、基础组件、滚动、焦点、`Shortcuts`/`Actions`、`EditableText` |
 | `material/` | 精简版 Material：`MaterialApp`、`Scaffold`、`AppBar`、按钮、`TextField`、`Dialog`、`Theme` |
-| `services/` | `MethodChannel`、`StandardCodec`、剪贴板、URL、`HardwareKeyboard`、`TextInput`、`app`（`momo/app`）、`Widget`（`momo/window`） |
+| `services/` | `MethodChannel`、`StandardCodec`、剪贴板、URL、`HardwareKeyboard`、`TextInput`、`app`（`momo/app`）、`Widget`（`momo/window`）、`Menu` / `MenuItem`（`momo/menu`）、`Tray`（`momo/tray`） |
 
 依赖自下而上：`ui ← foundation ← scheduler / painting ← rendering / gestures / animation ← views ← material`；`services` 只依赖 foundation。
 
@@ -924,12 +955,14 @@ JS: import { … } from "@acme/ext-x"                  （三方：Node 从应�
 
 ### 5.2 应用与窗口对象
 
-JS 侧对外三个核心对象，各对应一层，没有重叠：
+JS 侧对外的宿主对象与组件基类，各对应一层，没有重叠：
 
 | 对象 | 是什么 | 方法 | 事件 |
 |---|---|---|---|
 | `app`（`services/app.ts`） | 应用（同 Electron `app`） | `quit()`、`exit(code)`、`hide()`、`show()`、`focus({steal})`、`whenReady()`；`state`、`isActive` | `before-quit` / `will-quit`（可取消）、`quit`、`window-all-closed`、`activate`、`did-become-active` / `did-resign-active`、`state-changed` |
 | `Widget`（`services/widget.ts`） | 一个原生窗口（同 Chromium `views::Widget`、Electron `BrowserWindow`） | `Widget.create(opts)` / `fromId` / `getAll` / `getFocused`；`close()`（先询问）/ `destroy()`、`show` / `hide` / `focus` / `minimize` / `maximize` / `restore`、`setTitle`、`setPosition`、`setTitleBar`、`startDrag`、`startMoveLoop`…；`viewport`、`bounds`、`controls`、`state`、`capabilities` | `close`（可取消）、`closed`、`focus` / `blur`、`show` / `hide`、`minimize` / `maximize` / `restore`、`move` / `resize`、`controls-changed`、`ready-to-show`、`state-changed` |
+| `Menu` / `MenuItem`（`services/menu.ts`） | 原生菜单（同 Electron `Menu` / `MenuItem`） | `Menu.buildFromTemplate(template)`、`Menu.setApplicationMenu(menu)`、`menu.popup({ widget, x, y })` / `closePopup()`、`append` / `insert` / `getMenuItemById`；菜单项的 `label` / `enabled` / `visible` / `checked` 可改 | 菜单项的 `click(item, widget)` |
+| `Tray`（`services/tray.ts`） | 托盘图标（同 Electron `Tray`） | `new Tray(image)`、`setImage` / `setToolTip` / `setTitle` / `setContextMenu(menu)`、`getBounds()`、`destroy()` | `click`、`right-click`、`double-click` |
 | `View`（`views/framework.ts`） | 所有组件的基类 | — | — |
 
 - 可取消的事件是 `HostEvent`：监听器同步调用 `preventDefault()` 取消；要异步决定时用 `waitUntil(promise)`（promise 结果为 `false` 视为取消），宿主等它完成再继续。
@@ -1147,6 +1180,7 @@ CLI（`framework/packages/cli/momo.mjs`，npm 包 `@momo/cli`）只做打包：`
 
 - **新增一个平台服务**（例如文件对话框）：在 `embedder/common/platform_services.h` 加方法 → 平台实现 → 在 `embedder/common/platform_channels.cc` 注册通道 → 框架 `services/` 加 JS 封装。不改 engine，也不改 `momo:ui` 绑定。
 - **新增一个窗口能力**（例如全屏）：`PlatformWindow` 加可选方法与 `WindowCapability` 位 → 平台实现 → `window_channel.cc` 里 `RegisterWindowMethod` 一行 → 框架 `Widget` 加方法（宿主推送的变化加事件）。不改 engine。
+- **新增一个菜单 role**：`MenuRole`（`menu_model.h`，含名字表）→ macOS 在 `mac_menu.mm` 的 role 表里加一行（标准 action、标题、快捷键）；Windows 在 `win_menu.cc` 的 role 表里加一行，并在 `Application::PerformMenuRole` 里执行 → 框架 `MenuItemRole` 加名字。
 - **新增一个应用能力**（例如 Dock 角标）：`PlatformApp` 加方法与 `AppCapability` 位 → 平台实现 → `app_channel.cc` 里 `Register` 一行 → 框架 `app` 加方法。不改 engine。
 - **新增一个 `momo:ui` API**：在 `engine/ui/*_bindings.cc` 用 `ClassBuilder` 绑定 → 同步更新 `momo-ui.d.ts` 与框架测试的 mock（`framework/test/mock/`）。
 - **写一个三方扩展**：一个普通的 npm 包（`package.json` + `js/index.js` + `js/index.d.ts` + `native/CMakeLists.txt` + `native/src/*.c`），原生侧是 Node 插件（Node-API）；照着 `extensions/examples/hello-extension` 写，参考 docs/07。

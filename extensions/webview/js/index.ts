@@ -7,8 +7,8 @@
 // 插件就在它旁边——下面的相对导入按这个布局写。框架(momo:framework)同样由运行时提供, 两者是同一份。
 // 与原生侧之间的命令、事件、协议帧的格式见 ext_webview.mm 文件头;接口设计与平台映射见 README。
 import {
-  PlatformView, State, StatefulView, utf8Decode, utf8Encode,
-  type BuildContext, type FocusNode, type Key, type PlatformViewController, type View,
+  FocusNode, PlatformView, State, StatefulView, utf8Decode, utf8Encode,
+  type BuildContext, type Key, type PlatformViewController, type View,
 } from "momo:framework";
 import { assetsDir, nativeHost } from "momo:services";
 // @ts-ignore 编译产物旁边的原生插件: 源码树里没有这个文件, 也没有类型(形状见下)。
@@ -292,7 +292,11 @@ export class WebViewController {
   /** 页面请求打开新窗口(target="_blank"、window.open)。WebView 自己不会打开, 由应用决定去向。 */
   onNewWindowRequested: ((url: string) => void) | null = null;
 
-  constructor(readonly platformView: PlatformViewController, readonly session: WebSession) {}
+  /**
+   * focusNode: 这个 WebView 在框架焦点树里的节点。系统的键盘焦点跟随它: 它持有焦点 = 键盘焦点在网页里。
+   */
+  constructor(readonly platformView: PlatformViewController, readonly session: WebSession,
+              readonly focusNode: FocusNode = new FocusNode({ debugLabel: "WebView" })) {}
 
   get viewId(): number {
     return this.platformView.viewId;
@@ -325,6 +329,14 @@ export class WebViewController {
     return call({ id: this.viewId }, "evaluateJavaScript", { script });
   }
   /**
+   * 页内查找: 选中并滚动到 text 的下一处匹配(backwards: 上一处), 到头回绕;返回是否找到。从当前选区继续,
+   * 所以用同一个词重复调用就是"查找下一个"。text 为空时不查找。
+   */
+  async find(text: string, options: { backwards?: boolean; caseSensitive?: boolean } = {}): Promise<boolean> {
+    if (text === "") return false;
+    return (await call({ id: this.viewId }, "find", { text, ...options })) === true;
+  }
+  /**
    * 向页面发消息(可 JSON 化的值)。页面里: `window.momo.addEventListener("message", (e) => e.data)`。
    * 页面尚未加载完时发出的消息会丢失。
    */
@@ -332,9 +344,22 @@ export class WebViewController {
     const json = JSON.stringify(data === undefined ? null : data);
     await this.evaluateJavaScript(`window.momo&&window.momo.dispatchEvent(new MessageEvent("message",{data:${json}}));void 0`);
   }
-  /** 把键盘焦点交给 WebView。 */
-  focus(): Promise<void> {
-    return this.platformView.focus();
+  /**
+   * 把键盘焦点交给网页。网页内部的焦点由它自己保持: 之前聚焦的元素(输入框、选区)恢复原状, 所以 blur() 之后
+   * 再 focus()、或标签被隐藏后重新显示, 用户都回到原来的位置。
+   * 自绘界面里只有输入框会在点击时取得焦点;按钮等不需要键盘的组件不会动网页的焦点。其余时机(切换标签、
+   * 关闭浮层之后把焦点还给网页)由应用用这两个方法决定。
+   */
+  focus(): void {
+    this.focusNode.requestFocus();
+  }
+  /** 网页交出键盘焦点(回到窗口的自绘内容)。焦点不在网页里时什么也不做。 */
+  blur(): void {
+    this.focusNode.unfocus();
+  }
+  /** 键盘焦点是否在网页里。 */
+  get hasFocus(): boolean {
+    return this.focusNode.hasFocus;
   }
 
   /** @internal */
@@ -410,6 +435,7 @@ export class WebView extends StatefulView {
 
 class WebViewHostState extends State<WebView> {
   #controller: WebViewController | null = null;
+  #internalNode: FocusNode | null = null;
   #session = WebSession.default;
   #params: Uint8Array | null = null;
 
@@ -426,11 +452,16 @@ class WebViewHostState extends State<WebView> {
   override dispose(): void {
     if (this.#controller !== null) controllers.delete(this.#controller.viewId);
     this.#controller = null;
+    this.#internalNode?.dispose();
     super.dispose();
   }
 
+  get #focusNode(): FocusNode {
+    return this.view.opts.focusNode ?? (this.#internalNode ??= new FocusNode({ debugLabel: "WebView" }));
+  }
+
   #onCreated = (platformView: PlatformViewController): void => {
-    const controller = new WebViewController(platformView, this.#session);
+    const controller = new WebViewController(platformView, this.#session, this.#focusNode);
     this.#controller = controller;
     controllers.set(controller.viewId, controller);
     this.view.opts.onCreated?.(controller);
@@ -443,7 +474,7 @@ class WebViewHostState extends State<WebView> {
       onCreated: this.#onCreated,
       onCreateError: this.view.opts.onCreateError ?? null,
       placeholder: this.view.opts.placeholder ?? null,
-      focusNode: this.view.opts.focusNode ?? null,
+      focusNode: this.#focusNode,
     });
   }
 }

@@ -69,6 +69,8 @@ class WindowManager final : public Object,
   // 任一打开着的窗口(id 最小者;没有窗口时为空)。
   WindowController* front_window() const;
   std::vector<engine::platform::ViewId> view_ids() const;
+  // 获得系统焦点的窗口(没有时为空)。
+  WindowController* focused_window() const;
   // 输入法会话所在的连接: 获得焦点的窗口(没有则任一窗口)。
   TextInputConnection* FocusedTextInput();
 

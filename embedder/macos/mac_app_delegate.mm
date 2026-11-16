@@ -55,21 +55,4 @@ using momo::embedder::Application;
   return YES;
 }
 
-+ (void)installMainMenuWithAppName:(NSString*)appName {
-  NSMenu* mainMenu = [[NSMenu alloc] init];
-  NSMenuItem* appItem = [[NSMenuItem alloc] init];
-  [mainMenu addItem:appItem];
-
-  NSMenu* appMenu = [[NSMenu alloc] init];
-  [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:appName]
-                     action:@selector(hide:)
-              keyEquivalent:@"h"];
-  [appMenu addItem:[NSMenuItem separatorItem]];
-  [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:appName]
-                     action:@selector(terminate:)
-              keyEquivalent:@"q"];
-  appItem.submenu = appMenu;
-  NSApp.mainMenu = mainMenu;
-}
-
 @end

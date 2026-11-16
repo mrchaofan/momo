@@ -13,6 +13,8 @@ export const viewCalls: ViewCall[] = [];
 export const webCommands = webviewNative.commands;
 export const protocolResponses = webviewNative.protocolResponses;
 export const openedUrls: string[] = [];
+/** 应用菜单(momo/menu setApplicationMenu 最近一次发来的菜单项)。 */
+export const applicationMenu: { items: Record<string, unknown>[] } = { items: [] };
 
 const codec = StandardMethodCodec.instance;
 defaultBinaryMessenger.setMockMessageHandler("momo/platform_views", (data) => {
@@ -28,5 +30,12 @@ defaultBinaryMessenger.setMockMessageHandler("momo/textinput", () => codec.encod
 defaultBinaryMessenger.setMockMessageHandler("momo/url", (data) => {
   const call: MethodCall = codec.decodeMethodCall(data);
   if (call.method === "open") openedUrls.push(String(call.args));
+  return codec.encodeSuccessEnvelope(null);
+});
+// 应用菜单(momo/menu): 记录最近一次的内容;测试以宿主的身份报告点击(itemClicked)。
+defaultBinaryMessenger.setMockMessageHandler("momo/menu", (data) => {
+  const call: MethodCall = codec.decodeMethodCall(data);
+  const args = (call.args ?? {}) as Record<string, unknown>;
+  if (call.method === "setApplicationMenu") applicationMenu.items = (args.items ?? []) as Record<string, unknown>[];
   return codec.encodeSuccessEnvelope(null);
 });

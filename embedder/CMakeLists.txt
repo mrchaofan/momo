@@ -31,7 +31,10 @@ add_library(momo_embedder_common STATIC
   common/app_config.cc
   common/application.cc
   common/host_channel.cc
+  common/menu_channel.cc
+  common/menu_model.cc
   common/platform_channels.cc
+  common/tray_channel.cc
   common/window_channel.cc
   common/window_controller.cc
   common/window_manager.cc)
@@ -79,6 +82,7 @@ if(APPLE)
   # ---- macOS 平台实现(原 platform/macos)----
   add_library(momo_embedder_macos STATIC
     macos/mac_key_mapping.mm
+    macos/mac_menu.mm
     macos/mac_mouse_events.mm
     macos/mac_platform_view_input.mm
     macos/mac_native_loop.mm
@@ -87,6 +91,7 @@ if(APPLE)
     macos/mac_surface_metal.mm
     macos/mac_surface_software.mm
     macos/mac_text_input.mm
+    macos/mac_tray.mm
     macos/mac_vsync_displaylink.mm
     macos/mac_window.mm)
   # 实现只需要接口头(embedder/common/platform_*.h 为 header-only), 不链接引擎库。
@@ -97,6 +102,7 @@ if(APPLE)
 
   if(MOMO_BUILD_TESTS)
     add_executable(momo_embedder_macos_unittests macos/mac_platform_unittests.mm
+                   macos/mac_menu_unittests.mm
                    macos/mac_mouse_events_unittests.mm
                    macos/mac_platform_view_input_unittests.mm
                    macos/mac_surface_metal_unittests.mm)
@@ -159,6 +165,7 @@ elseif(WIN32)
     windows/win_app.cc
     windows/win_caption_buttons.cc
     windows/win_displays.cc
+    windows/win_menu.cc
     windows/win_native_loop.cc
     windows/win_platform_integration.cc
     windows/win_services.cc
@@ -255,6 +262,7 @@ if(MOMO_BUILD_TESTS)
   add_executable(momo_embedder_unittests
     common/app_config_unittests.cc
     common/application_unittests.cc
+    common/menu_channel_unittests.cc
     common/pointer_dispatcher_unittests.cc
     common/surface_unittests.cc
     common/window_channel_unittests.cc)

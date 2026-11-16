@@ -200,6 +200,9 @@ Status Application::LaunchEngine() {
   platform_channels_ = std::make_unique<PlatformChannels>(
       shell_->hub(), task_runner(), &platform_->services(),
       [this] { return window_manager_->FocusedTextInput(); });
+  MenuChannel::Host* menu_host = this;
+  menu_channel_ = std::make_unique<MenuChannel>(shell_->hub(), task_runner(), platform_->menus(), menu_host);
+  tray_channel_ = std::make_unique<TrayChannel>(shell_->hub(), task_runner(), platform_->menus());
   window_manager_->AttachEngine(*shell_, *window_channel_, *platform_channels_);
 
   // 启动 JS 运行时: ui 线程执行 bundle, 本线程回到事件循环;结果稍后到达。
@@ -282,6 +285,42 @@ engine::EncodableValue Application::GetAppState() {
 }
 
 // ---------------------------------------------------------------------------
+// MenuChannel::Host
+
+PlatformWindow* Application::FindWindow(engine::platform::ViewId view) { return window_manager_->FindWindow(view); }
+
+void Application::PerformMenuRole(MenuRole role) {
+  MOMO_DCHECK_ON_AFFINITY_THREAD();
+  auto edit = [this](const char* command) {
+    // 与输入法的编辑命令同路: 交给获得文本焦点的 EditableText。
+    if (platform_channels_ != nullptr) {
+      platform_channels_->SendTextInput({.type = TextInputEvent::Type::kCommand, .command = command});
+    }
+  };
+  WindowController* focused = window_manager_->focused_window();
+  switch (role) {
+    case MenuRole::kQuit: Quit(); return;
+    case MenuRole::kCut: edit("cut"); return;
+    case MenuRole::kCopy: edit("copy"); return;
+    case MenuRole::kPaste: edit("paste"); return;
+    case MenuRole::kSelectAll: edit("selectAll"); return;
+    case MenuRole::kClose:
+      if (focused != nullptr) window_manager_->RequestCloseWindow(focused->view_id());
+      return;
+    case MenuRole::kMinimize:
+      if (focused != nullptr) (void)focused->window().Minimize();
+      return;
+    case MenuRole::kZoom:
+      if (focused != nullptr) {
+        (void)(focused->window().state().maximized ? focused->window().Restore() : focused->window().Maximize());
+      }
+      return;
+    default:
+      return;  // 其余 role 只存在于有系统标准动作的平台(macOS), 由系统执行
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 退出
 
 void Application::Quit() {
@@ -357,6 +396,10 @@ void Application::Shutdown() {
   }
   quitting_ = false;
   TransitionTo(State::kTerminating);  // JS 收到 terminating(排在销毁之前, 照常执行)
+  // 打开着的上下文菜单在系统的菜单跟踪循环里: 不关掉它, 消息循环要等用户关闭菜单才结束。
+  if (PlatformMenus* menus = platform_->menus()) {
+    menus->ClosePopup();
+  }
   // 本任务返回后(安全点)EventLoop 排空剩余任务、析构 DeleteLater 对象, 再退出原生循环;销毁在循环结束之后。
   platform_loop_->Terminate();
   NotifyShutdownStep(ShutdownStep::kMessageLoopQuit);
@@ -380,6 +423,8 @@ void Application::TearDown() {
   app_channel_.reset();
   window_channel_.reset();
   platform_channels_.reset();
+  menu_channel_.reset();
+  tray_channel_.reset();  // 移除托盘图标
   shell_.reset();
   NotifyShutdownStep(ShutdownStep::kEngineShutdown);
 

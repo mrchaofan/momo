@@ -6,7 +6,7 @@
 //  - 成为/不再是前台应用 → Application::OnAppActiveChanged
 //  - 点击 Dock 图标重新激活 → Application::OnReopen(JS 的 app 'activate' 事件)
 // 所有窗口关闭后应用不退出(applicationShouldTerminateAfterLastWindowClosed = NO), 由 JS 决定。
-// 同时安装最小主菜单(应用菜单 + 退出)。完整菜单属于 platform/menu(后续里程碑)。
+// 菜单栏归 MacMenus(mac_menu.h): "退出"菜单项与 Cmd+Q 发 terminate:, 即上面的第一条。
 
 #import <Cocoa/Cocoa.h>
 
@@ -17,5 +17,4 @@ class Application;
 @interface MacAppDelegate : NSObject <NSApplicationDelegate>
 // 非拥有;Application 由 main 持有, 在 delegate 解绑后才销毁。
 @property(nonatomic, assign) momo::embedder::Application* application;
-+ (void)installMainMenuWithAppName:(NSString*)appName;
 @end
