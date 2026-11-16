@@ -232,11 +232,6 @@ void Shell::OnKeyData(platform::ViewId view, const platform::KeyData& data) {
   PostToEngine([view, data](Engine& engine) { engine.OnKeyData(view, data); });
 }
 
-void Shell::OnFocusChanged(platform::ViewId view, bool focused) {
-  MOMO_DCHECK_ON_AFFINITY_THREAD();
-  PostToEngine([view, focused](Engine& engine) { engine.OnFocusChanged(view, focused); });
-}
-
 void Shell::OnViewVisibilityChanged(platform::ViewId view, bool visible) {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
   PostToEngine([view, visible](Engine& engine) { engine.OnVisibilityChanged(view, visible); });

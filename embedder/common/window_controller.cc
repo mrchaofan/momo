@@ -36,9 +36,6 @@ void WindowController::AttachEngine(engine::Shell& shell, WindowChannel& events)
   events_ = &events;
   shell.AttachView(view_id_, this, &window_->surface());
   shell.OnMetricsChanged(view_id_, metrics_);
-  if (focused_) {
-    shell.OnFocusChanged(view_id_, true);
-  }
   rendering_ = ShouldRender();
   if (!rendering_) {
     shell.OnViewVisibilityChanged(view_id_, false);
@@ -99,14 +96,13 @@ bool WindowController::OnCloseRequested() {
 }
 
 void WindowController::OnFocusChanged(bool focused) {
-  focused_ = focused;
-  if (shell_ != nullptr) {
-    shell_->OnFocusChanged(view_id_, focused);
+  if (focused == focused_) {
+    return;
   }
+  focused_ = focused;
   if (events_ != nullptr) {
     events_->NotifyFocusChanged(view_id_, focused);
   }
-  client_.OnWindowFocusChanged(view_id_, focused);
 }
 
 void WindowController::OnWindowStateChanged(const WindowStateFlags& state) {

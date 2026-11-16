@@ -584,7 +584,8 @@ TEST_F(ApplicationTest, JsCreatedWindowsOpenCloseAndShutDown) {
              {"create", engine::EncodableMap{{"title", "second"}, {"width", 400.0}, {"height", 300.0}}},
              [&, raw](StatusOr<engine::EncodableValue> result) {
                ASSERT_TRUE(result.ok()) << result.status();
-               created_id = result->AsInt().value_or(-1);
+               const engine::EncodableValue* view = result->Find("view");
+               created_id = view != nullptr ? view->AsInt().value_or(-1) : -1;
                raw->task_runners().platform->PostTask([&, raw] {
                  open_after_create = raw->windows().count();
                  attached = raw->shell()->attached_views();

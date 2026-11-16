@@ -558,12 +558,34 @@ group("multi-window", () => {
     expect.deepEqual(mock.appCalls, ["quit", "exit"]);
   }, { mockOnly: true });
 
-  testViews("Widget caches bounds and follows host updates", async (t, ctx) => {
+  testViews("Widget state: one snapshot from the host, then its notifications", async (t, ctx) => {
     const mock = ctx.host.mock!;
     await t.pumpView(new SizedBox({}));
+    // 宿主启动时创建的窗口: 对象建立时查一次快照。
     const win = Widget.fromId(0)!;
-    await win.refresh();
+    await t.flushMicrotasks();
     expect.deepEqual(win.bounds, mock.frames.get(0));
+    expect.isTrue(win.isFocused, "the startup window holds the system focus");
+    // 自己创建的窗口: create 返回时状态已经就绪, 读取它不再询问宿主。
+    const hidden = await Widget.create({ width: 200, height: 100, show: false });
+    expect.isFalse(hidden.isVisible, "created hidden");
+    expect.isFalse(hidden.isFocused);
+    expect.deepEqual(hidden.bounds, mock.frames.get(hidden.id));
+    const events: string[] = [];
+    hidden.on("show", () => events.push("show"));
+    hidden.on("focus", () => events.push("focus"));
+    hidden.on("blur", () => events.push("blur"));
+    hidden.show();
+    mock.setWindowFocus(hidden.id, true);
+    await t.flushMicrotasks();
+    expect.isTrue(hidden.isVisible);
+    expect.isTrue(hidden.isFocused);
+    expect.equal(Widget.getFocused()?.id === hidden.id || Widget.getFocused()?.id === 0, true);
+    mock.setWindowFocus(hidden.id, false);
+    await t.flushMicrotasks();
+    expect.deepEqual(events, ["show", "focus", "blur"]);
+    hidden.destroy();
+    await t.flushMicrotasks();
     const moves: number[] = [];
     win.on("move", (b) => moves.push(b.x));
     win.setPosition(30, 40);

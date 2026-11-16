@@ -8,8 +8,10 @@
 //
 // 对象的生命周期: 窗口打开期间同一个 id 总是同一个 Widget;窗口关闭('closed')后对象作废(isDestroyed),
 // 方法变为空操作。JS 丢掉引用不会关闭窗口。
-// 状态缓存: 屏幕框(bounds)、窗口控制按钮占用区域(controls)、状态(state)与能力(capabilities)首次访问时向宿主
-// 查询(getState), 之后由宿主推送更新。宿主没有注册 momo/window(headless 测试运行器)时方法是空操作。
+// 状态(bounds / controls / state / isFocused / capabilities)只有一个来源、一个方向: 宿主给一份快照(Widget.create
+// 的回复;宿主启动时创建的窗口在对象建立时查一次), 之后只由宿主的通知更新。回复与通知按宿主发出的顺序到达,
+// 所以按到达顺序应用即可, 读取它们不产生任何调用。宿主没有注册 momo/window(headless 测试运行器)时方法是
+// 空操作, 状态保持初始值。
 import { viewports, type Viewport } from "momo:ui";
 import { reportError } from "../foundation/assert";
 import { EventEmitter, HostEvent } from "../foundation/event_emitter";
@@ -105,6 +107,11 @@ function toRect(v: unknown): WidgetBounds | null {
   return { x: Number(a[0]), y: Number(a[1]), width: Number(a[2]), height: Number(a[3]) };
 }
 
+function sameRect(a: WidgetBounds | null, b: WidgetBounds | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
 function toState(v: unknown): WidgetState | null {
   if (v === null || typeof v !== "object") return null;
   const r = v as Record<string, unknown>;
@@ -134,24 +141,36 @@ export class Widget extends EventEmitter<WidgetEvents> {
   static readonly #widgets = new Map<number, Widget>();
   static #initialized = false;
 
-  /** 打开窗口。视图在返回之前已出现在 momo:ui 的 viewports 里。宿主不支持多窗口时 reject。 */
+  /** 打开窗口。视图在返回之前已出现在 momo:ui 的 viewports 里, 状态已就绪。宿主不支持多窗口时 reject。 */
   static async create(options: WidgetOptions): Promise<Widget> {
     Widget.#ensureInitialized();
-    const id = await channel.invokeMethod<number>("create", { ...options });
+    const snapshot = await channel.invokeMethod<Record<string, unknown>>("create", { ...options });
+    const id = snapshot?.["view"];
     if (typeof id !== "number") throw new Error("momo/window create: the host returned no view id");
-    const widget = Widget.fromId(id);
+    const widget = Widget.#adopt(id, snapshot);
     if (widget === null) throw new Error("momo/window create: the window was closed before it opened");
     return widget;
   }
   /** 视图 id 对应的窗口(含宿主启动时创建的视图 0);窗口不存在时为 null。 */
   static fromId(id: number): Widget | null {
+    return Widget.#adopt(id, null);
+  }
+  /** id 对应的对象(没有就建立);snapshot: 宿主给出的窗口状态, 为 null 时新建的对象向宿主查一次。 */
+  static #adopt(id: number, snapshot: Record<string, unknown> | null): Widget | null {
     Widget.#ensureInitialized();
     let widget = Widget.#widgets.get(id);
     if (widget === undefined) {
       if (!viewports.has(id)) return null;
       widget = new Widget(id);
       Widget.#widgets.set(id, widget);
+      if (snapshot === null) {
+        const created = widget;
+        void invoke<Record<string, unknown>>("getState", { view: id }).then((s) => {
+          if (s !== null) created.#apply(s);
+        });
+      }
     }
+    if (snapshot !== null) widget.#apply(snapshot);
     return widget;
   }
   /** 全部打开着的窗口(按 id 升序)。 */
@@ -161,10 +180,7 @@ export class Widget extends EventEmitter<WidgetEvents> {
   }
   /** 获得系统焦点的窗口。 */
   static getFocused(): Widget | null {
-    for (const [id, viewport] of viewports) {
-      if (viewport.focused) return Widget.fromId(id);
-    }
-    return null;
+    return Widget.getAll().find((w) => w.isFocused) ?? null;
   }
 
   /** 测试用: 作废全部对象(不关闭窗口)。 */
@@ -193,11 +209,8 @@ export class Widget extends EventEmitter<WidgetEvents> {
   #bounds: WidgetBounds | null = null;
   #controls: WidgetBounds | null = null;
   #state: WidgetState = kDefaultState;
+  #focused = false;
   #capabilities: ReadonlySet<WidgetCapability> | null = null;
-  #loading: Promise<void> | null = null;
-  /** 宿主推送的更新计数: 查询发出之后到达的推送比查询的回复新, 回复里的同名字段不再覆盖它。 */
-  #version = 0;
-  #queried = false;
 
   private constructor(id: number) {
     super();
@@ -213,54 +226,33 @@ export class Widget extends EventEmitter<WidgetEvents> {
   isDestroyed(): boolean {
     return this.#destroyed;
   }
-  /** 内容区在屏幕上的框;宿主不支持或尚未取得时为 null。首次访问触发查询。 */
+  /** 内容区在屏幕上的框;宿主不支持或尚未取得时为 null。 */
   get bounds(): WidgetBounds | null {
-    this.#load();
     return this.#bounds;
   }
   /** 系统窗口控制按钮在内容区里占用的区域(逻辑点, 内容区左上原点);标题栏未隐藏时为 null。 */
   get controls(): WidgetBounds | null {
-    this.#load();
     return this.#controls;
   }
   get state(): WidgetState {
-    this.#load();
     return this.#state;
   }
   get isVisible(): boolean {
-    return this.state.visible;
+    return this.#state.visible;
   }
   get isMinimized(): boolean {
-    return this.state.minimized;
+    return this.#state.minimized;
   }
   get isMaximized(): boolean {
-    return this.state.maximized;
+    return this.#state.maximized;
   }
+  /** 窗口是否持有系统焦点。 */
   get isFocused(): boolean {
-    return this.viewport?.focused ?? false;
+    return this.#focused;
   }
   /** 可选能力;尚未取得时为 null。 */
   get capabilities(): ReadonlySet<WidgetCapability> | null {
-    this.#load();
     return this.#capabilities;
-  }
-  /** 向宿主重新查询状态(bounds / controls / state / capabilities)。 */
-  refresh(): Promise<void> {
-    this.#queried = true;
-    const version = this.#version;
-    this.#loading ??= invoke<Record<string, unknown>>("getState", { view: this.id }).then((r) => {
-      this.#loading = null;
-      if (r === null || this.#destroyed) return;
-      if (this.#version === version) {
-        this.#bounds = toRect(r["frame"]);
-        this.#controls = toRect(r["controls"]);
-        this.#state = toState(r["state"]) ?? this.#state;
-      }
-      const caps = Array.isArray(r["capabilities"]) ? (r["capabilities"] as WidgetCapability[]) : [];
-      this.#capabilities = new Set(caps);
-      this.emit("state-changed", this.#state);
-    });
-    return this.#loading;
   }
 
   // ---- 方法(JS → 宿主;窗口已关闭或宿主不支持时为空操作) ----
@@ -358,45 +350,67 @@ export class Widget extends EventEmitter<WidgetEvents> {
     void invoke(method, { view: this.id, ...args });
   }
 
-  #load(): void {
-    if (!this.#queried && !this.#destroyed) void this.refresh();
+  /** 宿主给出的窗口快照: 与通知走同一组更新函数, 所以有变化的字段照常触发事件。 */
+  #apply(snapshot: Record<string, unknown>): void {
+    if (this.#destroyed) return;
+    const caps = snapshot["capabilities"];
+    this.#capabilities = new Set(Array.isArray(caps) ? (caps as WidgetCapability[]) : []);
+    this.#setBounds(toRect(snapshot["frame"]));
+    this.#setControls(toRect(snapshot["controls"]));
+    const state = toState(snapshot["state"]);
+    if (state !== null) this.#setState(state);
+    this.#setFocused(snapshot["focused"] === true);
+  }
+
+  #setBounds(bounds: WidgetBounds | null): void {
+    const old = this.#bounds;
+    this.#bounds = bounds;
+    if (bounds === null) return;
+    if (old === null || old.x !== bounds.x || old.y !== bounds.y) this.emit("move", bounds);
+    if (old === null || old.width !== bounds.width || old.height !== bounds.height) this.emit("resize", bounds);
+  }
+
+  #setControls(controls: WidgetBounds | null): void {
+    if (sameRect(controls, this.#controls)) return;
+    this.#controls = controls;
+    this.emit("controls-changed", controls);
+  }
+
+  #setState(next: WidgetState): void {
+    const old = this.#state;
+    if (next.visible === old.visible && next.minimized === old.minimized && next.maximized === old.maximized
+        && next.fullscreen === old.fullscreen) return;
+    this.#state = next;
+    if (next.visible !== old.visible) this.emit(next.visible ? "show" : "hide");
+    if (next.minimized && !old.minimized) this.emit("minimize");
+    if (next.maximized && !old.maximized) this.emit("maximize");
+    if ((old.minimized && !next.minimized) || (old.maximized && !next.maximized && !next.minimized)) {
+      this.emit("restore");
+    }
+    this.emit("state-changed", next);
+  }
+
+  #setFocused(focused: boolean): void {
+    if (focused === this.#focused) return;
+    this.#focused = focused;
+    this.emit(focused ? "focus" : "blur");
   }
 
   async #handle(method: string, args: Record<string, unknown>): Promise<unknown> {
     switch (method) {
-      case "frameChanged": {
-        const old = this.#bounds;
-        const bounds = toRect(args["frame"]);
-        this.#bounds = bounds;
-        this.#version++;
-        if (bounds !== null) {
-          if (old === null || old.x !== bounds.x || old.y !== bounds.y) this.emit("move", bounds);
-          if (old === null || old.width !== bounds.width || old.height !== bounds.height) this.emit("resize", bounds);
-        }
+      case "frameChanged":
+        this.#setBounds(toRect(args["frame"]));
         return null;
-      }
       case "controlsChanged":
-        this.#controls = toRect(args["controls"]);
-        this.#version++;
-        this.emit("controls-changed", this.#controls);
+        this.#setControls(toRect(args["controls"]));
         return null;
       case "stateChanged": {
         const next = toState(args["state"]);
-        if (next === null) return null;
-        const old = this.#state;
-        this.#state = next;
-        this.#version++;
-        if (next.visible !== old.visible) this.emit(next.visible ? "show" : "hide");
-        if (next.minimized && !old.minimized) this.emit("minimize");
-        if (next.maximized && !old.maximized) this.emit("maximize");
-        if ((old.minimized && !next.minimized) || (old.maximized && !next.maximized && !next.minimized)) {
-          this.emit("restore");
-        }
-        this.emit("state-changed", next);
+        if (next !== null) this.#setState(next);
         return null;
       }
       case "focusChanged":
-        this.emit(args["focused"] === true ? "focus" : "blur");
+        this.#setFocused(args["focused"] === true);
         return null;
       case "readyToShow":
         this.emit("ready-to-show");

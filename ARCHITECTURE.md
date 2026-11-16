@@ -47,7 +47,7 @@ embedder ──► engine（含 engine/platform 契约）──► base
 - engine 不 include 任何 `embedder/` 头文件，可以脱离真实窗口做 headless 测试；
 - 移植新平台 = 在 `embedder/<os>/` 实现这组接口，再写一个入口。
 
-**engine 只认识视图**：一个视图的画面、尺寸、输入、焦点与输入归属（捕获）。窗口的外观与行为（标题、光标、位置、标题栏、拖动、创建与关闭的询问）、菜单与托盘、剪贴板、打开 URL、输入法都属于宿主——它们不出现在 engine 的任何接口里，而是由 embedder 在引擎的消息通道上注册处理器（`momo/window`、`momo/app`、`momo/menu`、`momo/tray`、`momo/clipboard`、`momo/url`、`momo/textinput`），JS 与宿主直接往返（§3.10）。这与 Flutter（engine 只有 view，窗口由 embedder/插件经 platform channel 处理）和 Chromium（cc/content 不关心窗口边框，窗口归 `views::Widget` ⇄ `NativeWidget`）的分工一致。新增窗口能力或平台服务只改 embedder 与框架，不改 engine。
+**engine 只认识视图**：一个视图的画面、尺寸与输入。窗口的外观与行为（标题、光标、位置、标题栏、拖动、创建与关闭的询问）、菜单与托盘、剪贴板、打开 URL、输入法都属于宿主——它们不出现在 engine 的任何接口里，而是由 embedder 在引擎的消息通道上注册处理器（`momo/window`、`momo/app`、`momo/menu`、`momo/tray`、`momo/clipboard`、`momo/url`、`momo/textinput`），JS 与宿主直接往返（§3.10）。这与 Flutter（engine 只有 view，窗口由 embedder/插件经 platform channel 处理）和 Chromium（cc/content 不关心窗口边框，窗口归 `views::Widget` ⇄ `NativeWidget`）的分工一致。新增窗口能力或平台服务只改 embedder 与框架，不改 engine。
 
 ### 1.2 运行时对象图
 
@@ -294,7 +294,7 @@ Application::LaunchEngine() {
   menu_channel_      = MenuChannel(shell_->hub(), platform runner, platform->menus(), host = this);  // momo/menu
   tray_channel_      = TrayChannel(shell_->hub(), platform runner, platform->menus());               // momo/tray
   window_manager_->AttachEngine(*shell_, ...);  // 应用唯一的 VsyncSource: CreateVsyncSource → Shell::SetVsyncSource;
-                                                // 每个窗口: Shell::AttachView + 补发 metrics/焦点/可见性
+                                                // 每个窗口: Shell::AttachView + 补发 metrics/可见性
   // 第二阶段: 异步启动 JS 运行时(ui 线程执行 bundle), 结果回到 platform 线程
   shell_->Run([](Status s) { OnRuntimeStarted(s); });
 }
@@ -353,7 +353,7 @@ void MacWindow::SendToPlatformView(int64_t view, const PointerInput& in, Pointer
 
 窗口侧的变化由 `MomoWindowObserver`（`NSWindowDelegate`）上报：`windowDidResize` / `windowDidChangeBackingProperties` / `windowDidChangeScreen` → `OnMetricsChanged`；`windowDidBecomeKey` / `ResignKey` → 焦点；显示/隐藏、最小化、缩放、全屏 → `OnWindowStateChanged`；`windowShouldClose` → `OnCloseRequested`。
 
-`WindowController` 是很薄的一层：把视图相关的事件（尺寸、输入、焦点、可见性）转发给 Shell；在引擎附着前缓存 metrics、焦点和可见性，附着时补发；纯通知类的窗口事件（状态、焦点、屏幕框、窗口控制按钮占用区域、首帧）直接经注入的 `WindowChannel` 通知 JS，需要 `WindowManager` 做决定的（关闭请求、焦点归属、IME 路由）经 `WindowController::Client` 接口交给它；平台窗口上报的是原始值，“与上次相同则不转发”的去重只在这里做一次；**总是拦截**原生关闭请求（返回 false），交给 `WindowManager::RequestCloseWindow` 异步询问 JS（§3.10）。
+`WindowController` 是很薄的一层：把视图相关的事件（尺寸、输入、可见性）转发给 Shell；在引擎附着前缓存 metrics 和可见性，附着时补发；窗口的焦点不经引擎，只经 `momo/window` 通知 JS；纯通知类的窗口事件（状态、焦点、屏幕框、窗口控制按钮占用区域、首帧）直接经注入的 `WindowChannel` 通知 JS，需要 `WindowManager` 做决定的（关闭请求、焦点归属、IME 路由）经 `WindowController::Client` 接口交给它；平台窗口上报的是原始值，“与上次相同则不转发”的去重只在这里做一次；**总是拦截**原生关闭请求（返回 false），交给 `WindowManager::RequestCloseWindow` 异步询问 JS（§3.10）。
 
 ### 3.5 渲染表面
 
@@ -530,7 +530,7 @@ void Application::TearDown() {                           // 消息循环结束�
 | 通道 | 实现 | 内容 |
 |---|---|---|
 | `momo/app` | `embedder/common/app_channel.cc` | JS → 宿主：`quit`、`exit {code}`、`hide`、`show`、`focus {steal}`、`getState`；宿主 → JS：`stateChanged`、`activeChanged`、`beforeQuit`（→ bool）、`willQuit`（→ bool）、`windowAllClosed`、`activate {hasVisibleWindows}`。应用级平台能力在 `PlatformApp`（`embedder/common/platform_app.h`） |
-| `momo/window` | `embedder/common/window_channel.cc` | JS → 宿主：`create {…, show}`、`close`（立即）、`requestClose`（先询问）、`getState`（屏幕框、窗口控制按钮占用区域、状态、能力列表）、`show` / `hide` / `minimize` / `maximize` / `restore` / `activate`、`setTitle`、`setMinSize`、`setCursor`、`setAlwaysOnTop`、`setPosition`、`setResizable`、`setResizeBorder`、`setTitleBar`、`startDrag`、`startMoveLoop` / `endMoveLoop`、`capturePointer`；宿主 → JS：`frameChanged`、`controlsChanged`、`stateChanged`、`focusChanged`、`readyToShow`、`closed`、`closeRequested`（→ bool） |
+| `momo/window` | `embedder/common/window_channel.cc` | JS → 宿主：`create {…, show}`（回复窗口快照）、`close`（立即）、`requestClose`（先询问）、`getState`（窗口快照：屏幕框、窗口控制按钮占用区域、状态、焦点、能力列表）、`show` / `hide` / `minimize` / `maximize` / `restore` / `activate`、`setTitle`、`setMinSize`、`setCursor`、`setAlwaysOnTop`、`setPosition`、`setResizable`、`setResizeBorder`、`setTitleBar`、`startDrag`、`startMoveLoop` / `endMoveLoop`、`capturePointer`；宿主 → JS：`frameChanged`、`controlsChanged`、`stateChanged`、`focusChanged`、`readyToShow`、`closed`、`closeRequested`（→ bool） |
 | `momo/menu` | `embedder/common/menu_channel.cc` | JS → 宿主：`setApplicationMenu {items \| null}`、`popup {id, items, view?, x?, y?}`（→ true：已交给系统弹出）、`closePopup`；宿主 → JS：`itemClicked {id}`、`popupClosed {id}`。菜单项的格式见 `menu_model.h` |
 | `momo/tray` | `embedder/common/tray_channel.cc` | JS → 宿主：`create {id, image}`、`destroy`、`setImage`、`setToolTip`、`setTitle`、`setContextMenu {id, items \| null}`、`getBounds`；宿主 → JS：`click` / `rightClick` / `doubleClick {id, bounds}` |
 | `momo/clipboard` / `momo/url` / `momo/textinput` | `embedder/common/platform_channels.cc` | 调用 `PlatformServices`；输入法交给**获得焦点的窗口**的 `TextInputConnection` |
@@ -616,7 +616,7 @@ JS:  Menu(内容 + click 回调)── 序列化 ──► momo/menu setApplicat
 
 ### 4.2 Shell：协调中枢
 
-`Shell` 归属 platform 线程，是 embedder 与引擎之间的唯一入口。它把工作投递到 ui / raster 线程，自己不拥有线程。它只承载引擎职责（画面、输入、视图尺寸与焦点、平台视图合成、扩展的宿主能力表、消息通道）；窗口与平台服务的通道由宿主注册（§3.10）。
+`Shell` 归属 platform 线程，是 embedder 与引擎之间的唯一入口。它把工作投递到 ui / raster 线程，自己不拥有线程。它只承载引擎职责（画面、输入、视图尺寸、平台视图合成、扩展的宿主能力表、消息通道）；窗口与平台服务的通道由宿主注册（§3.10）。
 
 ```cpp
 // 伪代码（engine/shell/shell.cc）
@@ -635,7 +635,7 @@ StatusOr<unique_ptr<Shell>> Shell::Create(runners, settings, on_exit_requested) 
 // JS 运行时在进程里只有一个: Run 启动(只能一次), Shutdown 销毁。
 void Shell::Run(done) {
   PostToEngine([=](Engine& engine) {
-    // 创建 V8、安装绑定、执行 bundle → 把已绑定视图的尺寸/焦点/可见性交给它；失败则没有运行时(不出帧)
+    // 创建 V8、安装绑定、执行 bundle → 把已绑定视图的尺寸/可见性交给它；失败则没有运行时(不出帧)
     status = engine.StartRuntime();
     PostToObject(weak_shell, [=] { done(status); });     // 结果回到 platform 线程
   });
@@ -680,7 +680,7 @@ void Shell::OnPlatformViewCreated(id, native) { for (d : delegates_) d->OnPlatfo
 
 ![一帧的完整路径](docs/images/frame-pipeline.svg)
 
-`Engine` 是 ui 线程侧的根，持有各视图的 `ViewportMetrics` 与焦点、`Animator` 和 `AppDriver`，并实现 `ui::WindowClient`（JS 的 `platformDispatcher` 与 `viewports` 背后就是它）。`WindowClient` 只有引擎职责：帧调度、提交画面、视图尺寸、焦点与可见性；输入原样按视图转发（指针序列归谁接收由宿主与框架决定，§3.10）：
+`Engine` 是 ui 线程侧的根，持有各视图的 `ViewportMetrics` 与可见性、`Animator` 和 `AppDriver`，并实现 `ui::WindowClient`（JS 的 `platformDispatcher` 与 `viewports` 背后就是它）。`WindowClient` 只有引擎职责：帧调度、提交画面、视图尺寸与可见性；输入原样按视图转发（指针序列归谁接收由宿主与框架决定，§3.10）：
 
 ```cpp
 // 伪代码（engine/shell/engine.h）
@@ -828,7 +828,7 @@ ClassBuilder<JsPaint>(isolate, "Paint", &JsPaint::Construct)
 | JS 可见对象 | C++ 实现 | 说明 |
 |---|---|---|
 | `platformDispatcher` | `platform_dispatcher_binding.cc` → `WindowClient`（Engine） | 全局：`scheduleFrame()`；回调 `onBeginFrame`、`onDrawFrame`、`onViewportsChanged` |
-| `viewports`（`Viewport`） | `platform_dispatcher_binding.cc` → `WindowClient`（Engine） | 每个视图：`id`、`devicePixelRatio`、`physicalSize`、`focused`、`visible`；`render(scene)`；回调 `onMetricsChanged`、`onPointerPacket`、`onKeyData`、`onFocusChanged`、`onVisibilityChanged`。**没有**标题、光标、关闭等窗口操作（宿主的 `momo/window`，§3.10） |
+| `viewports`（`Viewport`） | `platform_dispatcher_binding.cc` → `WindowClient`（Engine） | 每个视图：`id`、`devicePixelRatio`、`physicalSize`、`visible`；`render(scene)`；回调 `onMetricsChanged`、`onPointerPacket`、`onKeyData`、`onVisibilityChanged`。窗口的焦点属于宿主（`Widget.isFocused`、`'focus'` / `'blur'`）。**没有**标题、光标、关闭等窗口操作（宿主的 `momo/window`，§3.10） |
 | `Canvas` / `Paint` / `Path` / `Gradient` / `PictureRecorder` / `Picture` | `painting_bindings.cc` → `DisplayListBuilder` | 只记录，不绘制 |
 | `SceneBuilder` / `Scene` | `scene_bindings.cc` → `LayerTree` | 维护 ContainerLayer 栈：`push*` 压入、`addPicture` / `addTexture` 加叶子、`pop` 弹出、`build` 冻结 |
 | `ParagraphBuilder` / `Paragraph` | `text_bindings.cc` → `text::Paragraph` | 在 ui 线程同步排版（布局需要同步测量） |
@@ -964,6 +964,7 @@ JS 侧对外的宿主对象与组件基类，各对应一层，没有重叠：
 | `View`（`views/framework.ts`） | 所有组件的基类 | — | — |
 
 - 可取消的事件是 `HostEvent`：监听器同步调用 `preventDefault()` 取消；要异步决定时用 `waitUntil(promise)`（promise 结果为 `false` 视为取消），宿主等它完成再继续。
+- `Widget` 的状态（`bounds`、`controls`、`state`、`isFocused`）只有一个方向：宿主给一份快照（`Widget.create` 的回复；启动窗口在对象建立时查一次 `getState`），之后只由宿主的通知更新。回复与通知都从 platform 线程按序投递到 ui 线程，按到达顺序应用即可；读取状态不产生调用。
 - `Widget` 对象的生命周期跟随窗口：打开期间同一个 id 总是同一个对象；`'closed'` 之后对象作废（`isDestroyed()`），方法变为空操作。JS 丢掉引用不会关闭窗口。
 - 窗口的内容由 `RootView({ widget, child })` 渲染，放在 `ViewAnchor({ views: [...] })` 里——element 树只有一棵，所以各窗口共享 JS 状态，`GlobalKey` 可以把子树从一个窗口移到另一个窗口。`RootView` 不打开也不关闭窗口。子树里用 `WidgetScope.of(context)` 取所在窗口，`Title` 声明窗口标题。
 

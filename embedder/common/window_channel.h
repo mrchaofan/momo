@@ -6,11 +6,12 @@
 //
 // momo/window(StandardMethodCodec;逻辑点;view 为视图 id):
 //   JS → 宿主:
-//     create {title?, width, height, minWidth?, minHeight?, x?, y?, nonActivating?, resizable?, show?} → view
+//     create {title?, width, height, minWidth?, minHeight?, x?, y?, nonActivating?, resizable?, show?}
+//                                         → 窗口快照(见下)加 view
 //     close {view}                        立即关闭(不询问 closeRequested)
 //     requestClose {view}                 与用户点关闭按钮相同: 先询问 closeRequested, 允许后关闭
-//     getState {view} → {frame: [x, y, w, h] | null, controls: [x, y, w, h] | null, capabilities: [string],
-//                        state: {visible, minimized, maximized, fullscreen}}
+//     getState {view} → 窗口快照: {frame: [x, y, w, h] | null, controls: [x, y, w, h] | null, focused,
+//                        capabilities: [string], state: {visible, minimized, maximized, fullscreen}}
 //     show {view} / hide {view} / minimize {view} / maximize {view} / restore {view} / activate {view}
 //     setTitle {view, title} / setMinSize {view, width, height} / setCursor {view, cursor}
 //     setAlwaysOnTop {view, on} / setPosition {view, x, y}
@@ -29,7 +30,9 @@
 //     readyToShow {view}                  第一帧已呈现(以 show: false 创建的窗口据此显示)
 //     closed {view}                       窗口已关闭(视图已从 momo:ui viewports 移除)
 //     closeRequested {view} → bool        用户点了关闭按钮(或 requestClose / 退出应用);false 取消
-// 能力可经 getState 的 capabilities 查询;不支持的方法回复 "unimplemented"。
+// 状态只有一个方向: JS 拿到一份快照(自己创建的窗口在 create 的回复里, 宿主启动时创建的窗口查一次 getState),
+// 之后只靠上面的通知更新。回复与通知都从 platform 线程按序投递, JS 按到达顺序应用即可。
+// 能力在快照的 capabilities 里;不支持的方法回复 "unimplemented"。
 // 线程约定: 归属 platform 线程;处理器在 platform 线程运行。
 
 #include <memory>
@@ -60,6 +63,8 @@ class WindowChannel final {
     // 先询问 JS(closeRequested)再关闭。
     virtual void RequestCloseWindow(platform::ViewId view) = 0;
     virtual PlatformWindow* FindWindow(platform::ViewId view) = 0;
+    // 窗口是否持有系统焦点(未知 id 为 false)。
+    virtual bool IsWindowFocused(platform::ViewId view) = 0;
 
    protected:
     ~Host() = default;
@@ -94,6 +99,8 @@ class WindowChannel final {
       std::function<StatusOr<engine::EncodableValue>(PlatformWindow& window, const engine::EncodableValue& args)>;
   void RegisterWindowMethod(std::string method, WindowHandler handler);
   void RegisterMethods();
+  // 窗口当前状态的快照(create / getState 的回复)。
+  engine::EncodableMap Snapshot(platform::ViewId view, PlatformWindow& window);
 
   Host* const host_;
   HostChannel channel_;

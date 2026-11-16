@@ -308,14 +308,13 @@ declare module "momo:ui" {
 
   /**
    * 一个视图(宿主的一个原生窗口)。多视图: 一个 JS 运行时驱动多个视图, 共享 JS 状态与帧时钟;每个视图有自己的
-   * 尺寸、输入、焦点与画面。只有引擎职责(画面、尺寸、输入): 窗口的外观与行为(标题、光标、位置、标题栏、
+   * 尺寸、输入与画面。只有引擎职责(画面、尺寸、输入): 窗口的外观与行为(标题、光标、位置、标题栏、
    * 创建与关闭、指针序列的原生接收窗口…)属于宿主, 经宿主注册的 momo/window 通道操作。
    */
   export interface Viewport {
     readonly id: number;
     readonly devicePixelRatio: number;
     readonly physicalSize: { readonly width: number; readonly height: number };
-    readonly focused: boolean;
     /** 窗口是否可见(隐藏或最小化时为 false: 引擎不为它出帧, 提交的画面被丢弃;重新可见时引擎补一帧)。 */
     readonly visible: boolean;
     onMetricsChanged: (() => void) | null;
@@ -323,7 +322,6 @@ declare module "momo:ui" {
     onPointerPacket: ((data: Float64Array, count: number) => void) | null;
     /** 返回 true 表示已消费。 */
     onKeyData: ((data: KeyData) => boolean | void) | null;
-    onFocusChanged: ((focused: boolean) => void) | null;
     onVisibilityChanged: ((visible: boolean) => void) | null;
     /** 提交本视图本帧的画面(只能在 onDrawFrame 内调用;每视图每帧一次)。 */
     render(scene: Scene): void;

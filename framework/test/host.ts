@@ -20,6 +20,8 @@ export interface MockControl {
   decodedImages: number;
   setPhysicalSize(width: number, height: number, dpr: number): void;
   pictureOps(picture: unknown): RecordedOp[];
+  /** 宿主已发出的回复与通知全部到达 JS 并处理完(真实引擎里它们是 ui 线程上排队的任务)。 */
+  hostIdle(): Promise<void>;
   // ---- 多视图与宿主窗口(momo/window 的 mock 实现)----
   /** 每个视图最近一次提交的场景(键为视图 id)。 */
   sceneOpsByView: Map<number, RecordedOp[]>;
@@ -44,7 +46,7 @@ export interface MockControl {
   setWindowState(id: number, state: Partial<{ visible: boolean; minimized: boolean; maximized: boolean; fullscreen: boolean }>): void;
   /** 窗口状态(键为视图 id)。 */
   windowStates: Map<number, { visible: boolean; minimized: boolean; maximized: boolean; fullscreen: boolean }>;
-  /** 模拟窗口获得/失去系统焦点(视图 onFocusChanged + momo/window focusChanged)。 */
+  /** 模拟窗口获得/失去系统焦点(momo/window focusChanged)。 */
   setWindowFocus(id: number, focused: boolean): void;
   /** 模拟用户点击 Dock 图标(momo/app activate)。 */
   reopen(hasVisibleWindows: boolean): void;

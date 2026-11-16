@@ -24,7 +24,6 @@ class FakeWindowClient final : public WindowClient {
   platform::ViewportMetrics metrics(ViewId view) const override {
     return view == platform::kImplicitViewId ? current : extra_metrics;
   }
-  bool focused(ViewId) const override { return is_focused; }
   std::vector<ViewId> views() const override { return view_ids; }
 
   std::vector<ViewId> view_ids{platform::kImplicitViewId};
@@ -293,7 +292,7 @@ TEST_F(UiBindingsTest, PointerPacketsCarrySequenceIdsAndGestures) {
   EXPECT_EQ(Eval("log.join(' ')"), "17:9007199254740991:2:6:0.5:2");
 }
 
-TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
+TEST_F(UiBindingsTest, PointerAndKeyEventsReachJs) {
   ASSERT_TRUE(Run(R"JS(
     import { viewports, POINTER_DATA_STRIDE } from 'momo:ui';
     const view = globalThis.view = viewports.get(0);
@@ -305,7 +304,6 @@ TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
       }
     };
     view.onKeyData = (k) => { log.push(`k:${k.type}:${k.physicalKey.toString(16)}:${k.character}:${k.modifiers}`); return k.character === 'a'; };
-    view.onFocusChanged = (f) => { log.push(`f:${f}:${view.focused}`); };
   )JS").ok());
   EXPECT_EQ(Eval("typeof view.setCapture"), "undefined") << "pointer capture is not an engine concern";
 
@@ -327,10 +325,7 @@ TEST_F(UiBindingsTest, PointerKeyAndFocusEventsReachJs) {
   key.character = "b";
   EXPECT_FALSE(bindings_->KeyData(platform::kImplicitViewId, key));
 
-  client_.is_focused = true;
-  bindings_->FocusChanged(platform::kImplicitViewId, true);
-  EXPECT_EQ(Eval("log.join(' ')"),
-            "p1@10,20b1 p3@11,21b0 k:down:70004:a:1 k:down:70004:b:1 f:true:true");
+  EXPECT_EQ(Eval("log.join(' ')"), "p1@10,20b1 p3@11,21b0 k:down:70004:a:1 k:down:70004:b:1");
 }
 
 TEST_F(UiBindingsTest, ServicesChannelRoundTrips) {
@@ -531,9 +526,9 @@ TEST_F(UiBindingsTest, ViewsAddRenderAndRemove) {
   EXPECT_EQ(client_.rendered[1]->frame_size(), (Size{300, 200}));
 
   // 按视图的事件只到达该视图的处理器。
-  Eval("globalThis.got = []; created.onFocusChanged = (f) => got.push('5:' + f); viewports.get(0).onFocusChanged = (f) => got.push('0:' + f)");
-  bindings_->FocusChanged(5, true);
-  EXPECT_EQ(Eval("got.join()"), "5:true");
+  Eval("globalThis.got = []; created.onVisibilityChanged = (v) => got.push('5:' + v); viewports.get(0).onVisibilityChanged = (v) => got.push('0:' + v)");
+  bindings_->VisibilityChanged(5, false);
+  EXPECT_EQ(Eval("got.join()"), "5:false");
 
   // 视图 0 与其他视图一样可以被移除。
   client_.view_ids = {};
@@ -566,11 +561,11 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
   EXPECT_EQ(Eval("String(viewports.size)"), "6");
   // 保留其中一个视图的旧方法与另一个视图对象, 并挂上事件回调。
   Eval("globalThis.oldRender = viewports.get(10).render; globalThis.keep = viewports.get(11);"
-       "keep.onFocusChanged = () => {}; 'ok'");
+       "keep.onVisibilityChanged = () => {}; 'ok'");
   client_.view_ids = {platform::kImplicitViewId};
   for (ViewId id : ids) bindings_->ViewRemoved(id);
   EXPECT_EQ(Eval("String(viewports.size)"), "1");
-  EXPECT_EQ(Eval("String(keep.onFocusChanged)"), "null") << "handlers are cleared on removal";
+  EXPECT_EQ(Eval("String(keep.onVisibilityChanged)"), "null") << "handlers are cleared on removal";
   isolate->LowMemoryNotification();
   EXPECT_EQ(bindings_->detached_view_count_for_testing(), 2u) << "only viewports still referenced by JS survive";
 
@@ -582,7 +577,7 @@ TEST_F(UiBindingsTest, RemovedViewsAreCollectedWhenUnreferenced) {
     globalThis.keep.render(new SceneBuilder().build());
   )JS").ok());
   EXPECT_TRUE(client_.rendered.empty());
-  bindings_->FocusChanged(11, true);  // 已移除视图: 忽略
+  bindings_->VisibilityChanged(11, false);  // 已移除视图: 忽略
 
   Eval("globalThis.oldRender = null; globalThis.keep = null; 'ok'");
   isolate->LowMemoryNotification();

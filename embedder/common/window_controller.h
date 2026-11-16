@@ -34,8 +34,6 @@ class WindowController final : public Object,
    public:
     // 用户请求关闭窗口(原生关闭已被拦截): 由 Client 决定是否以及何时真正关闭。
     virtual void OnWindowCloseRequested(engine::platform::ViewId view) = 0;
-    // 窗口获得/失去系统焦点(IME 会话交给获得焦点的窗口)。
-    virtual void OnWindowFocusChanged(engine::platform::ViewId view, bool focused) = 0;
     virtual void OnWindowTextInput(engine::platform::ViewId view, const TextInputEvent& event) = 0;
 
    protected:
@@ -56,6 +54,8 @@ class WindowController final : public Object,
   void DetachEngine();
   engine::platform::ViewId view_id() const { return view_id_; }
   const WindowStateFlags& state() const { return state_; }
+  // 窗口是否持有系统焦点。
+  bool focused() const { return focused_; }
 
   // WindowDelegate
   void OnMetricsChanged(const platform::ViewportMetrics& metrics) override;

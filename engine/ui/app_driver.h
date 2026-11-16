@@ -42,7 +42,6 @@ class WindowClient {
   // view.render(scene): layer_tree->view_id() 已设置。
   virtual void Render(std::unique_ptr<graphics::LayerTree> layer_tree) = 0;
   virtual platform::ViewportMetrics metrics(ViewId view) const = 0;
-  virtual bool focused(ViewId view) const = 0;
   // 视图是否可见(窗口隐藏/最小化时为 false: 不出帧, 提交的画面被丢弃)。
   virtual bool visible(ViewId view) const { (void)view; return true; }
   // 当前存在的视图(升序;可能为空: 全部窗口都已关闭)。
@@ -62,7 +61,6 @@ class AppDriver {
   virtual void OnPointerPacket(ViewId, const platform::PointerDataPacket&) {}
   // 返回 true 表示应用已消费。
   virtual bool OnKeyData(ViewId, const platform::KeyData&) { return false; }
-  virtual void OnFocusChanged(ViewId, bool) {}
   virtual void OnVisibilityChanged(ViewId, bool) {}
   // 视图加入/移除(驱动创建前已绑定的视图由驱动在创建时从 client.views() 读取, 不会通知加入)。
   virtual void OnViewAdded(ViewId) {}
