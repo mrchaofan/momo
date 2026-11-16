@@ -68,6 +68,9 @@ typedef struct MomoHost {
   uint32_t api_version;  // == MOMO_HOST_API_VERSION
 
   // 在 platform 线程执行 fn(user_data)。任意线程调用;任务按投递顺序执行。
+  // 返回 kMomoOk 之后 user_data 归任务所有, 通常在 fn 里释放;返回其他值时 fn 不会被调用, 调用方自己释放。
+  // 引擎关闭时被丢弃的任务(见上"关闭")不调用 fn, 它的 user_data 也就不被释放: 关闭只发生在进程退出之前,
+  // 这部分内存随进程回收。不要让 user_data 持有必须显式归还的东西(文件锁、要落盘的数据)。
   MomoStatus (*post_platform_task)(const struct MomoHost*, MomoTaskFn fn, void* user_data);
 
   // -- 外部纹理(任意线程)。JS 侧用纹理 id 显示(框架的 Texture, 或 SceneBuilder.addTexture) --
