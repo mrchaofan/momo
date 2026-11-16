@@ -62,10 +62,14 @@ int WinMouseMessage::click_count() const {
   }
 }
 
+namespace {
+
+// 鼠标消息的分类。
 bool IsWinMouseMessage(uint32_t message) {
   return (message >= win32::kMouseMove && message <= win32::kMouseHWheel) || message == win32::kMouseLeave;
 }
 
+// WM_*BUTTON* 的逻辑按键位(bit0 主键, bit1 次键, bit2 中键, bit3/4 侧键);不是按键消息时为 0。
 uint32_t WinButtonBit(uint32_t message, uint64_t wparam) {
   switch (message) {
     case win32::kLButtonDown:
@@ -90,6 +94,7 @@ uint32_t WinButtonBit(uint32_t message, uint64_t wparam) {
   }
 }
 
+// wparam 的 MK_* 按键状态 → 逻辑按键位图。
 uint32_t WinHeldButtons(uint64_t wparam) {
   const uint32_t keys = LowWord(wparam);
   uint32_t buttons = 0;
@@ -100,6 +105,8 @@ uint32_t WinHeldButtons(uint64_t wparam) {
   if (keys & win32::kMkXButton2) buttons |= 1u << 4;
   return buttons;
 }
+
+}  // namespace
 
 void WinMouseInput::Dispatch(const WinMouseMessage& message, PointerWindow* window) {
   PointerInput input;

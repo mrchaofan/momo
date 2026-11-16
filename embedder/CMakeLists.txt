@@ -167,6 +167,7 @@ elseif(WIN32)
     windows/win_caption_buttons.cc
     windows/win_displays.cc
     windows/win_menu.cc
+    windows/win_keyboard.cc
     windows/win_native_loop.cc
     windows/win_platform_integration.cc
     windows/win_services.cc
