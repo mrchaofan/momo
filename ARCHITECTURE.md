@@ -61,14 +61,14 @@ main()                                         embedder/macos/main_mac.mm
    │   └─ MacMenus                    (platform)  应用菜单(NSApp.mainMenu)、上下文菜单、托盘图标(MacTray)
    ├─ EventLoop  + NativeMessagePump  (platform)  跑在 [NSApp run] 之上
    ├─ engine::ThreadHost                          创建并 join ui / raster / io 三个线程
-   ├─ WindowManager                   (platform)  窗口注册表:创建、关闭询问、焦点/IME 路由(视图 0 = 启动窗口)
+   ├─ WindowManager                   (platform)  窗口注册表与 momo/window:创建、关闭询问、焦点归属(视图 0 = 启动窗口)
    │   └─ 视图 id → WindowController  (platform)  窗口 ⇄ Shell 视图的粘合层
    │       └─ MacWindow               (platform)  MomoWindow/MomoPanel + MomoContentView
    │           ├─ MacMetalSurface / MacSoftwareSurface   (由 raster 线程使用)
    │           └─ MacTextInput        (platform)
    ├─ AppChannel                      (platform)  宿主通道 momo/app(§3.10)
-   ├─ WindowChannel                   (platform)  宿主通道 momo/window(§3.10)
-   ├─ PlatformChannels                (platform)  宿主通道 momo/clipboard、momo/url、momo/textinput
+   ├─ TextInputChannel                (platform)  宿主通道 momo/textinput
+   ├─ PlatformChannels                (platform)  宿主通道 momo/clipboard、momo/url
    ├─ MenuChannel / TrayChannel       (platform)  宿主通道 momo/menu、momo/tray(§3.10"菜单与托盘")
    └─ engine::Shell                   (platform)  引擎实例的协调中枢
        ├─ MessageChannelHub           (任意线程)  异步消息通道
@@ -267,10 +267,12 @@ Application::Create(options, platform) {
 
 Application::Launch() {
   TransitionTo(kLaunching);
-  // 启动窗口(隐式视图 0;--no-startup-window 时不建)。WindowController 的事件交给 WindowManager:
-  // 关闭按钮 → RequestCloseWindow(0)、状态(最小化/隐藏)→ 视图可见性、焦点/IME/屏幕框 → 宿主通道。
-  if (config.startup_window) window_manager_->OpenStartupWindow();  // MacWindow:此时只有闪屏底色, 先显示
-  LaunchEngine();                   // 返回时仍是 kLaunching: 主线程回到事件循环, 不等 bundle 执行
+  CreateEngine();                   // Shell::Create + 宿主通道 + WindowManager: 只组装, 不等待其他线程, 没有 JS
+  // 启动窗口(隐式视图 0;--no-startup-window 时不建): 创建即绑定为引擎的视图并显示(此时只有闪屏底色)。
+  // WindowController 的事件: 关闭按钮 → WindowManager::RequestCloseWindow(0)、状态(最小化/隐藏)→ 视图可见性、
+  // 焦点/屏幕框 → momo/window、输入法 → momo/textinput。
+  if (config.startup_window) window_manager_->OpenStartupWindow();
+  shell_->Run([](Status s) { OnRuntimeStarted(s); });   // 异步: ui 线程执行 bundle, 主线程回到事件循环
 }
 
 Application::OnRuntimeStarted(status) {   // Shell::Run 的结果, platform 线程
@@ -278,29 +280,27 @@ Application::OnRuntimeStarted(status) {   // Shell::Run 的结果, platform 线�
   TransitionTo(kRunning);
 }
 
-Application::LaunchEngine() {
+Application::CreateEngine() {
   settings = { 入口/assets 路径 ← engine::LocateApp(命令行的 <app> 或 <resources>/app),
                dev_mode, inspector,
                builtin_dir = <resources>/builtin（运行时自带的 JS 模块: 框架、内置扩展）,
                code_cache_dir = <入口给出的应用缓存目录>/v8（非 --dev）,
                refresh_rate = 主显示器刷新率（vsync 回退定时器用） };
-  // 第一阶段: 只组装引擎(没有 JS 运行时, 不等待其他线程)
   shell_ = Shell::Create(task_runners_, settings,
       on_exit_requested = [](int code) { Exit(code); });   // JS process.exit(code), 见 §3.8
-  // 宿主通道与窗口先就位(bundle 顶层代码就可能设置标题、打开窗口、退出;启动窗口在顶层即是视图 0)
-  app_channel_       = AppChannel(shell_->hub(), platform runner, host = this);                // momo/app
-  window_channel_    = WindowChannel(shell_->hub(), platform runner, host = window_manager_);  // momo/window
-  platform_channels_ = PlatformChannels(shell_->hub(), ..., focused_text_input = WindowManager::FocusedTextInput);
-  menu_channel_      = MenuChannel(shell_->hub(), platform runner, platform->menus(), host = this);  // momo/menu
-  tray_channel_      = TrayChannel(shell_->hub(), platform runner, platform->menus());               // momo/tray
-  window_manager_->AttachEngine(*shell_, ...);  // 应用唯一的 VsyncSource: CreateVsyncSource → Shell::SetVsyncSource;
-                                                // 每个窗口: Shell::AttachView + 补发 metrics/可见性
-  // 第二阶段: 异步启动 JS 运行时(ui 线程执行 bundle), 结果回到 platform 线程
-  shell_->Run([](Status s) { OnRuntimeStarted(s); });
+  // 宿主通道先于 JS 就位(bundle 顶层代码就可能设置标题、打开窗口、退出)
+  app_channel_        = AppChannel(shell_->hub(), platform runner, host = this);                // momo/app
+  text_input_channel_ = TextInputChannel(shell_->hub(), ..., WindowManager::FocusedTextInput);  // momo/textinput
+  platform_channels_  = PlatformChannels(shell_->hub(), ..., platform->services());             // momo/clipboard、momo/url
+  menu_channel_       = MenuChannel(shell_->hub(), platform runner, platform->menus(), host = this);  // momo/menu
+  tray_channel_       = TrayChannel(shell_->hub(), platform runner, platform->menus());               // momo/tray
+  // 窗口注册表: 拥有 momo/window;应用唯一的 VsyncSource: CreateVsyncSource → Shell::SetVsyncSource。
+  // 之后每个窗口创建即 Shell::AttachView + 发送 metrics/可见性。
+  window_manager_ = WindowManager(platform, config.window, observer = this, *shell_, *text_input_channel_);
 }
 ```
 
-"合适的时机创建 JS 环境"在实现中的含义：窗口先 `Show()`（用户立刻看到原生窗口和闪屏底色），然后才创建 Shell；V8 初始化与 bundle 执行在 ui 线程进行，Rasterizer 初始化在 raster 线程**并行**进行，主线程不等它们——`Launch()` 返回后就进入消息循环（窗口可响应，`--inspect-brk` 等待调试器时也不卡主线程）。
+"合适的时机创建 JS 环境"在实现中的含义：先组装引擎（`Shell::Create` 只创建对象、投递任务，不等待），窗口随即创建并 `Show()`（用户立刻看到原生窗口和闪屏底色），然后才启动 JS 运行时；引擎先于窗口，所以不存在"有窗口、没有引擎"的状态。V8 初始化与 bundle 执行在 ui 线程进行，Rasterizer 初始化在 raster 线程**并行**进行，主线程不等它们——`Launch()` 返回后就进入消息循环（窗口可响应，`--inspect-brk` 等待调试器时也不卡主线程）。
 
 应用的定位（`engine::LocateApp`，`engine/common/app_layout.h`）：应用路径是一个目录（入口是其 `package.json` 的 `main`，缺省 `index.js`；资源在 `<dir>/assets/`）或一个 JS 文件（它自己就是入口，资源在它旁边的 `assets/`）。命令行的第一个位置参数给出应用路径，缺省是应用包内的 `<Momo.app>/Contents/Resources/app`——打包后的应用与开发时走同一条路。目录里读不到 `package.json`、JSON 不合法、`main` 不是字符串时启动即报错。应用旁边的 `<resources>/builtin/` 是运行时自带的 JS 模块（框架与内置扩展，§4.6），应用的文件里没有它们。
 
@@ -452,7 +452,7 @@ void OnTick() {
 `MomoContentView` 实现 `NSTextInputClient`，把每个调用转给 `MacTextInput`（`TextInputConnection` 的实现）：
 
 - **JS 是编辑模型的权威**：JS 经 `momo/textinput` 通道下发 `SetEditingState`（文本、选区、composing 区间，UTF-16 下标），覆盖本地状态。
-- 两次同步之间，输入法事件先在本地**乐观应用**，保证 `hasMarkedText` / `markedRange` / `selectedRange` 这些同步查询立即反映最新的预编辑；同时翻译成 `TextInputEvent`（commit / composing 等），经 `WindowDelegate::OnTextInput` → `WindowController` → `PlatformChannels` 走 `momo/textinput` 通道发给 JS（不经过 Shell）。
+- 两次同步之间，输入法事件先在本地**乐观应用**，保证 `hasMarkedText` / `markedRange` / `selectedRange` 这些同步查询立即反映最新的预编辑；同时翻译成 `TextInputEvent`（commit / composing 等），经 `WindowDelegate::OnTextInput` → `WindowController` → `TextInputChannel` 走 `momo/textinput` 通道发给 JS（不经过 Shell）。
 - JS 上报的光标矩形（物理像素，相对内容区）用于 `firstRectForCharacterRange`，决定候选窗位置。
 
 ### 3.8 退出与有序关闭
@@ -504,9 +504,10 @@ void Application::TearDown() {                           // 消息循环结束�
                                         // 2) ui 同步：销毁 JS 运行时（扩展的清理函数在这里执行）, 再是 Engine 其余部分（Animator）
                                         // 3) raster 同步：销毁 Rasterizer（GPU 资源, 停用各窗口的 surface）
   window_manager_->DetachEngine();      //    窗口放开引擎
-  app_channel_.reset(); window_channel_.reset(); platform_channels_.reset();   // 移除宿主通道处理器
-  menu_channel_.reset(); tray_channel_.reset();                                 // 托盘图标在这里移除
-  window_manager_->DestroyAll();        // 3) 销毁还开着的 MacWindow 与 RenderSurface（正常退出时窗口已在流程里关闭）
+  app_channel_.reset(); text_input_channel_.reset(); platform_channels_.reset();   // 移除宿主通道处理器
+  menu_channel_.reset(); tray_channel_.reset();                                     // 托盘图标在这里移除
+  window_manager_.reset();              // 3) 销毁还开着的 MacWindow 与 RenderSurface（正常退出时窗口已在流程里关闭）, 连同 momo/window
+  shell_.reset();
   thread_host_->Join();                 // 4) join ui → raster → io
 }
 ```
@@ -533,7 +534,8 @@ void Application::TearDown() {                           // 消息循环结束�
 | `momo/window` | `embedder/common/window_channel.cc` | JS → 宿主：`create {…, show}`（回复窗口快照）、`close`（立即）、`requestClose`（先询问）、`getState`（窗口快照：屏幕框、窗口控制按钮占用区域、状态、焦点、能力列表）、`show` / `hide` / `minimize` / `maximize` / `restore` / `activate`、`setTitle`、`setMinSize`、`setCursor`、`setAlwaysOnTop`、`setPosition`、`setResizable`、`setResizeBorder`、`setTitleBar`、`startDrag`、`startMoveLoop` / `endMoveLoop`、`capturePointer`；宿主 → JS：`frameChanged`、`controlsChanged`、`stateChanged`、`focusChanged`、`readyToShow`、`closed`、`closeRequested`（→ bool） |
 | `momo/menu` | `embedder/common/menu_channel.cc` | JS → 宿主：`setApplicationMenu {items \| null}`、`popup {id, items, view?, x?, y?}`（→ true：已交给系统弹出）、`closePopup`；宿主 → JS：`itemClicked {id}`、`popupClosed {id}`。菜单项的格式见 `menu_model.h` |
 | `momo/tray` | `embedder/common/tray_channel.cc` | JS → 宿主：`create {id, image}`、`destroy`、`setImage`、`setToolTip`、`setTitle`、`setContextMenu {id, items \| null}`、`getBounds`；宿主 → JS：`click` / `rightClick` / `doubleClick {id, bounds}` |
-| `momo/clipboard` / `momo/url` / `momo/textinput` | `embedder/common/platform_channels.cc` | 调用 `PlatformServices`；输入法交给**获得焦点的窗口**的 `TextInputConnection` |
+| `momo/clipboard` / `momo/url` | `embedder/common/platform_channels.cc` | 调用 `PlatformServices` |
+| `momo/textinput` | `embedder/common/text_input_channel.cc` | 输入法会话交给**获得焦点的窗口**的 `TextInputConnection`；窗口的输入法事件直接发往 JS |
 
 要点：
 

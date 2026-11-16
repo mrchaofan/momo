@@ -8,32 +8,31 @@ namespace momo::embedder {
 
 StatusOr<std::unique_ptr<WindowController>> WindowController::Create(PlatformIntegration& platform,
                                                                      const WindowOptions& options,
-                                                                     Client& client,
-                                                                     engine::platform::ViewId view_id) {
-  std::unique_ptr<WindowController> controller(new WindowController(client, view_id));
+                                                                     engine::platform::ViewId view_id,
+                                                                     Bindings bindings) {
+  std::unique_ptr<WindowController> controller(new WindowController(view_id, std::move(bindings)));
   MOMO_ASSIGN_OR_RETURN(controller->window_, platform.CreateWindow(options, controller.get()));
-  // 以创建完成后的窗口为准(创建过程中的回调可能已经写过缓存)。
-  PlatformWindow& window = *controller->window_;
-  controller->metrics_ = window.metrics();
-  controller->state_ = window.state();
-  controller->frame_.reset();
-  controller->controls_ = window.window_controls_rect();
+  controller->Attach();
   return controller;
 }
 
-WindowController::WindowController(Client& client, engine::platform::ViewId view_id)
-    : client_(client), view_id_(view_id) {}
+WindowController::WindowController(engine::platform::ViewId view_id, Bindings bindings)
+    : view_id_(view_id), bindings_(std::move(bindings)) {}
 
 WindowController::~WindowController() {
   MOMO_DCHECK_ON_AFFINITY_THREAD();
-  MOMO_DCHECK(shell_ == nullptr) << "Window destroyed while the engine still renders into it";
+  MOMO_DCHECK(!attached_) << "Window destroyed while the engine still renders into it";
   window_.reset();  // 销毁过程中的窗口回调仍落在完整的对象上
 }
 
-void WindowController::AttachEngine(engine::Shell& shell, WindowChannel& events) {
-  MOMO_DCHECK(shell_ == nullptr);
-  shell_ = &shell;
-  events_ = &events;
+void WindowController::Attach() {
+  // 以创建完成后的窗口为准(创建过程中的回调可能已经写过缓存)。
+  metrics_ = window_->metrics();
+  state_ = window_->state();
+  frame_.reset();
+  controls_ = window_->window_controls_rect();
+  attached_ = true;
+  engine::Shell& shell = bindings_.shell;
   shell.AttachView(view_id_, this, &window_->surface());
   shell.OnMetricsChanged(view_id_, metrics_);
   rendering_ = ShouldRender();
@@ -53,18 +52,17 @@ void WindowController::UpdateRendering() {
     return;
   }
   rendering_ = rendering;
-  if (shell_ != nullptr) {
-    shell_->OnViewVisibilityChanged(view_id_, rendering);
+  if (attached_) {
+    bindings_.shell.OnViewVisibilityChanged(view_id_, rendering);
   }
 }
 
-void WindowController::DetachEngine() {
-  if (shell_ == nullptr) {
+void WindowController::Detach() {
+  if (!attached_) {
     return;
   }
-  shell_->DetachView(view_id_);
-  shell_ = nullptr;
-  events_ = nullptr;
+  attached_ = false;
+  bindings_.shell.DetachView(view_id_);
 }
 
 void WindowController::OnMetricsChanged(const platform::ViewportMetrics& metrics) {
@@ -72,26 +70,28 @@ void WindowController::OnMetricsChanged(const platform::ViewportMetrics& metrics
     return;
   }
   metrics_ = metrics;
-  if (shell_ != nullptr) {
-    shell_->OnMetricsChanged(view_id_, metrics);
+  if (attached_) {
+    bindings_.shell.OnMetricsChanged(view_id_, metrics);
   }
 }
 
 void WindowController::OnPointerPacket(platform::PointerDataPacket packet) {
-  if (shell_ != nullptr) {
-    shell_->OnPointerPacket(view_id_, std::move(packet));
+  if (attached_) {
+    bindings_.shell.OnPointerPacket(view_id_, std::move(packet));
   }
 }
 
 void WindowController::OnKeyData(const platform::KeyData& data) {
-  if (shell_ != nullptr) {
-    shell_->OnKeyData(view_id_, data);
+  if (attached_) {
+    bindings_.shell.OnKeyData(view_id_, data);
   }
 }
 
 bool WindowController::OnCloseRequested() {
   // 总是先拦截: 关闭需要询问 JS(异步, ui 线程), 且销毁必须按 docs/01 §4 的顺序进行。
-  client_.OnWindowCloseRequested(view_id_);
+  if (attached_) {
+    bindings_.close_requested();
+  }
   return false;
 }
 
@@ -100,8 +100,8 @@ void WindowController::OnFocusChanged(bool focused) {
     return;
   }
   focused_ = focused;
-  if (events_ != nullptr) {
-    events_->NotifyFocusChanged(view_id_, focused);
+  if (attached_) {
+    bindings_.window_events.NotifyFocusChanged(view_id_, focused);
   }
 }
 
@@ -111,18 +111,20 @@ void WindowController::OnWindowStateChanged(const WindowStateFlags& state) {
   }
   state_ = state;
   UpdateRendering();
-  if (events_ != nullptr) {
-    events_->NotifyStateChanged(view_id_, state);
+  if (attached_) {
+    bindings_.window_events.NotifyStateChanged(view_id_, state);
   }
 }
 
 void WindowController::OnTextInput(const TextInputEvent& event) {
-  client_.OnWindowTextInput(view_id_, event);
+  if (attached_) {
+    bindings_.text_input.Send(event);
+  }
 }
 
 void WindowController::OnPlatformViewFocused(int64_t view_id) {
-  if (shell_ != nullptr) {
-    shell_->OnPlatformViewFocused(view_id);
+  if (attached_) {
+    bindings_.shell.OnPlatformViewFocused(view_id);
   }
 }
 
@@ -143,8 +145,8 @@ void WindowController::OnFirstFramePresented() {
   }
   first_frame_ = true;
   UpdateRendering();
-  if (events_ != nullptr) {
-    events_->NotifyReadyToShow(view_id_);
+  if (attached_) {
+    bindings_.window_events.NotifyReadyToShow(view_id_);
   }
 }
 
@@ -153,8 +155,8 @@ void WindowController::OnWindowFrameChanged(const Rect& screen_frame) {
     return;
   }
   frame_ = screen_frame;
-  if (events_ != nullptr) {
-    events_->NotifyFrameChanged(view_id_, screen_frame);
+  if (attached_) {
+    bindings_.window_events.NotifyFrameChanged(view_id_, screen_frame);
   }
 }
 
@@ -163,8 +165,8 @@ void WindowController::OnWindowControlsChanged(const std::optional<Rect>& rect) 
     return;
   }
   controls_ = rect;
-  if (events_ != nullptr) {
-    events_->NotifyControlsChanged(view_id_, rect);
+  if (attached_) {
+    bindings_.window_events.NotifyControlsChanged(view_id_, rect);
   }
 }
 

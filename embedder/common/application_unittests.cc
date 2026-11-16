@@ -247,7 +247,7 @@ TEST_F(ApplicationTest, DestroyingARunningApplicationTearsDownEngineBeforeWindow
   std::atomic<bool> ui_alive_at_window_destroy{false};
   Application* raw = app.get();
   state_->on_window_destroyed = [&] {
-    engine_gone_at_window_destroy = raw->shell() == nullptr;
+    engine_gone_at_window_destroy = raw->shell()->is_shut_down();
     raw->task_runners().ui->PostTask([&] { ui_alive_at_window_destroy = true; });
   };
   app.reset();
