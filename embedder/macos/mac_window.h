@@ -143,7 +143,6 @@ class MacWindow final : public PlatformWindow, public PointerWindow {
   std::unique_ptr<platform::RenderSurface> surface_;
   MacMetalSurface* metal_surface_ = nullptr;  // surface_ 里的 Metal surface(非拥有)
   std::unique_ptr<MacTextInput> text_input_;
-  bool resize_waiting_ = false;
   // 缩放行为(momo/window setResizable / setResizeBorder;resizable 由 WindowOptions 初始化)。
   WindowResizeOptions resize_options_;
 };

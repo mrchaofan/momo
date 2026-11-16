@@ -432,32 +432,9 @@ void WinWindow::NotifyMetricsChanged() {
 }
 
 void WinWindow::SynchronizeLiveResize() {
-  // 嵌套(等待期间执行的平台任务又改变了窗口尺寸)时不再等待, 由外层的等待覆盖;还没出过帧时等待只会超时。
-  if (resize_waiting_ || !presents_->has_presented()) {
-    NotifyMetricsChanged();
-    return;
-  }
-  resize_waiting_ = true;
-  // 先把新尺寸交给引擎, 再等它画出这个尺寸的帧(WM_SIZE 返回后系统才显示新尺寸的窗口)。
-  NotifyMetricsChanged();
-  EventLoop* loop = EventLoop::Current();
-  const std::weak_ptr<int> alive = alive_;
-  // 执行平台线程任务(vsync 回调等: 引擎出下一帧要经过 platform 线程)。不派发窗口消息(包括别的线程或进程发来的
-  // 同步消息, 如 WM_ENDSESSION), 尽量少重入;等待有上限, 不会与 raster 线程永久互等。返回本窗口是否仍然存在。
-  const auto pump = [loop, alive] {
-    if (loop != nullptr) {
-      loop->RunDueTasksNested();
-    }
-    return !alive.expired();
-  };
-  const bool got_frame = presents_->WaitForFrame(physical_size(), kLiveResizeFrameWait, pump);
-  if (alive.expired()) {
-    return;  // 等待期间窗口被关闭(有序关闭等): 不再访问本对象
-  }
-  if (!got_frame) {
-    MOMO_LOG(VERBOSE) << "Live resize: no frame of the new size within the timeout; content is stretched.";
-  }
-  resize_waiting_ = false;
+  // WM_SIZE 返回后系统才显示新尺寸的窗口。等待期间只执行 platform EventLoop 的任务, 不派发窗口消息, 也不析构
+  // 对象(关闭的窗口延后到最外层安全点销毁), 所以返回时本窗口仍然存在。
+  presents_->SynchronizeResize(physical_size(), [this] { NotifyMetricsChanged(); });
 }
 
 void WinWindow::UpdateDarkMode() {

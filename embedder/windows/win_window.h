@@ -24,8 +24,9 @@
 //    新尺寸的内容(SynchronizeLiveResize, 同 macOS)。
 //  - 应用菜单(win_menu.h): 菜单栏由 UpdateMenuBar 挂上;菜单栏的 WM_COMMAND 与按键的快捷键匹配交给 WinMenus。
 //  - 不支持(对 JS 回复 unimplemented): 平台视图、非激活窗口(non_activating 按普通窗口处理)。
-// 重入: 拖拽缩放时的等帧(执行平台线程任务)与系统拖动(系统模态循环)期间可能执行任意任务, 包括退出
-// (Application::Exit 同步关闭全部窗口)。这两处在重入返回后先检查 alive_, 窗口已销毁就不再访问本对象。
+// 重入: 拖拽缩放时的等帧(PresentQueue::SynchronizeResize)只执行 platform EventLoop 的任务, 不析构对象, 返回时
+// 窗口一定还在。系统拖动是系统模态循环, 期间可能执行任意任务包括退出: 返回后先检查 alive_, 窗口已销毁就不再
+// 访问本对象。
 // 线程约定: platform(主)线程;surface() 由 raster 线程使用(render_surface.h)。
 
 #include <memory>
@@ -167,7 +168,6 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   bool created_ = false;  // 创建过程中的消息不上报
   bool minimized_ = false;
   bool in_size_move_ = false;   // 系统的移动/缩放模态循环中
-  bool resize_waiting_ = false;
   bool active_ = false;         // 窗口激活(控制按钮外观)
   bool dark_ = false;
   Size min_size_;               // 逻辑点
