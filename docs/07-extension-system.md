@@ -14,7 +14,7 @@
 | 在哪里 | `<resources>/builtin/<name>/`：JS 与 `.node` 在同一个目录 | 应用的 `node_modules/<包>/` |
 | 怎么导入 | `import { WebView } from "momo:webview"` | `import { Database } from "@acme/ext-sqlite"` |
 | 应用要做什么 | 什么都不用做 | 自己安装、自己决定怎么带进应用包（§2） |
-| 现有的 | `momo:webview`（仅 macOS；源码 `extensions/webview/`，接口见其 README） | 示例 `extensions/examples/{hello,texture}-extension` |
+| 现有的 | `momo:webview`（macOS WKWebView、Windows WebView2；源码 `extensions/webview/`，接口见其 README） | 示例 `extensions/examples/{hello,texture}-extension` |
 
 **JS 与原生之间只有 Node-API 一条路**：函数、对象、类、Promise、`napi_async_work`（线程池）、`napi_threadsafe_function`（从别的线程回到 JS）。不经过消息通道，也没有 Momo 专有的参数/返回值 API。
 
@@ -78,7 +78,10 @@ Node 自己只在 `require` 里认 `.node`；Momo 的模块钩子让 ESM 的 `im
 
 **外部纹理**是"扩展借助引擎绘制能力"的途径：扩展不直接拿 SkCanvas（Skia 的 C++ ABI 不稳定），而是在自己的线程生成像素并推给纹理，JS 侧用框架的 `Texture` 视图（或 `SceneBuilder.addTexture`）按 id 显示，引擎以 `TextureLayer` 合成。目前只有 CPU 像素帧。
 
-**平台视图**用于"本身就是系统视图、需要原生输入 / IME / 无障碍"的内容（WebView、地图、系统控件）。扩展只负责创建与释放视图；嵌入的难点（分片合成、同帧呈现、命中遮挡、焦点交接）全部在引擎与 embedder 里（ARCHITECTURE.md §4.10）。JS 侧用框架的 `PlatformView`。目前只有 macOS 的 Metal surface 支持。`create` 返回的原生视图归扩展所有（macOS 惯用 `CFBridgingRetain` / `CFBridgingRelease`），每次成功的 `create` 恰好对应一次 `dispose`。
+**平台视图**用于"本身就是系统视图、需要原生输入 / IME / 无障碍"的内容（WebView、地图、系统控件）。扩展只负责创建与释放视图；嵌入的难点（分片合成、同帧呈现、命中遮挡、焦点交接）全部在引擎与 embedder 里（ARCHITECTURE.md §4.10）。JS 侧用框架的 `PlatformView`。支持的 surface：macOS 的 Metal、Windows 的 Direct3D（软件回退后视图不显示）。`create` 返回的原生视图归扩展所有，每次成功的 `create` 恰好对应一次 `dispose`：
+
+- **macOS**：一个 `NSView*`（惯用 `CFBridgingRetain` / `CFBridgingRelease`），宿主把它挂进窗口的视图层级，事件经 AppKit 投递。
+- **Windows**：一个 `MomoWinPlatformView*`（头文件里的一组回调）。内容经 DirectComposition 合成：宿主 `attach` 时给出顶层 `HWND` 与一个 `IDCompositionVisual` 挂载点，视图把自己的 visual 挂在它下面（WebView2 的 visual hosting 正是这种形态）；位置、裁剪、透明度、z 序由宿主负责。宿主决定指针的接收方后经 `mouse` 交来 Win32 鼠标消息（视图内容坐标），向 `cursor` 取光标，经 `focus` 交出键盘焦点；视图经宿主给的 `MomoWinPlatformViewSite` 请求提交 visual 树（`commit`）、报告用户点击取得焦点（`focused`）、光标变化（`cursor_changed`），持有焦点时的按键先交 `key_down`（应用菜单的快捷键优先）。
 
 ## 4. 关闭
 
@@ -176,7 +179,7 @@ cmake -S native -B native/out -DMomoExtSdk_DIR=<momo 构建目录>/sdk/lib/cmake
 |---|---|
 | `extensions/examples/hello-extension` | 纯 C，只用 Node-API（不需要宿主表）：同步函数、字符串/字节、线程池上的 Promise |
 | `extensions/examples/texture-extension` | C++：外部纹理，自己的线程按约 60 fps 推帧；清理函数里停线程 |
-| `extensions/webview` | 内置扩展 `momo:webview`。ObjC++（macOS）：WKWebView 平台视图；命令经 `post_platform_task` 到主线程，事件经 `napi_threadsafe_function` 回 JS。示例应用 `examples/webview` |
+| `extensions/webview` | 内置扩展 `momo:webview`。平台无关的插件核心（`webview_extension.cc`）+ WKWebView（macOS）/ WebView2（Windows）两个实现；命令经 `post_platform_task` 到主线程，事件经 `napi_threadsafe_function` 回 JS。示例应用 `examples/webview` |
 | `extensions/testing/lifecycle-addon` | 只供测试：记录宿主对它的每次调用，验证 §4 的关闭顺序 |
 
 测试：`engine/native_host/native_host_unittests.cc`（宿主能力表，只经 C 函数表调用）；`extensions/examples/examples_unittests.cc`（端到端：真实的引擎执行 JS，JS import 真实的 `.node`）；CTest `ExtensionSdk.StandaloneCxxBuild`（只凭 `<build>/sdk` 独立配置并编译 texture 示例）。

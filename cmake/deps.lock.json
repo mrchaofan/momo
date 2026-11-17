@@ -34,6 +34,18 @@
         "--ninja"
       ],
       "platforms": {}
+    },
+    "webview2": {
+      "version": "1.0.4314.35",
+      "source": "NuGet 包 Microsoft.Web.WebView2(头文件 build/native/include/ + 静态加载器 build/native/x64/WebView2LoaderStatic.lib)。仅 Windows: 内置扩展 momo:webview 的 WebView2 实现;运行时(Evergreen)由系统提供",
+      "platforms": {
+        "windows-x64": {
+          "url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4314.35/microsoft.web.webview2.1.0.4314.35.nupkg",
+          "sha256": "90778deb1b77e36292828b4b5833c9255c27533f40e0ddd55891ae718944edc4",
+          "size": 9818548,
+          "archive": "zip"
+        }
+      }
     }
   }
 }

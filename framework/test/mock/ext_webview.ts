@@ -1,5 +1,5 @@
 // 内置扩展 momo:webview 的原生插件(ext_webview.node)在 mock 宿主下的替身: 命令一律成功并记录,
-// 测试以原生侧的身份发事件和协议请求。接口见 extensions/webview/native/src/ext_webview.mm。
+// 测试以原生侧的身份发事件和协议请求。接口见 extensions/webview/native/src/webview_extension.cc。
 import { utf8Decode } from "../../packages/momo/src/index";
 
 interface Callbacks {

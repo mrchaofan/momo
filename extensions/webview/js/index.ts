@@ -2,10 +2,11 @@
 //   WebView / WebViewController   网页视图与对它的操作
 //   registerProtocol              自定义资源协议(app://… 之类), 用它加载应用自己的网页
 //   WebSession / CookieStore      会话(数据分区)与 cookie
-// 原生侧(native/src/ext_webview.mm, 一个 Node 插件)注册平台视图类型 "momo.webview";本文件是它唯一的调用方。
+// 原生侧(native/src/, 一个 Node 插件: 平台无关的 webview_extension.cc + macOS WKWebView / Windows WebView2)注册平台视图
+// 类型 "momo.webview";本文件是它唯一的调用方。
 // 构建产物是 <resources>/builtin/webview/{package.json, index.js, ext_webview.node}: 本文件编译成 index.js,
 // 插件就在它旁边——下面的相对导入按这个布局写。框架(momo:framework)同样由运行时提供, 两者是同一份。
-// 与原生侧之间的命令、事件、协议帧的格式见 ext_webview.mm 文件头;接口设计与平台映射见 README。
+// 与原生侧之间的命令、事件、协议帧的格式见 webview_extension.cc 文件头;接口设计与平台映射见 README。
 import {
   FocusNode, PlatformView, State, StatefulView, utf8Decode, utf8Encode,
   type BuildContext, type Key, type PlatformViewController, type View,
@@ -27,7 +28,7 @@ const native = addon as {
 
 export const kWebViewType = "momo.webview";
 
-async function call(target: { id: number } | { session: string }, method: string, args: Record<string, unknown> = {}): Promise<unknown> {
+async function call(target: { id: number } | { session: string } | null, method: string, args: Record<string, unknown> = {}): Promise<unknown> {
   const reply = JSON.parse(await native.command(JSON.stringify({ ...target, method, ...args }))) as Record<string, unknown>;
   if (typeof reply.error === "string") throw new Error(`momo.webview ${method}: ${reply.error}`);
   return reply.result ?? null;
@@ -123,7 +124,10 @@ function assetHandler(source: AssetProtocol): ProtocolHandler {
 export function registerProtocol(scheme: string, source: ProtocolSource): void {
   if (!/^[a-z][a-z0-9+.-]*$/.test(scheme)) throw new Error(`momo.webview: invalid protocol scheme "${scheme}" (lowercase letters, digits, + . -)`);
   if (kBuiltInSchemes.has(scheme)) throw new Error(`momo.webview: "${scheme}" is handled by the system WebView and cannot be registered`);
+  const declared = protocols.has(scheme);
   protocols.set(scheme, typeof source === "function" ? source : assetHandler(source));
+  // 原生侧可能要在启动系统 WebView 之前知道全部协议(WebView2 只在启动时登记)。
+  if (!declared) call(null, "declareProtocol", { scheme }).catch(() => {});
 }
 
 /**
@@ -454,7 +458,7 @@ export interface WebViewOptions {
   initScripts?: string[];
   /** 覆盖 User-Agent。 */
   userAgent?: string;
-  /** 允许用系统的网页检查器调试(macOS: Safari 的"开发"菜单)。默认关闭。 */
+  /** 允许用系统的网页检查器调试(macOS: Safari 的"开发"菜单;Windows: F12 / 右键"检查")。默认关闭。 */
   devtools?: boolean;
   onCreated?: ((controller: WebViewController) => void) | null;
   onCreateError?: ((error: unknown) => void) | null;
@@ -462,7 +466,7 @@ export interface WebViewOptions {
   focusNode?: FocusNode | null;
 }
 
-/** 系统 WebView(macOS: WKWebView), 作为平台视图嵌入。尺寸取约束最大值。 */
+/** 系统 WebView(macOS: WKWebView;Windows: WebView2), 作为平台视图嵌入。尺寸取约束最大值。 */
 export class WebView extends StatefulView {
   constructor(readonly opts: WebViewOptions = {}) {
     super(opts.key);
