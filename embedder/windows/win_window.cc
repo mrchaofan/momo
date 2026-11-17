@@ -258,7 +258,9 @@ void WinWindow::CreateSurface(uint32_t background_argb, std::shared_ptr<const Wi
         compositor.ok() ? WinD3DSurface::Create(hwnd_, std::move(d3d_device), *compositor, presents_)
                         : StatusOr<std::unique_ptr<WinD3DSurface>>(compositor.status());
     if (d3d.ok()) {
-      platform_views_ = std::make_unique<WinPlatformViews>(hwnd_, *compositor, this);
+      // Delegate 是私有基类: 在本类里转换, make_unique 里转换不可访问。
+      auto* views_delegate = static_cast<WinPlatformViews::Delegate*>(this);
+      platform_views_ = std::make_unique<WinPlatformViews>(hwnd_, *compositor, views_delegate);
       (*d3d)->SetPlatformViews(platform_views_.get());
       auto fallback = std::make_unique<FallbackSurface>(std::move(d3d).value(), std::move(software));
       fallback_surface_ = fallback.get();
