@@ -192,7 +192,7 @@ out/debug/embedder/Momo.app/Contents/MacOS/Momo --dev my-app
 | 菜单 | `Menu.buildFromTemplate([{ role: "appMenu" }, { label: "File", submenu: [{ label: "New", accelerator: "CmdOrCtrl+N", click }] }, { role: "editMenu" }])`；`Menu.setApplicationMenu(menu)` 设为应用菜单（macOS 菜单栏、Windows 每个窗口的菜单栏）；`await menu.popup({ widget, x, y })` 弹出上下文菜单。菜单项的 `label` / `enabled` / `visible` / `checked` 可随时修改；`role` 是由系统执行的标准动作（退出、复制、最小化…） |
 | 托盘 | `const tray = new Tray("trayTemplate.png")`（相对应用的 `assets/`；macOS 用 PNG，文件名以 `Template` 结尾为模板图像；Windows 用 `.ico`）；`tray.setToolTip(...)`、`tray.setContextMenu(menu)`、`tray.on("click", ...)`、`tray.destroy()` |
 | 无边框窗口 | `WindowChrome({ titleBarHeight, resizeBorder })` 隐藏系统标题栏；系统窗口控制按钮占用的区域见 `MediaQuery.of(ctx).windowControls`，两侧留白用 `windowControlsPadding`（macOS 在左、Windows 在右，一份代码适配）；哪里可以拖动窗口由应用决定：按下时调 `widget.startDrag(sequenceId)`（示例 `examples/webview/src/window_drag_area.ts`） |
-| 网页 | 内置扩展 `momo:webview`（macOS）：`import { WebView } from "momo:webview"`（见 [extensions/webview/README.md](extensions/webview/README.md)） |
+| 网页 | 内置扩展 `momo:webview`（macOS WKWebView、Windows WebView2）：`import { WebView } from "momo:webview"`（见 [extensions/webview/README.md](extensions/webview/README.md)） |
 | 调用原生代码 | 原生扩展：Node.js 原生插件，以普通 npm 包的形式使用（[docs/07](docs/07-extension-system.md)） |
 
 完整用法可参考 `examples/counter`、`examples/todo`、`examples/webview`，以及 `framework/test/` 下的测试用例。
@@ -251,4 +251,4 @@ CLI 是 npm 包 `@momo/cli`（命令 `momo`）；运行时用 `--runtime=` 或�
 | `examples/hello_frame` | `momo:ui` | 不用框架直接画动画帧；默认打进 `Momo.app`，无需构建 |
 | `examples/counter` | View | Material 计数器：按钮、主题、键盘快捷键 |
 | `examples/todo` | View | 输入框、添加/勾选/删除、列表滚动 |
-| `examples/webview` | View + `momo:webview` | 多窗口、多标签浏览器（macOS）：无边框窗口、标签拖拽、应用菜单 |
+| `examples/webview` | View + `momo:webview` | 多窗口、多标签浏览器：无边框窗口、标签拖拽、应用菜单 |

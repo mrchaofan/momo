@@ -45,13 +45,15 @@ add_custom_command(
   VERBATIM)
 add_custom_target(momo_ext_sdk_package ALL DEPENDS ${MOMO_EXT_SDK_BUILD_DIR}/.stamp)
 
-# 内置扩展 webview(macOS;ObjC++, 系统 WebView 作为平台视图嵌入, ARCHITECTURE.md §4.10): 运行时的一部分。插件直接输出到
-# 运行时自带模块的目录, 与它的 JS(framework/scripts/build_builtin.mjs 编译)放在一起: <builtin>/webview/。
-if(APPLE)
+# 内置扩展 webview(系统 WebView 作为平台视图嵌入, ARCHITECTURE.md §4.10;macOS WKWebView、Windows WebView2): 运行时的
+# 一部分。插件直接输出到运行时自带模块的目录, 与它的 JS(framework/scripts/build_builtin.mjs 编译)放在一起: <builtin>/webview/。
+if(APPLE OR WIN32)
   set(MOMO_EXTENSION_OUTPUT_DIR "${MOMO_BUILTIN_DIR}/webview")
   add_subdirectory(webview/native)
   unset(MOMO_EXTENSION_OUTPUT_DIR)
-  add_dependencies(momo_builtin ext_webview)
+  if(TARGET ext_webview)
+    add_dependencies(momo_builtin ext_webview)
+  endif()
 endif()
 
 # 示例扩展(三方扩展的样子): 各自是一个带原生插件的普通 Node 包, 不链接引擎的任何符号。产物在各自包的 build/ 下

@@ -19,10 +19,12 @@ add_library(momo_embedder_windows_portable STATIC
   windows/win_screen_layout.cc)
 target_link_libraries(momo_embedder_windows_portable PUBLIC momo_engine_platform momo_embedder_pointer)
 
-# surface 的平台无关部分: GPU → 软件回退(FallbackSurface)、呈现队列与拖拽缩放同步(PresentQueue)。
+# surface 的平台无关部分: GPU → 软件回退(FallbackSurface)、呈现队列与拖拽缩放同步(PresentQueue)、平台视图合成布局的
+# 几何(platform_view_geometry)。
 # 两个平台的窗口与 surface 实现都链接它;单测在所有平台运行。
 add_library(momo_embedder_surface STATIC
   common/fallback_surface.cc
+  common/platform_view_geometry.cc
   common/present_queue.cc)
 target_link_libraries(momo_embedder_surface PUBLIC momo_engine_platform)
 
@@ -50,10 +52,10 @@ set(MOMO_DEFAULT_APP "${PROJECT_SOURCE_DIR}/examples/hello_frame" CACHE PATH
 # 应用以 import "momo:framework" / "momo:webview" 使用它们, 它们不进应用的代码。构建到 ${MOMO_BUILTIN_DIR}/<name>/
 # (与 momo_headless、Momo.exe 同目录, 即它们的 builtin/;macOS 另拷进 Momo.app 的 Resources/builtin/)。
 # JS 由 framework/scripts/build_builtin.mjs 编译(需要 node 与 framework/ 下装好的 esbuild);内置扩展的原生插件
-# 由 extensions/ 直接输出到同一目录(目前只有 macOS 的 webview)。
+# 由 extensions/ 直接输出到同一目录(webview: macOS 与 Windows)。
 set(MOMO_BUILTIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/builtin" CACHE INTERNAL "Runtime built-in JS modules")
 set(_momo_builtin_modules framework)
-if(APPLE)
+if(APPLE OR WIN32)
   list(APPEND _momo_builtin_modules webview)
 endif()
 find_program(MOMO_NODE node)
@@ -165,11 +167,13 @@ elseif(WIN32)
   add_library(momo_embedder_windows STATIC
     windows/win_app.cc
     windows/win_caption_buttons.cc
+    windows/win_compositor.cc
     windows/win_displays.cc
     windows/win_menu.cc
     windows/win_keyboard.cc
     windows/win_native_loop.cc
     windows/win_platform_integration.cc
+    windows/win_platform_views.cc
     windows/win_services.cc
     windows/win_surface_d3d.cc
     windows/win_surface_software.cc
@@ -179,7 +183,8 @@ elseif(WIN32)
     windows/win_window.cc)
   target_link_libraries(momo_embedder_windows
     PUBLIC momo_engine_platform momo_embedder_pointer momo_embedder_windows_portable momo_embedder_surface
-    PRIVATE user32 gdi32 dwmapi imm32 shcore shell32 ole32 advapi32 winmm d3d12 dxgi)
+           momo_ext_sdk  # 平台视图的 Windows 契约(MomoWinPlatformView, momo_host.h)
+    PRIVATE user32 gdi32 dwmapi imm32 shcore shell32 ole32 advapi32 winmm d3d12 dxgi dcomp)
   target_compile_definitions(momo_embedder_windows PRIVATE ${_momo_win_defines})
 
   if(MOMO_BUILD_TESTS)
@@ -272,6 +277,7 @@ if(MOMO_BUILD_TESTS)
     common/application_unittests.cc
     common/key_codes_unittests.cc
     common/menu_channel_unittests.cc
+    common/platform_view_geometry_unittests.cc
     common/pointer_dispatcher_unittests.cc
     common/surface_unittests.cc
     common/window_channel_unittests.cc)

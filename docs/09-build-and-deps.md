@@ -22,6 +22,7 @@ Skia 与 Node 从源码构建成本很高，策略是**预编译产物**，版�
 |---|---|---|---|
 | Skia（含 skparagraph / skshaper / skunicode） | m144（JetBrains skia-pack） | 下载预编译包（`macos-arm64`、`windows-x64`） | 静态库；ICU 符号带后缀，不与 Node 的 ICU 冲突；含 Metal 后端，Windows 包带 Direct3D 12 |
 | libnode（含 V8、libuv、ICU） | Node.js 26.13.0（V8 14.6、libuv 1.52、ICU 78） | **源码构建**（`tools/build_libnode.py`；Node 官方不发布 libnode） | 单个 `libnode.*.dylib` + 头文件。Node 默认配置：pointer compression 关、sandbox 关（与 Node 原生插件 ABI 一致）；ICU 数据编入二进制 |
+| WebView2 SDK | 1.0.4314.35（NuGet `Microsoft.Web.WebView2`） | 下载（仅 `windows-x64`） | 头文件 + 静态加载器 `WebView2LoaderStatic.lib`；只有 `momo:webview` 的 Windows 插件用它。运行时（Evergreen）由系统提供 |
 | googletest | 1.15.2 | CMake FetchContent（`cmake/momo_dependencies.cmake`，仅 `MOMO_BUILD_TESTS`） | — |
 | esbuild、typescript（npm） | 见 `framework/package.json` | `npm install` | 编译运行时自带的 JS 模块、框架测试的打包、类型检查 |
 
@@ -42,7 +43,7 @@ Skia 与 Node 从源码构建成本很高，策略是**预编译产物**，版�
 | `momo_builtin` | 运行时自带的 JS 模块 `<build>/embedder/builtin/<name>/{package.json, index.js}`（§4.1）；`momo_app_builtin` 把它同步进 `Momo.app` |
 | `momo_headless` | 无窗口宿主（离屏软件 surface）：冒烟测试、在真实引擎上跑框架测试 |
 | `momo_ext_sdk_package` | 扩展 SDK `<build>/sdk/`（docs/07 §5） |
-| `ext_hello` / `ext_texture` / `ext_webview` | 示例三方扩展（产物在各自包的 `build/*.node`）；内置扩展 webview 的插件（macOS，输出到 `builtin/webview/`） |
+| `ext_hello` / `ext_texture` / `ext_webview` | 示例三方扩展（产物在各自包的 `build/*.node`）；内置扩展 webview 的插件（macOS / Windows，输出到 `builtin/webview/`） |
 | `*_unittests` | `momo_base_unittests`、`momo_engine_unittests`、`momo_embedder_unittests`（mock 平台）、`momo_embedder_macos_unittests`、`momo_embedder_windows_portable_unittests`、`momo_extension_examples_unittests` |
 
 ## 4. JS 的构建与应用打包
@@ -65,7 +66,7 @@ JS 分三块，各有各的构建，互不相干：
 Momo.app/Contents/Resources/        # Windows: Momo.exe 同级;momo_headless: 可执行文件同级
 ├── builtin/
 │   ├── framework/{package.json, index.js}                    # 框架
-│   └── webview/{package.json, index.js, ext_webview.node}    # 内置扩展(仅 macOS): JS 与原生插件在同一目录
+│   └── webview/{package.json, index.js, ext_webview.node}    # 内置扩展: JS 与原生插件在同一目录
 └── app/                                                      # 应用
 ```
 

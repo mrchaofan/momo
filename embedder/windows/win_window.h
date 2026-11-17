@@ -19,11 +19,15 @@
 //    delegate 上报(去重);WM_ACTIVATEAPP 交给 WinApp(应用级前台状态)。
 //  - 深色模式: DWMWA_USE_IMMERSIVE_DARK_MODE 与宿主绘制的控制按钮跟随系统"应用模式"。
 //  - 光标: WM_SETCURSOR(仅客户区)+ LoadCursorW;kHidden = SetCursor(NULL);缩放边框、控制按钮的光标归系统。
-//  - Surface: WinD3DSurface(Direct3D 12 交换链, 失败可回退软件);无 D3D12 设备或环境变量
-//    MOMO_SOFTWARE_RENDERING=1 时直接用 GDI 软件 surface(WinSoftwareSurface)。拖拽缩放时在 WM_SIZE 里等一帧
-//    新尺寸的内容(SynchronizeLiveResize, 同 macOS)。
+//  - Surface: WinD3DSurface(Direct3D 12 组合交换链, 挂在窗口的 DirectComposition 树 WinCompositor 上, 失败可回退
+//    软件);无 D3D12 设备或环境变量 MOMO_SOFTWARE_RENDERING=1 时直接用 GDI 软件 surface(WinSoftwareSurface)。
+//    拖拽缩放时在 WM_SIZE 里等一帧新尺寸的内容(SynchronizeLiveResize, 同 macOS)。
+//  - 平台视图(WinPlatformViews, 仅 D3D surface): 视图的内容是同一棵 DirectComposition 树上的 visual;命中按最近
+//    呈现的帧(HitTest), 派发器交给视图的鼠标消息经 SendToPlatformView 转交;指针归视图时光标取视图的光标;视图持有
+//    键盘焦点时它的快捷键先经应用菜单。焦点在视图(本窗口的子窗口)与窗口之间移动不算窗口失去焦点。
 //  - 应用菜单(win_menu.h): 菜单栏由 UpdateMenuBar 挂上;菜单栏的 WM_COMMAND 与按键的快捷键匹配交给 WinMenus。
-//  - 不支持(对 JS 回复 unimplemented): 平台视图、非激活窗口(non_activating 按普通窗口处理)。
+//  - 非激活窗口(WindowOptions::non_activating): 显示时不抢走前台窗口的激活(SW_SHOWNOACTIVATE);用户点击它或
+//    Activate 时照常激活(否则收不到键盘)。Windows 没有"激活应用"与"激活窗口"之分, 只做到这一步。
 // 重入: 拖拽缩放时的等帧(PresentQueue::SynchronizeResize)只执行 platform EventLoop 的任务, 不析构对象, 返回时
 // 窗口一定还在。系统拖动是系统模态循环, 期间可能执行任意任务包括退出: 返回后先检查 alive_, 窗口已销毁就不再
 // 访问本对象。
@@ -40,19 +44,21 @@
 #include "embedder/common/present_queue.h"
 #include "embedder/windows/win_frame.h"
 #include "embedder/windows/win_mouse_events.h"
+#include "embedder/windows/win_platform_views.h"
 #include "embedder/windows/win_util.h"
 
 namespace momo::embedder::windows {
 
 class WinApp;
 class WinCaptionButtons;
+class WinCompositor;
 class WinD3DDevice;
 class WinDisplays;
 class WinMenus;
 class WinSoftwareSurface;
 class WinTextInput;
 
-class WinWindow final : public PlatformWindow, public PointerWindow {
+class WinWindow final : public PlatformWindow, public PointerWindow, private WinPlatformViews::Delegate {
  public:
   // 进程级的输入、显示器与应用对象(WinPlatformIntegration 持有, 比全部窗口活得久)。
   struct Context {
@@ -101,6 +107,10 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   void EndMoveLoop() override;
   Rect screen_frame() const override;
   Status SetPosition(Point top_left) override;
+  void AddPlatformView(int64_t view_id, void* native_view) override;
+  void RemovePlatformView(int64_t view_id) override;
+  void FocusPlatformView(int64_t view_id) override;
+  void BlurPlatformView(int64_t view_id) override;
 
   // PointerWindow(PointerDispatcher 的执行端, 见 win_window.cc"指针")
   std::optional<int64_t> HitTest(Point screen) const override;
@@ -155,6 +165,14 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
 
   // ---- 键盘 ----
   void OnKey(UINT message, WPARAM wparam, LPARAM lparam);
+  // hwnd 是本窗口里的平台视图(的子窗口)。
+  bool IsPlatformViewWindow(HWND hwnd) const;
+
+  // ---- WinPlatformViews::Delegate ----
+  void OnPlatformViewFocused(int64_t view_id) override;
+  void OnPlatformViewCursorChanged(int64_t view_id) override;
+  bool OnPlatformViewKeyDown(UINT message, WPARAM wparam, LPARAM lparam) override;
+  void OnPlatformViewGeometryChanged() override;
 
   // 存活标记: 可能重入的调用之前取 weak_ptr, 返回后判断本对象是否已被销毁。
   std::shared_ptr<int> alive_ = std::make_shared<int>(0);
@@ -169,6 +187,7 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   bool minimized_ = false;
   bool in_size_move_ = false;   // 系统的移动/缩放模态循环中
   bool active_ = false;         // 窗口激活(控制按钮外观)
+  bool non_activating_ = false; // 显示时不激活(WindowOptions::non_activating)
   bool dark_ = false;
   Size min_size_;               // 逻辑点
   WindowResizeOptions resize_options_;
@@ -181,6 +200,8 @@ class WinWindow final : public PlatformWindow, public PointerWindow {
   std::shared_ptr<PresentQueue> presents_;
   // D3D + 软件回退(FallbackSurface), 或没有 D3D 设备时单独的软件 surface。
   std::unique_ptr<platform::RenderSurface> surface_;
+  // 平台视图宿主(仅 D3D surface;为空 = 不支持)。surface 在 raster 线程引用它, 析构时先于它释放 surface。
+  std::unique_ptr<WinPlatformViews> platform_views_;
   FallbackSurface* fallback_surface_ = nullptr;     // surface_(若为 D3D + 软件;非拥有)
   WinSoftwareSurface* software_surface_ = nullptr;  // surface_ 里的软件 surface(非拥有;WM_PAINT 用)
   std::unique_ptr<WinTextInput> text_input_;

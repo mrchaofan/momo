@@ -626,13 +626,14 @@ JS:  Menu(内容 + click 回调)── 序列化 ──► momo/menu setApplicat
 | `MacMouseInput` | `WinMouseInput` | 同一个 `PointerDispatcher`；本窗口是 momo 序列的接收方时持有 `SetCapture` |
 | `NSScreen` 坐标 | `WinScreenLayout`、`WinDisplays` | 混合 DPI 显示器布局成全局逻辑点（主屏左上原点） |
 | `mac_key_mapping` | `win_key_mapping`（扫描码表）、`win_keyboard`（消息 → `KeyData`） | 编码规则共用 `key_codes.h` |
-| `MacMetalSurface` / `MacSoftwareSurface` | `WinD3DSurface`（D3D12 flip-model 交换链）/ `WinSoftwareSurface`（GDI） | 同一个 `FallbackSurface`；缩放循环里的 `WM_SIZE` 经 `PresentQueue::SynchronizeResize` 等帧 |
+| `MacMetalSurface` / `MacSoftwareSurface` | `WinD3DSurface`（D3D12 组合交换链，挂在窗口的 DirectComposition 树上）/ `WinSoftwareSurface`（GDI） | 同一个 `FallbackSurface`；缩放循环里的 `WM_SIZE` 经 `PresentQueue::SynchronizeResize` 等帧 |
 | `MacVsyncDisplayLink` | `WinVsyncDwm` | `DwmFlush` 线程只投递；节拍是全局的，不跟随窗口 |
 | `MacTextInput` | `WinTextInput` | IMM32 |
+| `MomoPlatformViews`、`MomoPlatformViewInputRouter` | `WinPlatformViews`、`WinCompositor` | 平台视图，见 §4.10"Windows"；几何计算两边共用 `embedder/common/platform_view_geometry.h` |
 | `MacMenus` / `MacTray` | `WinMenus` | 应用菜单是每个窗口的菜单栏（隐藏了标题栏的窗口没有）；`TrackPopupMenuEx`；`Shell_NotifyIcon`（只支持 `.ico`） |
 | `NodeBindings`（posix） | `engine/runtime/node_bindings_win.cc` | uv poll 线程的 IOCP 版本 |
 
-Windows 不支持：平台视图（契约已就绪，需要子 HWND + 覆盖层合成）、非激活窗口（`non_activating` 按普通窗口处理）。
+非激活窗口（`non_activating`）在 Windows 上只做到显示时不抢走前台窗口的激活（`SW_SHOWNOACTIVATE`）；用户点击照常激活，否则收不到键盘。
 
 ---
 
@@ -944,7 +945,7 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 
 原生扩展 = Node.js 原生插件（`.node`，Node-API）+ JS 门面。JS 与原生之间只用 Node-API；引擎自己的能力（平台线程、外部纹理、平台视图）以一张很小的**宿主能力表**（`extensions/sdk/include/momo/momo_host.h`，稳定 C ABI，5 个函数，只在末尾追加）提供，由 `NativeHost` 实现，地址经 `momo:services` 的 `nativeHost`（BigInt）交给 JS，再由 JS 传给插件。没有 manifest，宿主不知道有哪些扩展，也不加载任何东西：加载就是一次普通的 `import`（模块钩子把 `.node` 交给 Node 的 `require`）。
 
-- **内置扩展**：运行时自带的 JS 模块（§4.6），JS 与 `.node` 在 `<builtin_dir>/<name>/` 同一个目录里，应用以 `momo:<name>` 导入。目前只有 `momo:webview`（macOS）。
+- **内置扩展**：运行时自带的 JS 模块（§4.6），JS 与 `.node` 在 `<builtin_dir>/<name>/` 同一个目录里，应用以 `momo:<name>` 导入。目前只有 `momo:webview`（macOS WKWebView、Windows WebView2）。
 - **三方扩展**：一个普通的 npm 包，由 Node 从应用的 `node_modules` 加载。Momo 对它没有专门的配置项或概念。
 
 引擎一侧要保证的只有两件事：
@@ -956,7 +957,7 @@ native → JS:  hub.SendToJs(channel, bytes)（任意线程）
 
 ### 4.10 平台视图
 
-把扩展创建的**系统原生视图**（macOS `NSView`，如 `WKWebView`）嵌进 momo 画面，与 momo 内容按绘制顺序交替叠放。思路与 Flutter 的 hybrid composition 相同：原生视图仍由系统合成，momo 把自己的画面切成多层透明图层夹住它。
+把扩展创建的**系统原生视图**（macOS `NSView`，如 `WKWebView`；Windows 为 DirectComposition 内容，如 WebView2）嵌进 momo 画面，与 momo 内容按绘制顺序交替叠放。思路与 Flutter 的 hybrid composition 相同：原生视图仍由系统合成，momo 把自己的画面切成多层透明图层夹住它。
 
 ```
 JS(ui)                           raster                                   platform(主线程)
@@ -976,6 +977,7 @@ PlatformView                     Composition::Build(LayerTree)            MomoPl
 - **分片**（`engine/graphics/composition.{h,cc}`）：容器层的变换/裁剪/saveLayer 同步到全部分片，叶子只画进当前分片，遇到 `PlatformViewLayer` 切到下一个分片。每个分片记录叶子的设备空间范围（overlay 图层只覆盖有内容的区域）与可命中区域（§3.12）。
 - **Rasterizer**：层树含平台视图且 surface 支持时走合成路径；视图消失后再走一帧"空布局"让宿主隐藏视图，随后回到普通路径。surface 不支持时视图不显示、其余照常（只告警一次）。
 - **macOS**（`mac_platform_views.mm`、`mac_surface_metal.mm`）：内容视图上挂一个铺满的宿主视图，每个平台视图一个容器（可见区域 + 圆角裁剪 + alpha），每个 overlay 一个承载 `CAMetalLayer` 的视图；z 序只用子视图顺序表达，变化时 `sortSubviews` 原地重排（移除再加入会让原生视图丢失第一响应者）。合成模式下所有 `CAMetalLayer` `presentsWithTransaction = YES`，"几何 + present"经 `PresentQueue` 投递到主线程的同一个事务，原生视图与 momo 画面同帧生效。
+- **Windows**（`win_platform_views.cc`、`win_surface_d3d.cc`、`win_compositor.cc`）：窗口内容区是一棵 DirectComposition 树（`WinCompositor`）：root 之下依次是主帧交换链、每个平台视图的容器 visual（位置 + 圆角裁剪 + 透明度，其下是交给扩展的挂载点）与每个 overlay 的透明交换链，z 序只用 root 的子 visual 顺序表达。扩展的视图是 `MomoWinPlatformView`（`momo_host.h`），WebView2 以 visual hosting 方式把自己的 visual 挂在挂载点下。合成帧在 raster 线程呈现全部交换链，再在同一次 DirectComposition 提交里排好 z 序与容器几何（DirectComposition 线程安全；`WinCompositor::Update` 互斥，保证每次提交是完整的一批），原生视图与 momo 画面落在同一个 DWM 帧；随后经 `PresentQueue` 在 platform 线程执行 `WinPlatformViews::OnPresented`：哪个窗口的合成帧里出现视图就 `attach` 到哪个窗口、更新内容尺寸（因此比位置晚一次线程跳转）、焦点规则、命中几何。软件回退时整棵树摘下，平台视图停用。
 - **生命周期**：视图由 JS 经 `momo/platform_views`（`create` / `dispose` / `focus` / `blur`；宿主 → JS `focused`）请求，Shell 在 platform 线程调用扩展注册的工厂（`PlatformViewRegistry`）。平台视图表是全局的：原生视图挂在哪个窗口由合成帧决定，所以含平台视图的子树可以用 `GlobalKey` 换窗口而不重建。
 
 **输入**：原生事件的接收方由宿主的 `PointerDispatcher` 在主线程按已呈现帧的几何同步决定（§3.12；同 Chromium 合成器线程用已提交帧的命中数据处理输入）。
@@ -998,7 +1000,9 @@ NSEvent ─► MomoWindow -sendEvent: ─► MacWindow::SendEvent ─► MacMous
 - 按在 momo 内容上**不**取回第一响应者：框架里只有输入框会在点击时请求焦点，按钮、标签不影响平台视图的焦点。
 - 原生视图内部聚焦在哪个元素由它自己保持。在此之上的策略属于应用（`WebViewController.focus()` / `blur()`；浏览器示例按标签记忆焦点）。
 
-**限制**：只支持平移与正向缩放（旋转/斜切按包围盒近似）；圆角只支持与可见区域贴合的一层；可命中区域按包围盒记录（圆形按钮的四角也算）；框架的手势识别器不与原生视图竞争（落在网页上的事件 momo 看不到）；软件 surface 不支持；Windows 未实现。
+**Windows 的输入与焦点**：规则与上面相同，执行方式不同。WebView2 在 visual hosting 下不接收系统的鼠标消息：派发器按 `WinPlatformViews::ViewAt`（最近呈现的帧，`platform_view_geometry.h` 的 `PlatformViewAt`）判定接收方，交给视图的消息由窗口经 `MomoWinPlatformView::mouse` 转交（`SendMouseInput`），按下序列期间窗口持有 `SetCapture`；悬停的视图变化时离开的视图收到 `WM_MOUSELEAVE`。指针归视图时 `WM_SETCURSOR` 取视图的光标。视图持有键盘焦点时它的快捷键先经应用菜单（`AcceleratorKeyPressed` → `key_down` → `WinMenus::HandleKeyDown`）。焦点在窗口与视图（窗口的子窗口）之间移动不上报为窗口焦点变化。
+
+**限制**：只支持平移与正向缩放（旋转/斜切按包围盒近似）；圆角只支持与可见区域贴合的一层；可命中区域按包围盒记录（圆形按钮的四角也算）；框架的手势识别器不与原生视图竞争（落在网页上的事件 momo 看不到）；软件 surface 不支持。
 
 ---
 

@@ -1,10 +1,10 @@
 # momo:webview
 
-系统 WebView(macOS `WKWebView`)作为**平台视图**嵌入 momo 界面的**内置扩展**:随运行时提供, 应用直接
-`import { WebView } from "momo:webview"`, 不需要安装或配置任何东西(docs/07 §1)。目前只有 macOS。平台视图的原理见
+系统 WebView(macOS `WKWebView`、Windows WebView2)作为**平台视图**嵌入 momo 界面的**内置扩展**:随运行时提供, 应用直接
+`import { WebView } from "momo:webview"`, 不需要安装或配置任何东西(docs/07 §1)。Windows 的实现未在 Windows 上运行验证。平台视图的原理见
 `ARCHITECTURE.md` §4.10, 扩展侧接口见 `docs/07-extension-system.md` §3。
 
-- 原生部分 `native/src/ext_webview.mm`:一个 Node 插件。与 JS 之间用 Node-API, 与引擎之间用宿主能力表(`momo_host.h`):注册视图类型 `momo.webview`, 命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。线上协议在文件头。
+- 原生部分 `native/src/`:一个 Node 插件。平台无关的 `webview_extension.cc`(Node-API 导出、命令协议与线上格式、自定义协议的帧与在途请求、cookie 的筛选;线上格式在它的文件头)经 `webview_platform.h` 的契约(`WebViewPlatform` / `WebView` / `WebViewHost`)驱动系统 WebView:`webview_mac.mm`(WKWebView)、`webview_win.cc`(WebView2)。与引擎之间用宿主能力表(`momo_host.h`):注册视图类型 `momo.webview`, 命令经 `post_platform_task` 到主线程, 事件经 `napi_threadsafe_function` 回 JS。
 - JS 门面 `js/index.ts`(唯一的入口):下面的全部接口。它 `import "momo:framework"`(与应用拿到的是同一份), 按相对路径 `./ext_webview.node` 加载插件。
 - 构建:随运行时一起(CMake target `momo_builtin` 与 `ext_webview`), JS 编译成 `<构建目录>/embedder/builtin/webview/index.js`, 插件输出到同一个目录的 `ext_webview.node`, 再同步进 `Momo.app/Contents/Resources/builtin/webview/`(docs/09 §4.1)。这里没有 `package.json`, 它不是一个 npm 包。
 - 类型:目前没有单独发布的类型包;仓库内靠 `framework/tsconfig.json` 的 `paths` 把 `momo:webview` 指到 `js/index.ts`。
@@ -113,19 +113,25 @@ window.momo.addEventListener("message", (e) => console.log(e.data)); // 应用 �
 
 ## 平台映射
 
-| 接口 | WKWebView(已实现) | WebView2(设计依据, 未实现) |
+| 接口 | WKWebView | WebView2(未在 Windows 上验证) |
 | --- | --- | --- |
-| `registerProtocol` | `WKWebViewConfiguration.setURLSchemeHandler`(创建视图前) | `CoreWebView2CustomSchemeRegistration`(创建环境前)+ `WebResourceRequested` |
+| `registerProtocol` | `WKWebViewConfiguration.setURLSchemeHandler`(创建视图前) | `CoreWebView2CustomSchemeRegistration`(创建环境前, 声明即登记)+ `WebResourceRequested` |
 | `WebSession.default` | `WKWebsiteDataStore.default()` | 默认 profile |
-| `WebSession.persistent(name)` | `WKWebsiteDataStore(forIdentifier:)`(macOS 14+) | `ControllerOptions.ProfileName` |
+| `WebSession.persistent(name)` | `WKWebsiteDataStore(forIdentifier:)`(macOS 14+) | `ControllerOptions.ProfileName`(按名字派生) |
 | `WebSession.ephemeral()` | `.nonPersistent()` | `ControllerOptions.IsInPrivateModeEnabled` |
-| `cookies.*` | `WKHTTPCookieStore` | `CoreWebView2CookieManager` |
-| `clearData` | `removeData(ofTypes:modifiedSince:)` | `Profile.ClearBrowsingDataAsync` |
+| `cookies.*` | `WKHTTPCookieStore` | `CoreWebView2CookieManager`(没有 WebView 时由会话的隐藏 WebView 提供) |
+| `clearData` | `removeData(ofTypes:modifiedSince:)` | `ICoreWebView2Profile2::ClearBrowsingData` |
 | `initScripts` | `WKUserScript`(atDocumentStart) | `AddScriptToExecuteOnDocumentCreated` |
 | `window.momo` 消息 | `WKScriptMessageHandler` + 注入脚本 | `chrome.webview.postMessage` / `WebMessageReceived` + 注入脚本 |
 | `userAgent` | `customUserAgent` | `Settings.UserAgent` |
 | `devtools` | `isInspectable` | `Settings.AreDevToolsEnabled` |
 | `onNewWindowRequested` | `WKUIDelegate` createWebView 返回 nil | `NewWindowRequested`(`Handled = true`) |
+| `find` | `findString:withConfiguration:` | 页面的 `window.find` |
+| 嵌入 | `NSView` 挂进窗口的视图层级 | visual hosting:`CompositionController` 的 visual 挂在宿主的 DirectComposition 树上, 鼠标经 `SendMouseInput` 由宿主转交 |
+
+Windows 与 macOS 的差异:`loadHtml` 的 `baseUrl` 不生效(文档源为 `about:blank`, 消息的 origin 为 `"null"`);加载进度只有
+开始 / 内容开始加载 / 完成三档;协议必须在 WebView2 启动(第一个 WebView 或第一次会话操作)之前声明, 之后声明的协议在本进程里
+打不开;运行时依赖系统的 WebView2 Runtime(Windows 11 自带)。数据目录是 `%LOCALAPPDATA%\<exe 名>\WebView2`。
 
 ## 生命周期
 
@@ -147,4 +153,5 @@ WKWebView 要求在创建视图之前。导航拦截(允许/拒绝某次跳转)�
 node framework/packages/cli/momo.mjs build examples/webview --runtime=out/debug/embedder/Momo.app   # 打包成 examples/webview/dist/MomoBrowser.app
 ```
 
-只实现了 macOS;Windows 需要 embedder 侧的平台视图支持(契约已就绪, Windows 宿主未实现)。
+Windows 上插件需要 WebView2 SDK(`python3 tools/fetch_deps.py webview2`, 锁定在 `cmake/deps.lock.json`), 链接静态加载器,
+不需要随应用分发 `WebView2Loader.dll`。

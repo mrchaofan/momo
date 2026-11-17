@@ -1,11 +1,11 @@
 #include "embedder/macos/mac_platform_views.h"
 
 #include <algorithm>
-#include <cmath>
 #include <map>
 #include <optional>
 
 #include "base/logging.h"
+#include "embedder/common/platform_view_geometry.h"
 #include "embedder/macos/mac_platform_view_input.h"
 
 using momo::engine::platform::CompositionLayout;
@@ -16,37 +16,6 @@ namespace {
 // 物理像素矩形 → 宿主视图(flipped, 左上原点)的点矩形。
 NSRect ToPoints(const momo::Rect& r, CGFloat scale) {
   return NSMakeRect(r.x / scale, r.y / scale, r.width / scale, r.height / scale);
-}
-
-std::optional<momo::Rect> VisibleRect(const PlatformViewGeometry& g) {
-  std::optional<momo::Rect> visible = g.frame;
-  for (const auto& clip : g.clips) {
-    if (!visible) {
-      break;
-    }
-    visible = visible->Intersect(clip.rect);
-  }
-  if (visible && (visible->width <= 0 || visible->height <= 0)) {
-    return std::nullopt;
-  }
-  return visible;
-}
-
-// 作用在可见区域上的圆角: 取与可见区域重合(误差 1px 内)的祖先圆角裁剪中最大的半径。
-// 多层不同圆角或圆角裁剪不贴合可见区域时只能近似(容器只有一个 cornerRadius)。
-double CornerRadius(const PlatformViewGeometry& g, const momo::Rect& visible) {
-  double radius = 0;
-  for (const auto& clip : g.clips) {
-    if (clip.radius <= 0) {
-      continue;
-    }
-    if (std::abs(clip.rect.x - visible.x) <= 1 && std::abs(clip.rect.y - visible.y) <= 1 &&
-        std::abs(clip.rect.right() - visible.right()) <= 1 &&
-        std::abs(clip.rect.bottom() - visible.bottom()) <= 1) {
-      radius = std::max(radius, clip.radius);
-    }
-  }
-  return radius;
 }
 
 // sortSubviewsUsingFunction 的比较函数: context 为 view → 合成顺序(越大越靠上)。
@@ -371,7 +340,7 @@ static int64_t gFocusedView = 0;
     auto it = _containers.find(g.view_id);
     if (it != _containers.end()) {
       MomoPlatformViewContainer* container = it->second;
-      const std::optional<momo::Rect> visible = VisibleRect(g);
+      const std::optional<momo::Rect> visible = momo::embedder::PlatformViewVisibleRect(g);
       const bool attaching = visible && container.native.superview != container;
       if (attaching) {
         // 接管原生视图(可能正挂在另一个窗口里): 若它持有键盘焦点, 先交还给原窗口的内容视图(框架的焦点仍在
@@ -397,7 +366,8 @@ static int64_t gFocusedView = 0;
         container.frame = ToPoints(*visible, scale);
         container.native.frame = ToPoints(g.frame.Offset(-visible->x, -visible->y), scale);
         container.alphaValue = static_cast<CGFloat>(std::clamp(g.opacity, 0.0, 1.0));
-        container.layer.cornerRadius = static_cast<CGFloat>(CornerRadius(g, *visible) / scale);
+        container.layer.cornerRadius =
+            static_cast<CGFloat>(momo::embedder::PlatformViewCornerRadius(g, *visible) / scale);
         rank[container] = z++;
         std::vector<NSRect> occluders;
         occluders.reserve(g.occluders.size());

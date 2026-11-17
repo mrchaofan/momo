@@ -40,9 +40,9 @@ typedef void (*MomoTaskFn)(void* user_data);
 // ---------- 平台视图(ARCHITECTURE.md §4.10) ----------
 
 // 两个回调都在 platform 线程执行(原生视图只能在主线程创建/销毁)。
-// create: 为 view_id 创建原生视图(macOS: NSView*;Windows: HWND), params 为 JS 传入的创建参数
-//   (仅回调期间有效)。返回 NULL 表示失败。返回的视图归插件所有: 宿主只借用该指针, 挂进窗口期间由
-//   embedder 额外持有引用, 直到 dispose。
+// create: 为 view_id 创建原生视图(macOS: NSView*;Windows: MomoWinPlatformView*, 见下), params 为 JS 传入的
+//   创建参数(仅回调期间有效)。返回 NULL 表示失败。返回的视图归插件所有: 宿主只借用该指针(macOS 挂进窗口期间
+//   额外持有引用), 直到 dispose。
 //   macOS 惯用法: return (void*)CFBridgingRetain(view);  dispose 中 CFBridgingRelease(native_view)。
 // dispose: 宿主已把视图移出窗口;插件在此释放它。每个成功的 create 恰好对应一次 dispose
 //   (JS 销毁它、或引擎关闭时)。
@@ -56,6 +56,46 @@ typedef struct MomoPlatformViewFactory {
   MomoPlatformViewDisposeFn dispose;
   void* user_data;
 } MomoPlatformViewFactory;
+
+// ---------- Windows 的平台视图 ----------
+//
+// Windows 上视图的内容经 DirectComposition 合成(WebView2 的 visual hosting 就是为此设计的): 宿主为视图准备一个
+// IDCompositionVisual 作为内容的挂载点, 视图把自己的 visual 挂在它下面;位置、裁剪、透明度、z 序以及与 momo
+// 画面的同帧合成都由宿主完成。输入不经系统投递: 宿主的指针派发(ARCHITECTURE.md §3.12)决定接收方后, 把鼠标
+// 消息交给视图。全部回调都在 platform 线程。
+
+// 宿主一侧(视图 → 宿主)。context 由宿主给出;在下一次 attach 之前有效。
+typedef struct MomoWinPlatformViewSite {
+  size_t struct_size;
+  void* context;
+  // 视图改动了挂载点之下的 visual 树(如 WebView2 设置 RootVisualTarget): 请宿主提交(IDCompositionDevice::Commit)。
+  void (*commit)(void* context);
+  // 视图因用户操作取得了键盘焦点。
+  void (*focused)(void* context);
+  // 视图的光标变了(宿主在指针归它时向 cursor 取光标)。
+  void (*cursor_changed)(void* context);
+  // 视图持有键盘焦点时的按下(WM_KEYDOWN / WM_SYSKEYDOWN 的参数): 宿主先按应用菜单的快捷键处理;
+  // 返回 true 表示已处理, 视图不再处理这次按键。
+  bool (*key_down)(void* context, uint32_t message, uintptr_t wparam, intptr_t lparam);
+} MomoWinPlatformViewSite;
+
+// 视图一侧(宿主 → 视图): create 的返回值, 归插件所有, 到 dispose 为止有效。
+typedef struct MomoWinPlatformView {
+  size_t struct_size;
+  void* user_data;
+  // 挂到顶层窗口 hwnd(HWND), 内容挂在 visual(IDCompositionVisual*)之下;二者为 NULL = 从窗口摘下。
+  // 同一个视图之后可以挂到另一个窗口(换窗口时宿主直接以新窗口调用, 不先摘下)。
+  void (*attach)(void* user_data, void* hwnd, void* visual, const MomoWinPlatformViewSite* site);
+  // 内容尺寸(物理像素)。
+  void (*set_size)(void* user_data, int32_t width, int32_t height);
+  // 鼠标消息(WM_MOUSEMOVE、WM_LBUTTONDOWN… WM_MOUSEWHEEL、WM_MOUSELEAVE), wparam 同 Win32;x / y 为视图内容
+  // 坐标(物理像素)。按下序列与悬停由宿主维护: 视图收到的就是它该处理的全部。
+  void (*mouse)(void* user_data, uint32_t message, uintptr_t wparam, int32_t x, int32_t y);
+  // 取得键盘焦点(框架的焦点到了这个视图)。交还由宿主完成(SetFocus 到窗口)。
+  void (*focus)(void* user_data);
+  // 当前光标(HCURSOR);NULL = 箭头。
+  void* (*cursor)(void* user_data);
+} MomoWinPlatformView;
 
 // ---------- 宿主能力表 ----------
 //

@@ -17,6 +17,7 @@
 #include "base/logging.h"
 #include "embedder/windows/win_app.h"
 #include "embedder/windows/win_caption_buttons.h"
+#include "embedder/windows/win_compositor.h"
 #include "embedder/windows/win_displays.h"
 #include "embedder/windows/win_keyboard.h"
 #include "embedder/windows/win_menu.h"
@@ -103,6 +104,7 @@ WinWindow::WinWindow(const WindowOptions& options, WindowDelegate* delegate, con
       displays_(context.displays),
       app_(context.app),
       menus_(context.menus),
+      non_activating_(options.non_activating),
       min_size_(options.min_size) {
   resize_options_.resizable = options.resizable;
 }
@@ -120,8 +122,9 @@ WinWindow::~WinWindow() {
     if (capturing_ && ::GetCapture() == hwnd_) {
       ::ReleaseCapture();
     }
-    // 交换链先于窗口释放(raster 已解绑: Shell::DetachView 先于窗口销毁)。
+    // 交换链先于窗口释放(raster 已解绑: Shell::DetachView 先于窗口销毁), 平台视图宿主在 surface 之后。
     surface_.reset();
+    platform_views_.reset();
     ::DestroyWindow(hwnd_);
     hwnd_ = nullptr;
   }
@@ -245,12 +248,18 @@ void WinWindow::CreateSurface(uint32_t background_argb, std::shared_ptr<const Wi
   presents_ = PresentQueue::Create([hwnd = hwnd_](std::shared_ptr<PresentQueue>) {
     ::PostMessageW(hwnd, kPresentMessage, 0, 0);
   });
-  // Surface: 有 D3D 设备且交换链建得出来时为 D3D + 软件回退, 否则只有 GDI 软件 surface。
+  // Surface: 有 D3D 设备且交换链建得出来时为 D3D + 软件回退(并支持平台视图), 否则只有 GDI 软件 surface。
   auto software = std::make_unique<WinSoftwareSurface>(hwnd_, background_argb, presents_);
   software_surface_ = software.get();
   if (d3d_device != nullptr) {
-    StatusOr<std::unique_ptr<WinD3DSurface>> d3d = WinD3DSurface::Create(hwnd_, std::move(d3d_device), presents_);
+    // 交换链挂在窗口的 DirectComposition 树上(失败时 compositor 随作用域释放, 窗口不留任何树)。
+    StatusOr<std::shared_ptr<WinCompositor>> compositor = WinCompositor::Create(hwnd_);
+    StatusOr<std::unique_ptr<WinD3DSurface>> d3d =
+        compositor.ok() ? WinD3DSurface::Create(hwnd_, std::move(d3d_device), *compositor, presents_)
+                        : StatusOr<std::unique_ptr<WinD3DSurface>>(compositor.status());
     if (d3d.ok()) {
+      platform_views_ = std::make_unique<WinPlatformViews>(hwnd_, *compositor, this);
+      (*d3d)->SetPlatformViews(platform_views_.get());
       auto fallback = std::make_unique<FallbackSurface>(std::move(d3d).value(), std::move(software));
       fallback_surface_ = fallback.get();
       surface_ = std::move(fallback);
@@ -265,8 +274,13 @@ void WinWindow::CreateSurface(uint32_t background_argb, std::shared_ptr<const Wi
 // 显示与状态
 
 void WinWindow::Show() {
-  ::ShowWindow(hwnd_, ::IsZoomed(hwnd_) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
-  ::SetForegroundWindow(hwnd_);
+  if (non_activating_) {
+    // 显示但不抢走前台窗口的激活(最大化状态在不激活的显示下保持原样)。
+    ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+  } else {
+    ::ShowWindow(hwnd_, ::IsZoomed(hwnd_) ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL);
+    ::SetForegroundWindow(hwnd_);
+  }
   ::UpdateWindow(hwnd_);
   NotifyStateChanged();
 }
@@ -276,6 +290,7 @@ void WinWindow::Activate() {
     ::ShowWindow(hwnd_, SW_RESTORE);
   }
   Show();
+  ::SetForegroundWindow(hwnd_);  // 显式激活: 非激活窗口也照常激活
 }
 
 WindowStateFlags WinWindow::state() const {
@@ -412,7 +427,16 @@ bool WinWindow::CursorInClient() const {
          point.x >= 0 && point.y >= 0 && point.x < physical_size().width && point.y < physical_size().height;
 }
 
-void WinWindow::ApplyCursor() { ::SetCursor(cursor_hidden_ ? nullptr : cursor_); }
+void WinWindow::ApplyCursor() {
+  // 指针归平台视图时光标由视图决定(光标只有一个裁决者: 派发器)。
+  const std::optional<int64_t> owner = dispatcher().PointerOwner(this);
+  if (owner && *owner != 0 && platform_views_ != nullptr) {
+    HCURSOR cursor = platform_views_->Cursor(*owner);
+    ::SetCursor(cursor != nullptr ? cursor : ::LoadCursorW(nullptr, IDC_ARROW));
+    return;
+  }
+  ::SetCursor(cursor_hidden_ ? nullptr : cursor_);
+}
 
 // ---------------------------------------------------------------------------
 // 窗口框架: 缩放边框、隐藏标题栏、系统控制按钮
@@ -802,7 +826,7 @@ std::optional<int64_t> WinWindow::HitTest(Point screen) const {
   if (HitTestFrame(FrameState(), {client.x / dpr, client.y / dpr}) != WinFrameHit::kClient) {
     return std::nullopt;
   }
-  return 0;  // 没有平台视图: 内容区都是 momo
+  return platform_views_ != nullptr ? platform_views_->ViewAt(client) : 0;
 }
 
 void WinWindow::SendToMomo(platform::PointerDataPacket packet, const PointerInput& input) {
@@ -828,9 +852,80 @@ void WinWindow::SendToMomo(platform::PointerDataPacket packet, const PointerInpu
   delegate_->OnPointerPacket(std::move(packet));
 }
 
-// Windows 宿主没有平台视图, 派发器不会选中它们。
-void WinWindow::SendToPlatformView(int64_t, const PointerInput&, platform::PointerPhase) {}
-void WinWindow::SetHoveredPlatformView(int64_t, const PointerInput&) {}
+void WinWindow::SendToPlatformView(int64_t view, const PointerInput& input, platform::PointerPhase phase) {
+  if (platform_views_ == nullptr) {
+    return;
+  }
+  // 原生消息原样转交;派发器合成的事件(补报的抬起等)按阶段给出对应的消息。
+  const auto* message = static_cast<const WinMouseMessage*>(input.native);
+  UINT type = WM_MOUSEMOVE;
+  WPARAM wparam = 0;
+  if (message != nullptr) {
+    type = message->message;
+    wparam = static_cast<WPARAM>(message->wparam);
+  } else if (phase == platform::PointerPhase::kUp) {
+    type = WM_LBUTTONUP;
+  }
+  POINT client = displays_.ToPhysical(Point{input.data.screen_x, input.data.screen_y});
+  ::ScreenToClient(hwnd_, &client);
+  platform_views_->SendMouse(view, type, wparam, client);
+}
+
+void WinWindow::SetHoveredPlatformView(int64_t view, const PointerInput&) {
+  if (platform_views_ != nullptr) {
+    platform_views_->SetHovered(view);
+  }
+  if (CursorInClient()) {
+    ApplyCursor();  // 进出平台视图: 光标换裁决者
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 平台视图(WinPlatformViews;视图在全部窗口登记, 哪个窗口的合成帧里出现它, 就由那个窗口接管)
+
+void WinWindow::AddPlatformView(int64_t view_id, void* native_view) {
+  if (platform_views_ != nullptr) {
+    platform_views_->Add(view_id, static_cast<const MomoWinPlatformView*>(native_view));
+  }
+}
+
+void WinWindow::RemovePlatformView(int64_t view_id) {
+  if (platform_views_ != nullptr) {
+    platform_views_->Remove(view_id);
+  }
+}
+
+void WinWindow::FocusPlatformView(int64_t view_id) {
+  if (platform_views_ != nullptr) {
+    platform_views_->Focus(view_id);
+  }
+}
+
+void WinWindow::BlurPlatformView(int64_t view_id) {
+  if (platform_views_ != nullptr) {
+    platform_views_->Blur(view_id);
+  }
+}
+
+bool WinWindow::IsPlatformViewWindow(HWND hwnd) const {
+  return platform_views_ != nullptr && hwnd != nullptr && hwnd != hwnd_ && ::IsChild(hwnd_, hwnd);
+}
+
+void WinWindow::OnPlatformViewFocused(int64_t view_id) { delegate_->OnPlatformViewFocused(view_id); }
+
+void WinWindow::OnPlatformViewCursorChanged(int64_t view_id) {
+  const std::optional<int64_t> owner = dispatcher().PointerOwner(this);
+  if (owner && *owner == view_id && CursorInClient()) {
+    ApplyCursor();
+  }
+}
+
+bool WinWindow::OnPlatformViewKeyDown(UINT, WPARAM wparam, LPARAM lparam) {
+  // 应用菜单的快捷键先于网页(同 macOS 主菜单的 key equivalent 先于第一响应者)。
+  return menus_.HandleKeyDown(static_cast<UINT>(wparam), CurrentKeyModifiers(), (lparam & (1 << 30)) != 0);
+}
+
+void WinWindow::OnPlatformViewGeometryChanged() { dispatcher().GeometryChanged(this); }
 
 void WinWindow::MoveTo(Point top_left) { SetPosition(top_left).IgnoreError(); }
 
@@ -993,13 +1088,14 @@ LRESULT WinWindow::HandleMessage(UINT message, WPARAM wparam, LPARAM lparam) {
     case WM_ACTIVATEAPP:
       app_.OnActivateApp(wparam != FALSE);
       break;
+    // 焦点在本窗口与它的平台视图之间移动(wparam 为另一方)不是窗口焦点的变化, 只有输入法随之切换。
     case WM_SETFOCUS:
       if (text_input_ != nullptr) text_input_->OnFocusChanged(true);
-      if (created_) delegate_->OnFocusChanged(true);
+      if (created_ && !IsPlatformViewWindow(reinterpret_cast<HWND>(wparam))) delegate_->OnFocusChanged(true);
       return 0;
     case WM_KILLFOCUS:
       if (text_input_ != nullptr) text_input_->OnFocusChanged(false);
-      if (created_) delegate_->OnFocusChanged(false);
+      if (created_ && !IsPlatformViewWindow(reinterpret_cast<HWND>(wparam))) delegate_->OnFocusChanged(false);
       return 0;
     case WM_SETTINGCHANGE:
       if (lparam != 0 && std::wcscmp(reinterpret_cast<const wchar_t*>(lparam), L"ImmersiveColorSet") == 0) {
