@@ -235,8 +235,8 @@ void WinPlatformViews::Compose(const CompositionLayout& layout, IDCompositionVis
       const float radius = ToFloat(PlatformViewCornerRadius(g, *visible));
       entry->container->SetOffsetX(ToFloat(visible->x));
       entry->container->SetOffsetY(ToFloat(visible->y));
-      entry->clip->SetLeft(0);
-      entry->clip->SetTop(0);
+      entry->clip->SetLeft(0.0f);  // float 重载(字面量 0 也匹配 IDCompositionAnimation*)
+      entry->clip->SetTop(0.0f);
       entry->clip->SetRight(ToFloat(visible->width));
       entry->clip->SetBottom(ToFloat(visible->height));
       IDCompositionRectangleClip* clip = entry->clip.Get();
